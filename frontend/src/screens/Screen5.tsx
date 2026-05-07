@@ -1,0 +1,689 @@
+import { useEffect, useRef, useState } from 'react'
+import { useApp } from '../store/AppContext'
+import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
+import type { MatrixCell, ConfidenceLevel, SystemMatrixRow } from '../types'
+
+const API = 'http://localhost:8000/api'
+
+// ── Evidence popover types ────────────────────────────────────────────────────
+interface EvidenceTarget {
+  rect: DOMRect
+  cell: MatrixCell
+  column: string
+  // literature context
+  paperTitle?: string
+  paperAbstract?: string
+  paperAuthors?: string
+  paperYear?: number
+  // system context
+  systemName?: string
+  systemVendor?: string
+  systemDescription?: string
+}
+
+// ── Evidence popover (fixed overlay) ─────────────────────────────────────────
+function EvidencePopover({
+  target,
+  domain,
+  focus,
+  onClose,
+}: {
+  target: EvidenceTarget
+  domain: string
+  focus: string
+  onClose: () => void
+}) {
+  const [reasoning, setReasoning] = useState<string | null>(null)
+  const [sources, setSources] = useState<string[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(false)
+
+  // Position the popover to the right of the button, flip left if near right edge
+  const POPOVER_W = 320
+  const vw = window.innerWidth
+  const left = target.rect.right + 10 + POPOVER_W > vw
+    ? target.rect.left - POPOVER_W - 10
+    : target.rect.right + 10
+  const top = Math.min(target.rect.top, window.innerHeight - 280)
+
+  useEffect(() => {
+    async function fetch_() {
+      try {
+        const res = await fetch(`${API}/matrix/cell-evidence`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            cell_value: target.cell.value,
+            column_name: target.column,
+            paper_title: target.paperTitle ?? '',
+            paper_abstract: target.paperAbstract ?? '',
+            paper_authors: target.paperAuthors ?? '',
+            paper_year: target.paperYear ?? null,
+            system_name: target.systemName ?? '',
+            system_vendor: target.systemVendor ?? '',
+            system_description: target.systemDescription ?? '',
+            domain,
+            focus,
+          }),
+        })
+        if (!res.ok) throw new Error()
+        const data = await res.json()
+        setReasoning(data.reasoning)
+        setSources(data.sources ?? [])
+      } catch {
+        setError(true)
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetch_()
+  }, [])
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div className="fixed inset-0 z-40" onClick={onClose} />
+
+      {/* Popover card */}
+      <div
+        className="fixed z-50 bg-white border border-zinc-200 rounded-xl shadow-2xl flex flex-col"
+        style={{ left, top, width: POPOVER_W, maxHeight: 340 }}
+      >
+        {/* Header */}
+        <div className="flex items-center gap-2 px-3 py-2.5 border-b border-zinc-100 shrink-0">
+          <span className="w-5 h-5 rounded-full bg-violet-600 text-white text-[10px] font-bold flex items-center justify-center shrink-0">?</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-[11px] font-semibold text-zinc-800 truncate">{target.column}</p>
+            <p className="text-[9px] text-zinc-400 truncate">{target.paperTitle || target.systemName}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-zinc-400 hover:text-zinc-600 text-[14px] leading-none shrink-0"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-3 py-2.5 space-y-3">
+          {loading && (
+            <div className="flex items-center gap-2 py-4 justify-center">
+              <span className="w-4 h-4 border-2 border-violet-200 border-t-violet-600 rounded-full animate-spin" />
+              <span className="text-[11px] text-zinc-400">Reasoning…</span>
+            </div>
+          )}
+
+          {error && (
+            <p className="text-[11px] text-red-500 py-4 text-center">Could not load evidence.</p>
+          )}
+
+          {!loading && !error && reasoning && (
+            <>
+              <div>
+                <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1.5">Evidence & Reasoning</p>
+                <p className="text-[11px] text-zinc-700 leading-relaxed">{reasoning}</p>
+              </div>
+
+              {sources.length > 0 && (
+                <div>
+                  <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1.5">Sources</p>
+                  <ul className="space-y-1">
+                    {sources.map((s, i) => (
+                      <li key={i} className="text-[10px] text-violet-700 leading-snug flex gap-1.5">
+                        <span className="text-zinc-300 shrink-0 mt-0.5">·</span>
+                        <span>{s}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Cell value preview */}
+        <div className="px-3 py-2 border-t border-zinc-100 bg-zinc-50 rounded-b-xl shrink-0">
+          <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-0.5">Cell value</p>
+          <p className="text-[10px] text-zinc-600 italic line-clamp-2">"{target.cell.value}"</p>
+        </div>
+      </div>
+    </>
+  )
+}
+
+// ── Clean cell renderer (no dots, no badges) ──────────────────────────────────
+function CellContent({
+  cell,
+  column,
+  onEvidence,
+}: {
+  cell: MatrixCell | undefined
+  column: string
+  onEvidence?: (rect: DOMRect) => void
+}) {
+  if (!cell || cell.evidenceType === 'not_available') {
+    return (
+      <td className="border border-zinc-200 bg-zinc-50 px-2 py-1 min-w-[140px]">
+        <span className="text-[8px] italic text-zinc-300">—</span>
+      </td>
+    )
+  }
+
+  return (
+    <td className="relative border border-zinc-200 bg-white px-2 py-1.5 min-w-[140px] group">
+      <p className="text-[10px] text-zinc-800 leading-snug pr-5">{cell.value}</p>
+      {onEvidence && (
+        <button
+          onClick={e => {
+            e.stopPropagation()
+            onEvidence(e.currentTarget.getBoundingClientRect())
+          }}
+          className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-zinc-200 text-zinc-500 text-[8px] font-bold flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-violet-600 hover:text-white transition-all"
+          title="Show evidence"
+        >
+          ?
+        </button>
+      )}
+    </td>
+  )
+}
+
+// ── Pending cell (autofill in progress) ──────────────────────────────────────
+function PendingCell() {
+  return (
+    <td className="border border-violet-100 bg-violet-50/40 px-2 py-2 min-w-[140px]">
+      <div className="flex items-center gap-1.5">
+        <span className="w-2.5 h-2.5 border border-violet-300 border-t-violet-600 rounded-full animate-spin shrink-0" />
+        <span className="text-[9px] text-violet-400 italic">filling…</span>
+      </div>
+    </td>
+  )
+}
+
+// ── Literature matrix ─────────────────────────────────────────────────────────
+function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void }) {
+  const { state, dispatch } = useApp()
+  const [generating, setGenerating] = useState(false)
+  const [genError, setGenError] = useState(false)
+  const [filling, setFilling] = useState(false)
+  const [fillDone, setFillDone] = useState(0)
+  const [fillTotal, setFillTotal] = useState(0)
+  const [fillingRowId, setFillingRowId] = useState<string | null>(null)
+  const abortRef = useRef(false)
+  const [showAutoFillModal, setShowAutoFillModal] = useState(false)
+  const [customAutoFillPrompt, setCustomAutoFillPrompt] = useState<string | null>(null)
+
+  const dataCols = state.matrixColumns.filter(
+    c => c !== '#' && c !== 'Title' && c !== 'Authors' && c !== 'Year'
+  )
+
+  const reviewListIds = new Set(state.reviewList.map(p => p.id))
+  const rowsMismatch = state.reviewList.length > 0 &&
+    !state.matrixRows.every(r => reviewListIds.has(r.paperId))
+  const needsInit = state.reviewList.length > 0 && (
+    state.matrixColumns.length === 0 || state.matrixRows.length === 0 || rowsMismatch
+  )
+
+  async function runGenerate() {
+    setGenerating(true); setGenError(false)
+    try {
+      const res = await fetch(`${API}/matrix/generate-columns`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          papers: state.reviewList.map(p => ({ title: p.title, abstract: p.abstract, authors: p.authors, year: p.year })),
+          topics: state.topics.filter(t => t.selected).map(t => ({ title: t.title, description: t.description, type: t.type })),
+          profile: state.profile,
+        }),
+      })
+      if (!res.ok) throw new Error()
+      const data = await res.json()
+      dispatch({ type: 'SET_MATRIX_COLUMNS', columns: data.columns })
+      dispatch({ type: 'INIT_MATRIX_ROWS' })
+    } catch { setGenError(true) } finally { setGenerating(false) }
+  }
+
+  useEffect(() => { if (!needsInit || generating) return; runGenerate() }, [needsInit])
+
+  async function handleAutoFill(prompt?: string | null) {
+    if (filling || dataCols.length === 0) return
+    abortRef.current = false
+    setFilling(true); setFillDone(0); setFillTotal(state.matrixRows.length)
+
+    for (const row of state.matrixRows) {
+      if (abortRef.current) break
+      const paper = state.reviewList.find(p => p.id === row.paperId)
+      if (!paper) { setFillDone(d => d + 1); continue }
+      setFillingRowId(row.paperId)
+      try {
+        const res = await fetch(`${API}/matrix/autofill-row`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            paper: { title: paper.title, abstract: paper.abstract, authors: paper.authors, year: paper.year },
+            columns: dataCols, profile: state.profile,
+            topics: state.topics.filter(t => t.selected).map(t => ({ title: t.title, description: t.description, type: t.type })),
+            custom_system_prompt: prompt ?? null,
+          }),
+        })
+        if (!res.ok) throw new Error()
+        const data = await res.json()
+        const cells: Record<string, MatrixCell> = {}
+        for (const [col, cd] of Object.entries(data.cells as Record<string, { value: string; evidenceType: string; confidenceScore: number; confidenceLevel: string; extractionMethod: string }>)) {
+          cells[col] = { value: cd.value, aiGenerated: true, confidenceScore: cd.confidenceScore, confidenceLevel: cd.confidenceLevel as ConfidenceLevel, evidenceType: cd.evidenceType as MatrixCell['evidenceType'], sourceRef: '', extractionMethod: cd.extractionMethod as MatrixCell['extractionMethod'], verifiedByStudent: false }
+        }
+        dispatch({ type: 'UPDATE_MATRIX_ROW_CELLS', paperId: row.paperId, cells })
+      } catch { /* skip */ }
+      setFillDone(d => d + 1)
+    }
+    setFillingRowId(null); setFilling(false)
+  }
+
+  if (state.reviewList.length === 0) return (
+    <div className="flex items-center justify-center flex-1 flex-col gap-2">
+      <p className="text-[13px] text-zinc-400">No papers in review list</p>
+      <p className="text-[11px] text-zinc-300">Go back to Select Paper and add papers first.</p>
+    </div>
+  )
+
+  if (generating) return (
+    <div className="flex items-center justify-center flex-1 flex-col gap-4">
+      <div className="w-7 h-7 border-2 border-zinc-200 border-t-purple-600 rounded-full animate-spin" />
+      <p className="text-[13px] font-semibold text-zinc-700">Generating matrix columns…</p>
+    </div>
+  )
+
+  if (genError) return (
+    <div className="flex items-center justify-center flex-1 flex-col gap-3">
+      <p className="text-[13px] text-zinc-500">Column generation failed</p>
+      <button onClick={() => { setGenError(false); runGenerate() }} className="px-4 h-8 bg-zinc-900 text-white rounded text-[12px] hover:bg-zinc-700">Retry</button>
+    </div>
+  )
+
+  const filledCount = state.matrixRows.reduce((n, row) => n + dataCols.filter(c => row.cells[c]?.value).length, 0)
+  const totalCells = state.matrixRows.length * dataCols.length
+
+  return (
+    <div className="flex flex-col flex-1 overflow-hidden">
+      <div className="h-8 bg-zinc-50 border-b border-zinc-200 flex items-center px-4 gap-3 shrink-0">
+        <span className="text-[9px] text-zinc-400">{filledCount}/{totalCells} cells filled</span>
+        <div className="flex-1" />
+        <button className="px-3 h-6 border border-zinc-300 rounded text-[10px] text-zinc-700 hover:bg-zinc-50">+ Column</button>
+        <div className="flex rounded overflow-hidden">
+          <button onClick={() => handleAutoFill(customAutoFillPrompt)} disabled={filling || dataCols.length === 0}
+            className="px-3 h-6 bg-purple-600 text-white rounded-l text-[10px] flex items-center gap-1.5 hover:bg-purple-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors">
+            {filling ? <><span className="w-2.5 h-2.5 border border-purple-300 border-t-white rounded-full animate-spin" />{fillDone}/{fillTotal} rows…</> : <><span>✦</span> {customAutoFillPrompt && <span className="w-1 h-1 rounded-full bg-amber-300 shrink-0" />} Auto-fill All</>}
+          </button>
+          <button onClick={() => setShowAutoFillModal(true)} disabled={filling || dataCols.length === 0}
+            title="Customize AI prompt"
+            className="px-1.5 h-6 bg-purple-700 text-purple-200 text-[10px] hover:bg-purple-600 disabled:opacity-60 disabled:cursor-not-allowed transition-colors border-l border-purple-500 rounded-r">
+            ⚙
+          </button>
+        </div>
+        {showAutoFillModal && (
+          <CustomizePromptModal
+            promptKey="matrix-lit-autofill"
+            title="Auto-fill Literature Rows"
+            initialCustomPrompt={customAutoFillPrompt}
+            onClose={() => setShowAutoFillModal(false)}
+            onGenerate={(prompt) => {
+              setCustomAutoFillPrompt(prompt)
+              setShowAutoFillModal(false)
+              handleAutoFill(prompt)
+            }}
+          />
+        )}
+        {filling && <button onClick={() => { abortRef.current = true }} className="px-2 h-6 border border-zinc-300 rounded text-[10px] text-zinc-500 hover:bg-zinc-100">Stop</button>}
+        <button className="px-3 h-6 border border-zinc-300 rounded text-[10px] text-zinc-700 hover:bg-zinc-50">Export CSV</button>
+      </div>
+
+      <div className="flex-1 overflow-auto">
+        <table className="border-collapse text-left" style={{ tableLayout: 'fixed' }}>
+          <thead>
+            <tr className="bg-zinc-900">
+              <th className="sticky left-0 z-10 bg-zinc-900 border border-zinc-700 px-2 py-1.5 text-[9px] font-semibold text-white w-8">#</th>
+              <th className="sticky left-8 z-10 bg-zinc-900 border border-zinc-700 px-2 py-1.5 text-[9px] font-semibold text-white w-[180px]">Title · Authors · Year</th>
+              {dataCols.map(col => <th key={col} className="border border-zinc-700 px-2 py-1.5 text-[9px] font-semibold text-white min-w-[140px]">{col}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {state.matrixRows.map((row, idx) => {
+              const paper = state.reviewList.find(p => p.id === row.paperId)
+              const isBeingFilled = fillingRowId === row.paperId
+              return (
+                <tr key={row.paperId} className={`${idx % 2 === 0 ? 'bg-zinc-50' : 'bg-white'} ${isBeingFilled ? 'ring-1 ring-inset ring-purple-300' : ''}`}>
+                  <td className="sticky left-0 z-10 border border-zinc-200 px-2 py-1 text-[10px] text-zinc-400 font-medium bg-inherit">{idx + 1}</td>
+                  <td className="sticky left-8 z-10 border border-zinc-200 px-2 py-2 bg-inherit w-[180px]">
+                    <p className="text-[11px] font-semibold text-zinc-900 leading-tight line-clamp-2">{row.title}</p>
+                    <p className="text-[9px] text-zinc-400 mt-0.5">{row.authors}</p>
+                    <p className="text-[9px] text-zinc-400">{row.year}</p>
+                  </td>
+                  {dataCols.map(col =>
+                    isBeingFilled ? <PendingCell key={col} /> :
+                    <CellContent
+                      key={col}
+                      cell={row.cells[col]}
+                      column={col}
+                      onEvidence={row.cells[col]?.value ? rect => onEvidence({
+                        rect, cell: row.cells[col], column: col,
+                        paperTitle: paper?.title, paperAbstract: paper?.abstract,
+                        paperAuthors: paper?.authors, paperYear: paper?.year,
+                      }) : undefined}
+                    />
+                  )}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ── System review matrix ──────────────────────────────────────────────────────
+function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void }) {
+  const { state, dispatch } = useApp()
+  const [generating, setGenerating] = useState(false)
+  const [genError, setGenError] = useState(false)
+  const [filling, setFilling] = useState(false)
+  const [fillDone, setFillDone] = useState(0)
+  const [fillTotal, setFillTotal] = useState(0)
+  const [fillingRowId, setFillingRowId] = useState<string | null>(null)
+  const abortRef = useRef(false)
+
+  const systemItems = state.systemItems ?? []
+  const selectedSystems = systemItems.filter(s => s.selected)
+  const systemMatrixRows: SystemMatrixRow[] = state.systemMatrixRows ?? []
+  const systemMatrixColumns: string[] = state.systemMatrixColumns ?? []
+  const dataCols = systemMatrixColumns.filter(c => c !== 'System Name' && c !== 'Vendor' && c !== 'Category')
+
+  const selectedIds = new Set(selectedSystems.map(s => s.id))
+  const rowsMismatch = selectedSystems.length > 0 && !systemMatrixRows.every(r => selectedIds.has(r.systemId))
+  const needsInit = selectedSystems.length > 0 && (systemMatrixColumns.length === 0 || systemMatrixRows.length === 0 || rowsMismatch)
+
+  async function runGenerate() {
+    setGenerating(true); setGenError(false)
+    try {
+      const res = await fetch(`${API}/matrix/generate-system-columns`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systems: selectedSystems.map(s => ({ name: s.name, category: s.category, vendor: s.vendor, description: s.description })),
+          topics: state.topics.filter(t => t.selected).map(t => ({ title: t.title, description: t.description, type: t.type })),
+          profile: state.profile,
+        }),
+      })
+      if (!res.ok) throw new Error()
+      const data = await res.json()
+      dispatch({ type: 'SET_SYSTEM_MATRIX_COLUMNS', columns: data.columns })
+      dispatch({ type: 'INIT_SYSTEM_MATRIX_ROWS' })
+    } catch { setGenError(true) } finally { setGenerating(false) }
+  }
+
+  useEffect(() => { if (!needsInit || generating) return; runGenerate() }, [needsInit])
+
+  async function handleAutoFill() {
+    if (filling || dataCols.length === 0) return
+    abortRef.current = false
+    setFilling(true); setFillDone(0); setFillTotal(systemMatrixRows.length)
+
+    for (const row of systemMatrixRows) {
+      if (abortRef.current) break
+      const sys = selectedSystems.find(s => s.id === row.systemId)
+      if (!sys) { setFillDone(d => d + 1); continue }
+      setFillingRowId(row.systemId)
+      try {
+        const res = await fetch(`${API}/matrix/autofill-system-row`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            system: { name: sys.name, category: sys.category, vendor: sys.vendor, description: sys.description },
+            columns: dataCols, profile: state.profile,
+          }),
+        })
+        if (!res.ok) throw new Error()
+        const data = await res.json()
+        const cells: Record<string, MatrixCell> = {}
+        for (const [col, cd] of Object.entries(data.cells as Record<string, { value: string; evidenceType: string; confidenceScore: number; confidenceLevel: string; extractionMethod: string }>)) {
+          cells[col] = { value: cd.value, aiGenerated: true, confidenceScore: cd.confidenceScore, confidenceLevel: cd.confidenceLevel as ConfidenceLevel, evidenceType: cd.evidenceType as MatrixCell['evidenceType'], sourceRef: '', extractionMethod: cd.extractionMethod as MatrixCell['extractionMethod'], verifiedByStudent: false }
+        }
+        dispatch({ type: 'UPDATE_SYSTEM_MATRIX_ROW_CELLS', systemId: row.systemId, cells })
+      } catch { /* skip */ }
+      setFillDone(d => d + 1)
+    }
+    setFillingRowId(null); setFilling(false)
+  }
+
+  if (selectedSystems.length === 0) return (
+    <div className="flex items-center justify-center flex-1 flex-col gap-2">
+      <p className="text-[13px] text-zinc-400">No systems selected</p>
+      <p className="text-[11px] text-zinc-300">Go back to System Review and select at least one system.</p>
+    </div>
+  )
+  if (generating) return (
+    <div className="flex items-center justify-center flex-1 flex-col gap-4">
+      <div className="w-7 h-7 border-2 border-zinc-200 border-t-violet-600 rounded-full animate-spin" />
+      <p className="text-[13px] font-semibold text-zinc-700">Generating system review columns…</p>
+    </div>
+  )
+  if (genError) return (
+    <div className="flex items-center justify-center flex-1 flex-col gap-3">
+      <p className="text-[13px] text-zinc-500">Column generation failed</p>
+      <button onClick={() => { setGenError(false); runGenerate() }} className="px-4 h-8 bg-zinc-900 text-white rounded text-[12px] hover:bg-zinc-700">Retry</button>
+    </div>
+  )
+
+  const filledCount = systemMatrixRows.reduce((n, row) => n + dataCols.filter(c => row.cells[c]?.value).length, 0)
+  const totalCells = systemMatrixRows.length * dataCols.length
+
+  return (
+    <div className="flex flex-col flex-1 overflow-hidden">
+      <div className="h-8 bg-violet-50 border-b border-violet-200 flex items-center px-4 gap-3 shrink-0">
+        <span className="text-[9px] text-violet-400">{filledCount}/{totalCells} cells filled · {selectedSystems.length} systems</span>
+        <div className="flex-1" />
+        <button className="px-3 h-6 border border-violet-300 rounded text-[10px] text-violet-700 hover:bg-violet-100">+ Column</button>
+        <button onClick={handleAutoFill} disabled={filling || dataCols.length === 0}
+          className="px-3 h-6 bg-violet-600 text-white rounded text-[10px] flex items-center gap-1.5 hover:bg-violet-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors">
+          {filling ? <><span className="w-2.5 h-2.5 border border-violet-300 border-t-white rounded-full animate-spin" />{fillDone}/{fillTotal} rows…</> : <><span>✦</span> Auto-fill All</>}
+        </button>
+        {filling && <button onClick={() => { abortRef.current = true }} className="px-2 h-6 border border-violet-300 rounded text-[10px] text-violet-600 hover:bg-violet-100">Stop</button>}
+        <button className="px-3 h-6 border border-violet-300 rounded text-[10px] text-violet-700 hover:bg-violet-100">Export CSV</button>
+      </div>
+
+      <div className="flex-1 overflow-auto">
+        <table className="border-collapse text-left" style={{ tableLayout: 'fixed' }}>
+          <thead>
+            <tr className="bg-violet-900">
+              <th className="sticky left-0 z-10 bg-violet-900 border border-violet-700 px-2 py-1.5 text-[9px] font-semibold text-white w-8">#</th>
+              <th className="sticky left-8 z-10 bg-violet-900 border border-violet-700 px-2 py-1.5 text-[9px] font-semibold text-white w-[180px]">System · Vendor · Category</th>
+              {dataCols.map(col => <th key={col} className="border border-violet-700 px-2 py-1.5 text-[9px] font-semibold text-white min-w-[140px]">{col}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {systemMatrixRows.map((row, idx) => {
+              const sys = selectedSystems.find(s => s.id === row.systemId)
+              const isBeingFilled = fillingRowId === row.systemId
+              return (
+                <tr key={row.systemId} className={`${idx % 2 === 0 ? 'bg-violet-50/30' : 'bg-white'} ${isBeingFilled ? 'ring-1 ring-inset ring-violet-400' : ''}`}>
+                  <td className="sticky left-0 z-10 border border-zinc-200 px-2 py-1 text-[10px] text-zinc-400 font-medium bg-inherit">{idx + 1}</td>
+                  <td className="sticky left-8 z-10 border border-zinc-200 px-2 py-2 bg-inherit w-[180px]">
+                    <p className="text-[11px] font-semibold leading-tight">
+                      {row.url ? <a href={row.url} target="_blank" rel="noopener noreferrer" className="hover:underline text-violet-800">{row.name}</a> : <span className="text-zinc-900">{row.name}</span>}
+                    </p>
+                    {row.vendor && <p className="text-[9px] text-zinc-400 mt-0.5">{row.vendor}</p>}
+                    <span className="text-[8px] px-1.5 py-0.5 bg-zinc-100 text-zinc-500 rounded mt-0.5 inline-block">{row.category}</span>
+                  </td>
+                  {dataCols.map(col =>
+                    isBeingFilled ? <PendingCell key={col} /> :
+                    <CellContent
+                      key={col}
+                      cell={row.cells[col]}
+                      column={col}
+                      onEvidence={row.cells[col]?.value ? rect => onEvidence({
+                        rect, cell: row.cells[col], column: col,
+                        systemName: sys?.name, systemVendor: sys?.vendor, systemDescription: sys?.description,
+                      }) : undefined}
+                    />
+                  )}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ── Main Screen5 ──────────────────────────────────────────────────────────────
+export function Screen5() {
+  const { state, dispatch } = useApp()
+  const systemItems = state.systemItems ?? []
+  const hasSelectedSystems = systemItems.some(s => s.selected)
+  const [activeTab, setActiveTab] = useState<'literature' | 'system'>('literature')
+  const [evidenceTarget, setEvidenceTarget] = useState<EvidenceTarget | null>(null)
+  const [synthesising, setSynthesising] = useState(false)
+  const [synthError, setSynthError] = useState(false)
+  const [showSynthModal, setShowSynthModal] = useState(false)
+  const [customSynthPrompt, setCustomSynthPrompt] = useState<string | null>(null)
+
+  async function handleContinue(prompt?: string | null) {
+    setSynthesising(true)
+    setSynthError(false)
+    try {
+      const selectedSystems = systemItems.filter(s => s.selected)
+      const res = await fetch(`${API}/synthesis/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          custom_system_prompt: prompt ?? null,
+          matrix_rows: state.matrixRows.map(r => ({
+            title: r.title,
+            authors: r.authors,
+            year: r.year,
+            cells: Object.fromEntries(
+              Object.entries(r.cells).map(([k, c]) => [k, {
+                value: c.value,
+                confidenceScore: c.confidenceScore,
+                confidenceLevel: c.confidenceLevel,
+                evidenceType: c.evidenceType,
+              }])
+            ),
+          })),
+          system_rows: (state.systemMatrixRows ?? []).filter(r =>
+            selectedSystems.some(s => s.id === r.systemId)
+          ).map(r => ({
+            name: r.name,
+            vendor: r.vendor,
+            category: r.category,
+            cells: Object.fromEntries(
+              Object.entries(r.cells).map(([k, c]) => [k, {
+                value: c.value,
+                confidenceScore: c.confidenceScore,
+                confidenceLevel: c.confidenceLevel,
+                evidenceType: c.evidenceType,
+              }])
+            ),
+          })),
+          columns: state.matrixColumns,
+          system_columns: state.systemMatrixColumns ?? [],
+          profile: state.profile,
+          topics: state.topics.filter(t => t.selected).map(t => ({
+            title: t.title,
+            description: t.description,
+            type: t.type,
+          })),
+        }),
+      })
+      if (!res.ok) throw new Error()
+      const data = await res.json()
+      if (data.themes?.length) {
+        dispatch({ type: 'SET_THEMES', themes: data.themes })
+      }
+    } catch {
+      setSynthError(true)
+    } finally {
+      setSynthesising(false)
+      dispatch({ type: 'ADVANCE_STEP' })
+    }
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Tab bar */}
+      <div className="h-10 border-b border-zinc-200 bg-white flex items-end px-4 gap-1 shrink-0">
+        <button onClick={() => setActiveTab('literature')}
+          className={`px-4 h-8 text-[12px] font-medium border-b-2 transition-colors ${activeTab === 'literature' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-400 hover:text-zinc-700'}`}>
+          Literature Review Matrix
+          <span className="ml-1.5 text-[10px] text-zinc-400">({state.matrixRows.length})</span>
+        </button>
+        {hasSelectedSystems && (
+          <button onClick={() => setActiveTab('system')}
+            className={`px-4 h-8 text-[12px] font-medium border-b-2 transition-colors ${activeTab === 'system' ? 'border-violet-600 text-violet-700' : 'border-transparent text-zinc-400 hover:text-violet-600'}`}>
+            System Review Matrix
+            <span className="ml-1.5 text-[10px] text-zinc-400">({systemItems.filter(s => s.selected).length})</span>
+          </button>
+        )}
+        <div className="flex-1" />
+        <span className="text-[10px] text-zinc-400 pb-2">Step 5 · Matrix</span>
+      </div>
+
+      {/* Active matrix */}
+      <div className="flex flex-col flex-1 overflow-hidden">
+        {activeTab === 'literature'
+          ? <LiteratureMatrix onEvidence={setEvidenceTarget} />
+          : <SystemMatrix onEvidence={setEvidenceTarget} />
+        }
+      </div>
+
+      {/* Footer */}
+      <div className="h-[30px] border-t border-zinc-200 bg-zinc-50 flex items-center px-4 gap-4 shrink-0">
+        <p className="text-[9px] text-zinc-400 flex-1">
+          {synthesising
+            ? <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 border border-zinc-400 border-t-zinc-700 rounded-full animate-spin inline-block" /> Generating synthesis…</span>
+            : synthError
+              ? <span className="text-amber-600">Synthesis used fallback data — you can regenerate from Step 6</span>
+              : <>Hover a cell to reveal <span className="font-bold">?</span> — click for AI evidence reasoning</>
+          }
+        </p>
+        <div className="flex rounded overflow-hidden">
+          <button
+            onClick={() => handleContinue(customSynthPrompt)}
+            disabled={synthesising}
+            className="px-4 h-6 bg-zinc-900 text-white rounded-l text-[11px] font-semibold hover:bg-zinc-700 disabled:opacity-50 transition-colors flex items-center gap-1.5">
+            {customSynthPrompt && <span className="w-1 h-1 rounded-full bg-amber-400 shrink-0" />}
+            {synthesising ? 'Synthesising…' : 'Continue to Synthesis →'}
+          </button>
+          <button
+            onClick={() => setShowSynthModal(true)}
+            disabled={synthesising}
+            title="Customize AI prompt"
+            className="px-1.5 h-6 bg-zinc-800 text-zinc-400 text-[10px] hover:bg-zinc-600 hover:text-zinc-200 disabled:opacity-50 transition-colors border-l border-zinc-700 rounded-r">
+            ⚙
+          </button>
+        </div>
+      </div>
+
+      {showSynthModal && (
+        <CustomizePromptModal
+          promptKey="synthesis-generate"
+          title="Generate Synthesis"
+          initialCustomPrompt={customSynthPrompt}
+          onClose={() => setShowSynthModal(false)}
+          onGenerate={(prompt) => {
+            setCustomSynthPrompt(prompt)
+            setShowSynthModal(false)
+            handleContinue(prompt)
+          }}
+        />
+      )}
+
+      {/* Evidence popover (fixed overlay) */}
+      {evidenceTarget && (
+        <EvidencePopover
+          target={evidenceTarget}
+          domain={state.profile.domain}
+          focus={state.profile.focus}
+          onClose={() => setEvidenceTarget(null)}
+        />
+      )}
+    </div>
+  )
+}

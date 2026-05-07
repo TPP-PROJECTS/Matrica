@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Bash(npm run *)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(gh auth *)",
+      "Bash(gh repo *)",
+      "Bash(git remote *)",
+      "Bash(git push *)"
+    ]
+  }
+}
