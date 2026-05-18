@@ -4,8 +4,8 @@ import { ChatMessage } from './ChatMessage'
 import { buildResearchContext } from '../../lib/buildResearchContext'
 import { resolveAction } from '../../lib/resolveAction'
 import type { ProposedAction } from '../../types'
+import { API } from '../../lib/api'
 
-const API = 'http://localhost:8000/api'
 
 interface AssistantApiResponse {
   reply: string

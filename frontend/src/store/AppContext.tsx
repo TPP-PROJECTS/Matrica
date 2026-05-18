@@ -11,10 +11,6 @@ import {
   generateSessionId, saveSession, loadSession, getMostRecentSessionId,
 } from '../lib/sessionStorage'
 
-const STEP_LABELS = [
-  '', 'Chat & Define Topic', 'System Review', 'Explore & Search', 'Select Paper',
-  'Matrix', 'Synthesis', 'Gap & Statement', 'Final Question',
-]
 
 const initialStepStates: Record<number, StepState> = {
   1: 'active', 2: 'locked', 3: 'locked', 4: 'locked', 5: 'locked', 6: 'locked', 7: 'locked', 8: 'locked',
@@ -301,6 +297,11 @@ function reducer(state: AppState, action: AppAction): AppState {
     case 'SET_MATRIX_COLUMNS':
       return { ...state, matrixColumns: action.columns }
 
+    case 'ADD_MATRIX_COLUMN': {
+      if (!action.column.trim() || state.matrixColumns.includes(action.column.trim())) return state
+      return { ...state, matrixColumns: [...state.matrixColumns, action.column.trim()] }
+    }
+
     case 'INIT_MATRIX_ROWS':
       return {
         ...state,
@@ -332,6 +333,11 @@ function reducer(state: AppState, action: AppAction): AppState {
     case 'SET_SYSTEM_MATRIX_COLUMNS':
       return { ...state, systemMatrixColumns: action.columns }
 
+    case 'ADD_SYSTEM_MATRIX_COLUMN': {
+      if (!action.column.trim() || (state.systemMatrixColumns ?? []).includes(action.column.trim())) return state
+      return { ...state, systemMatrixColumns: [...(state.systemMatrixColumns ?? []), action.column.trim()] }
+    }
+
     case 'INIT_SYSTEM_MATRIX_ROWS': {
       const newSystemRows: SystemMatrixRow[] = (state.systemItems ?? [])
         .filter(s => s.selected)
@@ -361,7 +367,7 @@ function reducer(state: AppState, action: AppAction): AppState {
     case 'SET_THEMES':
       return {
         ...state,
-        themes: action.themes.map(t => ({ systemSourceColumns: [], ...t })),
+        themes: action.themes.map(t => ({ ...t, systemSourceColumns: t.systemSourceColumns ?? [] })),
         activeThemeId: action.themes[0]?.id ?? state.activeThemeId,
       }
 
@@ -430,22 +436,32 @@ function reducer(state: AppState, action: AppAction): AppState {
         ),
       }
 
+    case 'RESTORE_STATE':
+      return action.state
+
     default:
       return state
   }
 }
 
-// Actions that only change UI state — do NOT trigger a save
+// Actions that only change UI state — do NOT trigger a save or undo entry
 const UI_ONLY_ACTIONS = new Set([
   'TOGGLE_HISTORY', 'SET_SAVE_STATUS',
   'DISMISS_CONSISTENCY_ALERT', 'DISMISS_BACK_NAV_MODAL',
   'BACK_NAV_CANCEL', 'BACK_NAV_REQUEST',
+  'RESTORE_STATE',
 ])
+
+const MAX_HISTORY = 30
 
 type AppContextValue = {
   state: AppState
   dispatch: React.Dispatch<AppAction>
   saveStatus: 'saved' | 'saving'
+  canUndo: boolean
+  canRedo: boolean
+  undo: () => void
+  redo: () => void
 }
 
 const AppContext = createContext<AppContextValue | null>(null)
@@ -453,6 +469,8 @@ const AppContext = createContext<AppContextValue | null>(null)
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, undefined, getInitialState)
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving'>('saved')
+  const [canUndo, setCanUndo] = useState(false)
+  const [canRedo, setCanRedo] = useState(false)
 
   // Track last dispatched action type to skip UI-only state changes
   const lastActionRef = useRef<string>('__init__')
@@ -461,9 +479,40 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const stateRef = useRef(state)
   stateRef.current = state
 
+  // Undo/redo stacks — stored in refs so mutations don't trigger re-renders
+  const historyRef = useRef<AppState[]>([])
+  const futureRef  = useRef<AppState[]>([])
+
   const wrappedDispatch: React.Dispatch<AppAction> = (action) => {
+    if (!UI_ONLY_ACTIONS.has(action.type)) {
+      // Push current state onto history, clear future
+      historyRef.current = [...historyRef.current.slice(-(MAX_HISTORY - 1)), stateRef.current]
+      futureRef.current = []
+      setCanUndo(true)
+      setCanRedo(false)
+    }
     lastActionRef.current = action.type
     dispatch(action)
+  }
+
+  function undo() {
+    const prev = historyRef.current.pop()
+    if (!prev) return
+    futureRef.current = [stateRef.current, ...futureRef.current.slice(0, MAX_HISTORY - 1)]
+    setCanUndo(historyRef.current.length > 0)
+    setCanRedo(true)
+    lastActionRef.current = 'RESTORE_STATE'
+    dispatch({ type: 'RESTORE_STATE', state: prev })
+  }
+
+  function redo() {
+    const next = futureRef.current.shift()
+    if (!next) return
+    historyRef.current = [...historyRef.current.slice(-(MAX_HISTORY - 1)), stateRef.current]
+    setCanUndo(true)
+    setCanRedo(futureRef.current.length > 0)
+    lastActionRef.current = 'RESTORE_STATE'
+    dispatch({ type: 'RESTORE_STATE', state: next })
   }
 
   useEffect(() => {
@@ -490,7 +539,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [state])
 
   return (
-    <AppContext.Provider value={{ state, dispatch: wrappedDispatch, saveStatus }}>
+    <AppContext.Provider value={{ state, dispatch: wrappedDispatch, saveStatus, canUndo, canRedo, undo, redo }}>
       {children}
     </AppContext.Provider>
   )

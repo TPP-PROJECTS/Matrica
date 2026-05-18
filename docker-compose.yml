@@ -1,0 +1,15 @@
+services:
+  backend:
+    build: ./backend
+    env_file: .env
+    environment:
+      - OPENAI_API_KEY=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
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

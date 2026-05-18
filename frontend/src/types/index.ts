@@ -354,8 +354,10 @@ export type AppAction =
   | { type: 'UPDATE_THEME_COLUMNS'; themeId: string; columns: string[] }
   | { type: 'UPDATE_RESULT_RELEVANCE'; paperId: string; score: number; confidence: ConfidenceLevel }
   | { type: 'SET_MATRIX_COLUMNS'; columns: string[] }
+  | { type: 'ADD_MATRIX_COLUMN'; column: string }
   | { type: 'INIT_MATRIX_ROWS' }
   | { type: 'SET_SYSTEM_MATRIX_COLUMNS'; columns: string[] }
+  | { type: 'ADD_SYSTEM_MATRIX_COLUMN'; column: string }
   | { type: 'INIT_SYSTEM_MATRIX_ROWS' }
   | { type: 'UPDATE_MATRIX_ROW_CELLS'; paperId: string; cells: Record<string, MatrixCell> }
   | { type: 'UPDATE_SYSTEM_MATRIX_ROW_CELLS'; systemId: string; cells: Record<string, MatrixCell> }
@@ -376,3 +378,4 @@ export type AppAction =
   | { type: 'NEW_SESSION' }
   | { type: 'LOAD_SESSION'; snapshot: SessionSnapshot }
   | { type: 'UPDATE_ACTION_STATUS'; messageId: string; actionId: string; status: ProposedActionStatus }
+  | { type: 'RESTORE_STATE'; state: AppState }

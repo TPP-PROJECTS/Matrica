@@ -1,12 +1,20 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers import topics, chat, reasoning, queries, search, recognise, matrix, systems, synthesis, gaps, final_question, prompts, assistant
 
 app = FastAPI(title="Topic Generator API", version="1.0.0")
 
+_origins_env = os.getenv("CORS_ORIGINS", "")
+_origins = (
+    [o.strip() for o in _origins_env.split(",") if o.strip()]
+    if _origins_env
+    else ["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:5176"]
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:5176"],
+    allow_origins=_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

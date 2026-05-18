@@ -110,3 +110,12 @@ export function deleteSession(id: string): void {
 export function getMostRecentSessionId(): string | null {
   return listSessions()[0]?.id ?? null
 }
+
+export function clearAllSessions(): void {
+  try {
+    const keys = Object.keys(localStorage).filter(k => k.startsWith(PREFIX + ':'))
+    keys.forEach(k => localStorage.removeItem(k))
+  } catch (e) {
+    console.warn('Failed to clear sessions:', e)
+  }
+}

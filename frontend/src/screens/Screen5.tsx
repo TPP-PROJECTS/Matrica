@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { useApp } from '../store/AppContext'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
 import type { MatrixCell, ConfidenceLevel, SystemMatrixRow } from '../types'
+import { API } from '../lib/api'
 
-const API = 'http://localhost:8000/api'
 
 // ── Evidence popover types ────────────────────────────────────────────────────
 interface EvidenceTarget {
@@ -154,7 +154,7 @@ function EvidencePopover({
 // ── Clean cell renderer (no dots, no badges) ──────────────────────────────────
 function CellContent({
   cell,
-  column,
+  column: _column,
   onEvidence,
 }: {
   cell: MatrixCell | undefined
@@ -212,6 +212,16 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
   const abortRef = useRef(false)
   const [showAutoFillModal, setShowAutoFillModal] = useState(false)
   const [customAutoFillPrompt, setCustomAutoFillPrompt] = useState<string | null>(null)
+  const [addingCol, setAddingCol] = useState(false)
+  const [newColName, setNewColName] = useState('')
+  const addColInputRef = useRef<HTMLInputElement>(null)
+
+  function submitAddCol() {
+    const name = newColName.trim()
+    if (name) dispatch({ type: 'ADD_MATRIX_COLUMN', column: name })
+    setAddingCol(false)
+    setNewColName('')
+  }
 
   const dataCols = state.matrixColumns.filter(
     c => c !== '#' && c !== 'Title' && c !== 'Authors' && c !== 'Year'
@@ -306,7 +316,26 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
       <div className="h-8 bg-zinc-50 border-b border-zinc-200 flex items-center px-4 gap-3 shrink-0">
         <span className="text-[9px] text-zinc-400">{filledCount}/{totalCells} cells filled</span>
         <div className="flex-1" />
-        <button className="px-3 h-6 border border-zinc-300 rounded text-[10px] text-zinc-700 hover:bg-zinc-50">+ Column</button>
+        {addingCol ? (
+          <div className="flex items-center gap-1">
+            <input
+              ref={addColInputRef}
+              autoFocus
+              value={newColName}
+              onChange={e => setNewColName(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') submitAddCol()
+                if (e.key === 'Escape') { setAddingCol(false); setNewColName('') }
+              }}
+              placeholder="Column name…"
+              className="h-6 px-2 border border-zinc-400 rounded text-[10px] text-zinc-800 outline-none focus:border-purple-500 w-36"
+            />
+            <button onClick={submitAddCol} className="px-2 h-6 bg-zinc-900 text-white rounded text-[10px] hover:bg-zinc-700">Add</button>
+            <button onClick={() => { setAddingCol(false); setNewColName('') }} className="px-2 h-6 border border-zinc-300 rounded text-[10px] text-zinc-500 hover:bg-zinc-100">✕</button>
+          </div>
+        ) : (
+          <button onClick={() => setAddingCol(true)} className="px-3 h-6 border border-zinc-300 rounded text-[10px] text-zinc-700 hover:bg-zinc-50">+ Column</button>
+        )}
         <div className="flex rounded overflow-hidden">
           <button onClick={() => handleAutoFill(customAutoFillPrompt)} disabled={filling || dataCols.length === 0}
             className="px-3 h-6 bg-purple-600 text-white rounded-l text-[10px] flex items-center gap-1.5 hover:bg-purple-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors">
@@ -357,17 +386,18 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
                     <p className="text-[9px] text-zinc-400">{row.year}</p>
                   </td>
                   {dataCols.map(col =>
-                    isBeingFilled ? <PendingCell key={col} /> :
-                    <CellContent
-                      key={col}
-                      cell={row.cells[col]}
-                      column={col}
-                      onEvidence={row.cells[col]?.value ? rect => onEvidence({
-                        rect, cell: row.cells[col], column: col,
-                        paperTitle: paper?.title, paperAbstract: paper?.abstract,
-                        paperAuthors: paper?.authors, paperYear: paper?.year,
-                      }) : undefined}
-                    />
+                    isBeingFilled
+                      ? <PendingCell key={`pending-${col}`} />
+                      : <CellContent
+                          key={`cell-${col}`}
+                          cell={row.cells[col]}
+                          column={col}
+                          onEvidence={row.cells[col]?.value ? rect => onEvidence({
+                            rect, cell: row.cells[col], column: col,
+                            paperTitle: paper?.title, paperAbstract: paper?.abstract,
+                            paperAuthors: paper?.authors, paperYear: paper?.year,
+                          }) : undefined}
+                        />
                   )}
                 </tr>
               )
@@ -389,6 +419,15 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
   const [fillTotal, setFillTotal] = useState(0)
   const [fillingRowId, setFillingRowId] = useState<string | null>(null)
   const abortRef = useRef(false)
+  const [addingCol, setAddingCol] = useState(false)
+  const [newColName, setNewColName] = useState('')
+
+  function submitAddCol() {
+    const name = newColName.trim()
+    if (name) dispatch({ type: 'ADD_SYSTEM_MATRIX_COLUMN', column: name })
+    setAddingCol(false)
+    setNewColName('')
+  }
 
   const systemItems = state.systemItems ?? []
   const selectedSystems = systemItems.filter(s => s.selected)
@@ -478,7 +517,25 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
       <div className="h-8 bg-violet-50 border-b border-violet-200 flex items-center px-4 gap-3 shrink-0">
         <span className="text-[9px] text-violet-400">{filledCount}/{totalCells} cells filled · {selectedSystems.length} systems</span>
         <div className="flex-1" />
-        <button className="px-3 h-6 border border-violet-300 rounded text-[10px] text-violet-700 hover:bg-violet-100">+ Column</button>
+        {addingCol ? (
+          <div className="flex items-center gap-1">
+            <input
+              autoFocus
+              value={newColName}
+              onChange={e => setNewColName(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') submitAddCol()
+                if (e.key === 'Escape') { setAddingCol(false); setNewColName('') }
+              }}
+              placeholder="Column name…"
+              className="h-6 px-2 border border-violet-400 rounded text-[10px] text-zinc-800 outline-none focus:border-violet-600 w-36"
+            />
+            <button onClick={submitAddCol} className="px-2 h-6 bg-violet-700 text-white rounded text-[10px] hover:bg-violet-600">Add</button>
+            <button onClick={() => { setAddingCol(false); setNewColName('') }} className="px-2 h-6 border border-violet-200 rounded text-[10px] text-violet-500 hover:bg-violet-50">✕</button>
+          </div>
+        ) : (
+          <button onClick={() => setAddingCol(true)} className="px-3 h-6 border border-violet-300 rounded text-[10px] text-violet-700 hover:bg-violet-100">+ Column</button>
+        )}
         <button onClick={handleAutoFill} disabled={filling || dataCols.length === 0}
           className="px-3 h-6 bg-violet-600 text-white rounded text-[10px] flex items-center gap-1.5 hover:bg-violet-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors">
           {filling ? <><span className="w-2.5 h-2.5 border border-violet-300 border-t-white rounded-full animate-spin" />{fillDone}/{fillTotal} rows…</> : <><span>✦</span> Auto-fill All</>}
@@ -511,16 +568,17 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
                     <span className="text-[8px] px-1.5 py-0.5 bg-zinc-100 text-zinc-500 rounded mt-0.5 inline-block">{row.category}</span>
                   </td>
                   {dataCols.map(col =>
-                    isBeingFilled ? <PendingCell key={col} /> :
-                    <CellContent
-                      key={col}
-                      cell={row.cells[col]}
-                      column={col}
-                      onEvidence={row.cells[col]?.value ? rect => onEvidence({
-                        rect, cell: row.cells[col], column: col,
-                        systemName: sys?.name, systemVendor: sys?.vendor, systemDescription: sys?.description,
-                      }) : undefined}
-                    />
+                    isBeingFilled
+                      ? <PendingCell key={`pending-${col}`} />
+                      : <CellContent
+                          key={`cell-${col}`}
+                          cell={row.cells[col]}
+                          column={col}
+                          onEvidence={row.cells[col]?.value ? rect => onEvidence({
+                            rect, cell: row.cells[col], column: col,
+                            systemName: sys?.name, systemVendor: sys?.vendor, systemDescription: sys?.description,
+                          }) : undefined}
+                        />
                   )}
                 </tr>
               )

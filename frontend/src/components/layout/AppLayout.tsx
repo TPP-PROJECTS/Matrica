@@ -16,7 +16,7 @@ interface Props {
 export function AppLayout({ children }: Props) {
   const { state } = useApp()
 
-  const showRightPanel = state.currentStep >= 2
+  const showRightPanel = state.currentStep > 1
   const isStale = state.stepStates[state.currentStep] === 'stale'
 
   return (

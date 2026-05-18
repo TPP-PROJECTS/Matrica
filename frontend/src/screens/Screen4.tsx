@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useApp } from '../store/AppContext'
 import type { ResultCard } from '../types'
+import { API } from '../lib/api'
 
-const API = 'http://localhost:8000/api'
 
 // ── Status badge ──────────────────────────────────────────────────────────────
 function statusBadge(status: ResultCard['status']) {

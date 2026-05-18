@@ -5,8 +5,8 @@ import { QuestionButton } from '../components/shared/QuestionButton'
 import { QualityBar, WordCountBar } from '../components/shared/QualityBar'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
 import type { MatrixCell } from '../types'
+import { API } from '../lib/api'
 
-const API = 'http://localhost:8000/api'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const META_COLS = new Set(['#', 'Title', 'Authors', 'Year'])
@@ -562,96 +562,98 @@ export function Screen7() {
       <div className="flex flex-1 overflow-hidden">
 
         {/* ── Left: Matrix Coverage + Gap Analysis ── */}
-        <div className="w-[500px] shrink-0 bg-white border-r border-zinc-200 flex flex-col overflow-hidden">
+        <div className="w-[500px] shrink-0 border-r border-zinc-200 relative">
+          <div className="absolute inset-0 overflow-y-auto bg-white">
 
-          {/* Header */}
-          <div className="px-4 pt-3 pb-2 border-b border-zinc-100 shrink-0">
-            <p className="text-[12px] font-bold text-zinc-800">Matrix Coverage</p>
-            <p className="text-[9px] text-zinc-400 mt-0.5">
-              Click a column to analyse all gap dimensions — evidence, quality, reliability, and contested conclusions.
-            </p>
-          </div>
-
-          {/* Legend */}
-          <div className="px-4 py-2 flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-zinc-100 shrink-0">
-            {[
-              { cls: 'bg-green-100',  label: 'High confidence' },
-              { cls: 'bg-amber-100',  label: 'Medium' },
-              { cls: 'bg-orange-100', label: 'Low' },
-              { cls: 'bg-red-50',     label: 'Not extracted' },
-            ].map(({ cls, label }) => (
-              <div key={label} className="flex items-center gap-1">
-                <div className={`w-3 h-3 rounded border border-zinc-200 ${cls}`} />
-                <span className="text-[8px] text-zinc-500">{label}</span>
-              </div>
-            ))}
-            <div className="flex items-center gap-1">
-              <span className="text-[9px] italic text-zinc-400">~val</span>
-              <span className="text-[8px] text-zinc-400">= inferred (reliability risk)</span>
+            {/* Header */}
+            <div className="px-4 pt-3 pb-2 border-b border-zinc-100">
+              <p className="text-[12px] font-bold text-zinc-800">Matrix Coverage</p>
+              <p className="text-[9px] text-zinc-400 mt-0.5">
+                Click a column to analyse all gap dimensions — evidence, quality, reliability, and contested conclusions.
+              </p>
             </div>
-          </div>
 
-          {/* Heatmap */}
-          <div className="px-3 py-2 shrink-0">
-            <MatrixHeatmap selectedCols={selectedCols} onToggle={toggleCol} />
-            <SystemHeatmap selectedCols={selectedSysCols} onToggle={toggleSysCol} />
-          </div>
-
-          {/* Coverage summary */}
-          <div className="px-4 py-2 border-t border-zinc-100 bg-zinc-50 shrink-0">
-            <p className="text-[9px] text-zinc-500">
-              <span className="font-semibold text-zinc-700">{state.matrixRows.length}</span> of{' '}
-              <span className="font-semibold text-zinc-700">{state.reviewList.length}</span> papers extracted ·{' '}
-              <span className="text-red-600 font-semibold">
-                {state.reviewList.length - state.matrixRows.length} papers not yet in matrix
-              </span>{' '}
-              — an evidence gap in itself
-            </p>
-          </div>
-
-          {/* Gap cards per selected column */}
-          <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
-            {selectedCols.length === 0 && selectedSysCols.length === 0 ? (
-              <div className="text-center mt-8 px-4">
-                <p className="text-[11px] text-zinc-400 mb-1">No column selected</p>
-                <p className="text-[10px] text-zinc-300 leading-relaxed">
-                  Click a column header above to surface all gap types — not just missing evidence, but also
-                  quality problems, reliability issues, and contested conclusions.
-                </p>
+            {/* Legend */}
+            <div className="px-4 py-2 flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-zinc-100">
+              {[
+                { cls: 'bg-green-100',  label: 'High confidence' },
+                { cls: 'bg-amber-100',  label: 'Medium' },
+                { cls: 'bg-orange-100', label: 'Low' },
+                { cls: 'bg-red-50',     label: 'Not extracted' },
+              ].map(({ cls, label }) => (
+                <div key={label} className="flex items-center gap-1">
+                  <div className={`w-3 h-3 rounded border border-zinc-200 ${cls}`} />
+                  <span className="text-[8px] text-zinc-500">{label}</span>
+                </div>
+              ))}
+              <div className="flex items-center gap-1">
+                <span className="text-[9px] italic text-zinc-400">~val</span>
+                <span className="text-[8px] text-zinc-400">= inferred (reliability risk)</span>
               </div>
-            ) : (
-              <>
-                {selectedCols.length > 0 && (
-                  <>
-                    <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide">
-                      Literature Matrix — {selectedCols.length} column{selectedCols.length !== 1 ? 's' : ''}
-                    </p>
-                    {selectedCols.map(col => (
-                      <ColumnGapCard
-                        key={`lit-${col}`}
-                        col={col}
-                        matrixRows={state.matrixRows}
-                        onInsert={insertIntoStatement}
-                      />
-                    ))}
-                  </>
-                )}
-                {selectedSysCols.length > 0 && (
-                  <>
-                    <p className="text-[9px] font-bold text-violet-400 uppercase tracking-wide mt-2">
-                      System Review — {selectedSysCols.length} column{selectedSysCols.length !== 1 ? 's' : ''}
-                    </p>
-                    {selectedSysCols.map(col => (
-                      <SystemColumnGapCard
-                        key={`sys-${col}`}
-                        col={col}
-                        onInsert={insertIntoStatement}
-                      />
-                    ))}
-                  </>
-                )}
-              </>
-            )}
+            </div>
+
+            {/* Heatmap */}
+            <div className="px-3 py-2">
+              <MatrixHeatmap selectedCols={selectedCols} onToggle={toggleCol} />
+              <SystemHeatmap selectedCols={selectedSysCols} onToggle={toggleSysCol} />
+            </div>
+
+            {/* Coverage summary */}
+            <div className="px-4 py-2 border-t border-zinc-100 bg-zinc-50">
+              <p className="text-[9px] text-zinc-500">
+                <span className="font-semibold text-zinc-700">{state.matrixRows.length}</span> of{' '}
+                <span className="font-semibold text-zinc-700">{state.reviewList.length}</span> papers extracted ·{' '}
+                <span className="text-red-600 font-semibold">
+                  {state.reviewList.length - state.matrixRows.length} papers not yet in matrix
+                </span>{' '}
+                — an evidence gap in itself
+              </p>
+            </div>
+
+            {/* Gap cards per selected column */}
+            <div className="px-3 py-3 space-y-3">
+              {selectedCols.length === 0 && selectedSysCols.length === 0 ? (
+                <div className="text-center mt-8 px-4">
+                  <p className="text-[11px] text-zinc-400 mb-1">No column selected</p>
+                  <p className="text-[10px] text-zinc-300 leading-relaxed">
+                    Click a column header above to surface all gap types — not just missing evidence, but also
+                    quality problems, reliability issues, and contested conclusions.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {selectedCols.length > 0 && (
+                    <>
+                      <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide">
+                        Literature Matrix — {selectedCols.length} column{selectedCols.length !== 1 ? 's' : ''}
+                      </p>
+                      {selectedCols.map(col => (
+                        <ColumnGapCard
+                          key={`lit-${col}`}
+                          col={col}
+                          matrixRows={state.matrixRows}
+                          onInsert={insertIntoStatement}
+                        />
+                      ))}
+                    </>
+                  )}
+                  {selectedSysCols.length > 0 && (
+                    <>
+                      <p className="text-[9px] font-bold text-violet-400 uppercase tracking-wide mt-2">
+                        System Review — {selectedSysCols.length} column{selectedSysCols.length !== 1 ? 's' : ''}
+                      </p>
+                      {selectedSysCols.map(col => (
+                        <SystemColumnGapCard
+                          key={`sys-${col}`}
+                          col={col}
+                          onInsert={insertIntoStatement}
+                        />
+                      ))}
+                    </>
+                  )}
+                </>
+              )}
+            </div>
           </div>
         </div>
 

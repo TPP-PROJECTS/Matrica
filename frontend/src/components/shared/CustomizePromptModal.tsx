@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
+import { API } from '../../lib/api'
 
-const API = 'http://localhost:8000/api'
 
 interface Segment {
   type: 'text' | 'locked'

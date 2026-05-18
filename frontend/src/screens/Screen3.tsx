@@ -3,8 +3,8 @@ import { useApp } from '../store/AppContext'
 import { QuestionButton } from '../components/shared/QuestionButton'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
 import type { TopicCard, QueryCard } from '../types'
+import { API } from '../lib/api'
 
-const API = 'http://localhost:8000/api'
 
 function topicTypePill(type: TopicCard['type']) {
   switch (type) {
@@ -32,8 +32,7 @@ function TopicCardItem({ topic }: { topic: TopicCard }) {
   const [reasonText, setReasonText] = useState<string | null>(null)
   const [loadingReason, setLoadingReason] = useState(false)
 
-  async function handleExplainType(e: React.MouseEvent) {
-    e.stopPropagation()
+  async function handleExplainType() {
     if (typeExplOpen) { setTypeExplOpen(false); return }
     setTypeExplOpen(true)
     if (typeExplText) return

@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useApp } from '../store/AppContext'
 import type { SystemItem } from '../types'
+import { API } from '../lib/api'
 
-const API = 'http://localhost:8000/api'
 
 const CATEGORY_LABELS: Record<string, string> = {
   clinical_system:  'Clinical System',

@@ -6,10 +6,15 @@ from pydantic import BaseModel
 router = APIRouter()
 
 OPENALEX_URL = "https://api.openalex.org/works"
-FIELDS = "title,authorships,publication_year,doi,open_access,id,abstract_inverted_index"
+PUBMED_SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+PUBMED_FETCH_URL  = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+PUBMED_SUMMARY_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
+
+OPENALEX_FIELDS = "title,authorships,publication_year,doi,open_access,id,abstract_inverted_index"
 
 
-def clean_query(raw: str) -> str:
+def clean_query_openalex(raw: str) -> str:
+    """Strip boolean operators — OpenAlex uses relevance search, not boolean."""
     cleaned = re.sub(r'\b(AND|OR|NOT)\b', ' ', raw)
     cleaned = re.sub(r'[()"]', ' ', cleaned)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
@@ -29,7 +34,7 @@ def reconstruct_abstract(inverted_index: dict | None) -> str:
 
 class SearchRequest(BaseModel):
     query: str
-    limit: int = 8
+    limit: int = 15
 
 
 class PaperResult(BaseModel):
@@ -39,6 +44,7 @@ class PaperResult(BaseModel):
     url: str
     openAccessUrl: str | None
     abstract: str
+    source: str = "openalex"
 
 
 class SearchResponse(BaseModel):
@@ -46,53 +52,38 @@ class SearchResponse(BaseModel):
     query_used: str
 
 
-@router.post("/search", response_model=SearchResponse)
-async def search_papers(req: SearchRequest):
-    query_text = clean_query(req.query)
-    if not query_text:
-        raise HTTPException(status_code=400, detail="Query is empty after cleaning")
-
+async def search_openalex(query_text: str, limit: int, client: httpx.AsyncClient) -> list[PaperResult]:
     params = {
         "search": query_text,
-        "per-page": min(req.limit, 10),
-        "select": FIELDS,
+        "per-page": min(limit, 25),
+        "select": OPENALEX_FIELDS,
     }
-
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(
-                OPENALEX_URL,
-                params=params,
-                headers={"User-Agent": "ResearchAI-tool (research@example.com)"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="OpenAlex timed out")
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=502, detail=f"OpenAlex error: {e.response.status_code} {e.response.text[:200]}")
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Search error: {str(e)}")
+        resp = await client.get(
+            OPENALEX_URL,
+            params=params,
+            headers={"User-Agent": "ResearchAI-tool (research@example.com)"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return []
 
     papers = []
     for item in data.get("results", []):
-        # Authors
         authorships = item.get("authorships") or []
         author_names = [a["author"]["display_name"] for a in authorships[:3] if a.get("author")]
         authors_str = ", ".join(author_names)
         if len(authorships) > 3:
             authors_str += " et al."
 
-        # URL — prefer DOI, fall back to OpenAlex page
         doi = item.get("doi") or ""
         openalex_id = item.get("id") or ""
         url = doi if doi else openalex_id
 
-        # Open-access PDF
         oa = item.get("open_access") or {}
         oa_url = oa.get("oa_url") if oa.get("is_oa") else None
 
-        # Abstract from inverted index
         abstract = reconstruct_abstract(item.get("abstract_inverted_index"))
 
         papers.append(PaperResult(
@@ -102,6 +93,121 @@ async def search_papers(req: SearchRequest):
             url=url,
             openAccessUrl=oa_url,
             abstract=abstract,
+            source="openalex",
         ))
+    return papers
 
-    return SearchResponse(papers=papers, query_used=query_text)
+
+async def search_pubmed(query_text: str, limit: int, client: httpx.AsyncClient) -> list[PaperResult]:
+    """Search PubMed via E-utilities (free, no API key required)."""
+    try:
+        # Step 1: esearch — get PMIDs
+        search_resp = await client.get(
+            PUBMED_SEARCH_URL,
+            params={
+                "db": "pubmed",
+                "term": query_text,
+                "retmax": min(limit, 20),
+                "retmode": "json",
+                "sort": "relevance",
+            },
+            headers={"User-Agent": "ResearchAI-tool (research@example.com)"},
+        )
+        search_resp.raise_for_status()
+        search_data = search_resp.json()
+        pmids = search_data.get("esearchresult", {}).get("idlist", [])
+        if not pmids:
+            return []
+
+        # Step 2: esummary — get metadata for each PMID
+        summary_resp = await client.get(
+            PUBMED_SUMMARY_URL,
+            params={
+                "db": "pubmed",
+                "id": ",".join(pmids),
+                "retmode": "json",
+            },
+            headers={"User-Agent": "ResearchAI-tool (research@example.com)"},
+        )
+        summary_resp.raise_for_status()
+        summary_data = summary_resp.json()
+        result_map = summary_data.get("result", {})
+
+    except Exception:
+        return []
+
+    papers = []
+    for pmid in pmids:
+        item = result_map.get(pmid, {})
+        if not item or "title" not in item:
+            continue
+
+        # Authors
+        authors_list = item.get("authors", [])
+        author_names = [a.get("name", "") for a in authors_list[:3]]
+        authors_str = ", ".join(n for n in author_names if n)
+        if len(authors_list) > 3:
+            authors_str += " et al."
+
+        # Year from pubdate
+        pubdate = item.get("pubdate", "")
+        year = None
+        if pubdate:
+            m = re.match(r'(\d{4})', pubdate)
+            if m:
+                year = int(m.group(1))
+
+        # URL
+        doi = ""
+        for article_id in item.get("articleids", []):
+            if article_id.get("idtype") == "doi":
+                doi = article_id.get("value", "")
+                break
+        url = f"https://doi.org/{doi}" if doi else f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+
+        papers.append(PaperResult(
+            title=item.get("title", "").rstrip("."),
+            authors=authors_str,
+            year=year,
+            url=url,
+            openAccessUrl=None,
+            abstract="",  # esummary doesn't include abstract; use efetch for full abstract
+            source="pubmed",
+        ))
+    return papers
+
+
+def deduplicate(papers: list[PaperResult]) -> list[PaperResult]:
+    """Remove near-duplicate titles (case-insensitive, first 60 chars)."""
+    seen: set[str] = set()
+    result = []
+    for p in papers:
+        key = re.sub(r'\s+', ' ', p.title.lower().strip())[:60]
+        if key and key not in seen:
+            seen.add(key)
+            result.append(p)
+    return result
+
+
+@router.post("/search", response_model=SearchResponse)
+async def search_papers(req: SearchRequest):
+    openalex_query = clean_query_openalex(req.query)
+    if not openalex_query:
+        raise HTTPException(status_code=400, detail="Query is empty after cleaning")
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        import asyncio
+        openalex_results, pubmed_results = await asyncio.gather(
+            search_openalex(openalex_query, req.limit, client),
+            search_pubmed(req.query, max(req.limit // 2, 5), client),
+            return_exceptions=False,
+        )
+
+    # Merge: OpenAlex first (has abstracts), PubMed fills gaps
+    combined = list(openalex_results) + [
+        p for p in pubmed_results
+        if p.title not in {r.title for r in openalex_results}
+    ]
+    combined = deduplicate(combined)[:req.limit]
+
+    return SearchResponse(papers=combined, query_used=openalex_query)

@@ -2,9 +2,10 @@ import { useState, useEffect } from "react";
 import { useApp } from "../store/AppContext";
 import { AIBadge } from "../components/shared/AIBadge";
 import { CustomizePromptModal } from "../components/shared/CustomizePromptModal";
+import { ExportModal } from "../components/overlays/ExportModal";
 import type { StudyDesignOption } from "../types";
+import { API } from '../lib/api'
 
-const API = "http://localhost:8000/api";
 
 const SECTION_COLORS = [
   "bg-blue-500",
@@ -147,6 +148,7 @@ export function Screen8() {
   const [structureError, setStructureError] = useState<string | null>(null);
   const [showTopicsModal, setShowTopicsModal] = useState(false);
   const [showStructureModal, setShowStructureModal] = useState(false);
+  const [showExport, setShowExport] = useState(false);
   const [customTopicsPrompt, setCustomTopicsPrompt] = useState<string | null>(null);
   const [customStructurePrompt, setCustomStructurePrompt] = useState<string | null>(null);
 
@@ -478,16 +480,20 @@ export function Screen8() {
             </span>
           )}
           <button
-            onClick={() => alert("Generating Research Plan PDF...")}
+            onClick={() => setShowExport(true)}
             disabled={!selectedTopic || paperSections.length === 0}
-            className="px-5 h-8 bg-green-600 text-white rounded text-[12px] font-semibold hover:bg-green-700 disabled:opacity-40 transition-colors"
+            className="px-5 h-8 bg-green-600 text-white rounded text-[12px] font-semibold hover:bg-green-700 disabled:opacity-40 transition-colors flex items-center gap-2"
           >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <path d="M6 1v7M3 5.5l3 3 3-3M1 10h10" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
             Confirm &amp; Export Research Plan
           </button>
         </div>
       </div>
     </div>
 
+    {showExport && <ExportModal onClose={() => setShowExport(false)} />}
     {showTopicsModal && (
       <CustomizePromptModal
         promptKey="final-topics"

@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { useApp } from '../store/AppContext'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
 import type { SynthesisBlock, Theme, MatrixCell } from '../types'
+import { API } from '../lib/api'
 
-const API = 'http://localhost:8000/api'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function blockStyle(blockType: SynthesisBlock['blockType']) {
@@ -256,7 +256,7 @@ function SynthesisBlockCard({
   theme: Theme
   onRegenerate: (block: SynthesisBlock, customPrompt?: string | null) => Promise<void>
 }) {
-  const { state, dispatch } = useApp()
+  const { dispatch } = useApp()
   const style = blockStyle(block.blockType)
   const [regenerating, setRegenerating] = useState(false)
   const [editingContent, setEditingContent] = useState(false)
