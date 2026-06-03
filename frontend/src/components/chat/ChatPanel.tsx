@@ -4,7 +4,7 @@ import { ChatMessage } from './ChatMessage'
 import { buildResearchContext } from '../../lib/buildResearchContext'
 import { resolveAction } from '../../lib/resolveAction'
 import type { ProposedAction } from '../../types'
-import { API } from '../../lib/api'
+import { API, apiFetch } from '../../lib/api'
 
 
 interface AssistantApiResponse {
@@ -22,7 +22,7 @@ async function callAssistantAPI(
   newMessage: string,
   researchContext: object,
 ): Promise<AssistantApiResponse> {
-  const res = await fetch(`${API}/chat/assistant`, {
+  const res = await apiFetch(`${API}/chat/assistant`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

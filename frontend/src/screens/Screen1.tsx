@@ -3,7 +3,7 @@ import { useApp } from '../store/AppContext'
 import { ChatMessage } from '../components/chat/ChatMessage'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
 import type { ResearchProfile, TopicCard } from '../types'
-import { API } from '../lib/api'
+import { API, apiFetch } from '../lib/api'
 
 const QUICK_STARTERS = [
   'Healthcare / AI',
@@ -25,7 +25,7 @@ async function callChatAPI(
   history: { role: string; content: string }[],
   newMessage: string,
 ): Promise<{ reply: string; profile_updates: Partial<ResearchProfile> }> {
-  const res = await fetch(`${API}/chat`, {
+  const res = await apiFetch(`${API}/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ messages: history, new_message: newMessage }),
@@ -35,7 +35,7 @@ async function callChatAPI(
 }
 
 async function callGenerateTopicsAPI(profile: ResearchProfile, customSystemPrompt?: string | null): Promise<{ topics: TopicCard[] }> {
-  const res = await fetch(`${API}/topics/generate-profile`, {
+  const res = await apiFetch(`${API}/topics/generate-profile`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...profile, custom_system_prompt: customSystemPrompt ?? null }),

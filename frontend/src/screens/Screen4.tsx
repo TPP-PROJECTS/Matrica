@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useApp } from '../store/AppContext'
 import type { ResultCard } from '../types'
-import { API } from '../lib/api'
+import { API, apiFetch } from '../lib/api'
 
 
 // ── Status badge ──────────────────────────────────────────────────────────────
@@ -101,7 +101,7 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
       setRecognising(true)
       setRecogniseError(false)
       try {
-        const res = await fetch(`${API}/recognise`, {
+        const res = await apiFetch(`${API}/recognise`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

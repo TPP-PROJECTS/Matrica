@@ -1,3 +1,4 @@
+from routers.json_utils import extract_json
 import json
 import re
 from fastapi import APIRouter, HTTPException
@@ -153,14 +154,12 @@ Respond with JSON: {{"statement": "para1\\n\\npara2\\n\\npara3"}}
             instructions=req.custom_system_prompt or GAP_SYSTEM_PROMPT,
             input=user_content,
         )
-        raw = response.output_text or ''
-        match = re.search(r'\{.*\}', raw, re.DOTALL)
-        data = json.loads(match.group() if match else raw)
+        data = extract_json(response.output_text or '')
+        if data is None:
+            raise HTTPException(status_code=500, detail='AI returned invalid JSON')
         statement = str(data.get('statement', '')).strip()
         if not statement:
             raise ValueError('empty statement')
         return GenerateGapResponse(statement=statement)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail='AI returned invalid JSON')
     except Exception as e:
         raise HTTPException(status_code=500, detail=f'Gap statement generation error: {str(e)}')

@@ -127,6 +127,17 @@ export function TopBar() {
           Sessions
         </button>
 
+        {/* Analytics button */}
+        <a
+          href="#analytics"
+          className="px-3 py-1 border border-zinc-600 rounded text-zinc-300 text-[11px] hover:border-zinc-400 hover:text-white transition-colors flex items-center gap-1.5"
+        >
+          <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+            <path d="M1 9h9M2 9V5.5M4.5 9V3M7 9V6M9.5 9V1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+          </svg>
+          Analytics
+        </a>
+
         {/* User avatar */}
         <div className="w-7 h-7 rounded-full bg-zinc-700 flex items-center justify-center text-white text-[10px] font-semibold shrink-0">
           JS

@@ -4,7 +4,7 @@ import { AIBadge } from "../components/shared/AIBadge";
 import { CustomizePromptModal } from "../components/shared/CustomizePromptModal";
 import { ExportModal } from "../components/overlays/ExportModal";
 import type { StudyDesignOption } from "../types";
-import { API } from '../lib/api'
+import { API, apiFetch } from '../lib/api'
 
 
 const SECTION_COLORS = [
@@ -181,7 +181,7 @@ export function Screen8() {
     setGeneratingTopics(true);
     setTopicError(null);
     try {
-      const res = await fetch(`${API}/final-question/generate-topics`, {
+      const res = await apiFetch(`${API}/final-question/generate-topics`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...buildContext(), custom_system_prompt: prompt ?? null }),
@@ -207,7 +207,7 @@ export function Screen8() {
     setGeneratingStructure(true);
     setStructureError(null);
     try {
-      const res = await fetch(`${API}/final-question/generate-structure`, {
+      const res = await apiFetch(`${API}/final-question/generate-structure`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

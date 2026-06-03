@@ -1,5 +1,6 @@
 import os
 import json
+from routers.json_utils import extract_json
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from openai import AsyncOpenAI
@@ -80,10 +81,8 @@ async def explain_type(req: ExplainTypeRequest):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"OpenAI error: {str(e)}")
 
-    raw = response.output_text or ""
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
+    data = extract_json(response.output_text or "")
+    if data is None:
         raise HTTPException(status_code=502, detail="Invalid JSON from OpenAI")
 
     return ExplainTypeResponse(explanation=data.get("explanation", ""))
@@ -117,10 +116,8 @@ async def reason_topic(req: ReasonRequest):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"OpenAI error: {str(e)}")
 
-    raw = response.output_text or ""
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
+    data = extract_json(response.output_text or "")
+    if data is None:
         raise HTTPException(status_code=502, detail="Invalid JSON from OpenAI")
 
     return ReasonResponse(reasoning=data.get("reasoning", ""))

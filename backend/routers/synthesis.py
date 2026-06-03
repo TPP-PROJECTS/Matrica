@@ -1,3 +1,4 @@
+from routers.json_utils import extract_json
 import json
 import re
 from fastapi import APIRouter, HTTPException
@@ -193,9 +194,9 @@ Respond with JSON:
             instructions=req.custom_system_prompt or SYNTHESIS_SYSTEM_PROMPT,
             input=user_content,
         )
-        raw = response.output_text or ''
-        match = re.search(r'\{.*\}', raw, re.DOTALL)
-        data = json.loads(match.group() if match else raw)
+        data = extract_json(response.output_text or '')
+        if data is None:
+            raise HTTPException(status_code=500, detail='AI returned invalid JSON')
 
         themes_raw = data.get('themes', [])
         if not themes_raw:
@@ -227,8 +228,8 @@ Respond with JSON:
 
         return GenerateSynthesisResponse(themes=themes)
 
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail='AI returned invalid JSON')
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f'Synthesis generation error: {str(e)}')
 
@@ -324,16 +325,16 @@ Respond with JSON: {{"content": "...", "paper_count": {paper_count}, "avg_confid
             instructions=req.custom_system_prompt or REGEN_SYSTEM_PROMPT,
             input=user_content,
         )
-        raw = response.output_text or ''
-        match = re.search(r'\{.*\}', raw, re.DOTALL)
-        data = json.loads(match.group() if match else raw)
+        data = extract_json(response.output_text or '')
+        if data is None:
+            raise HTTPException(status_code=500, detail='AI returned invalid JSON')
         return RegenerateBlockResponse(
             content=str(data.get('content', '')),
             paper_count=int(data.get('paper_count', paper_count)),
             avg_confidence=float(data.get('avg_confidence', avg_conf)),
             is_low_confidence=bool(data.get('is_low_confidence', is_low)),
         )
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail='AI returned invalid JSON')
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f'Block regeneration error: {str(e)}')

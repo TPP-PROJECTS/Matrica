@@ -3,7 +3,7 @@ import { useApp } from '../store/AppContext'
 import { QuestionButton } from '../components/shared/QuestionButton'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
 import type { TopicCard, QueryCard } from '../types'
-import { API } from '../lib/api'
+import { API, apiFetch } from '../lib/api'
 
 
 function topicTypePill(type: TopicCard['type']) {
@@ -38,7 +38,7 @@ function TopicCardItem({ topic }: { topic: TopicCard }) {
     if (typeExplText) return
     setLoadingTypeExpl(true)
     try {
-      const res = await fetch(`${API}/topics/explain-type`, {
+      const res = await apiFetch(`${API}/topics/explain-type`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: topic.title, description: topic.description, type: topic.type }),
@@ -60,7 +60,7 @@ function TopicCardItem({ topic }: { topic: TopicCard }) {
     if (reasonText) return
     setLoadingReason(true)
     try {
-      const res = await fetch(`${API}/topics/reason`, {
+      const res = await apiFetch(`${API}/topics/reason`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -292,7 +292,7 @@ function QueryCardItem({ query }: { query: QueryCard }) {
     setSearching(true)
     setSearchError(false)
     try {
-      const res = await fetch(`${API}/search`, {
+      const res = await apiFetch(`${API}/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: text, limit: 8 }),
@@ -323,7 +323,7 @@ function QueryCardItem({ query }: { query: QueryCard }) {
 
       // Fire recognise for each paper in background — update relevance score as results arrive
       mapped.forEach(paper => {
-        fetch(`${API}/recognise`, {
+        apiFetch(`${API}/recognise`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -500,7 +500,7 @@ export function Screen3() {
     if (isRegenerating) return
     setIsRegenerating(true)
     try {
-      const res = await fetch(`${API}/topics/generate-profile`, {
+      const res = await apiFetch(`${API}/topics/generate-profile`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...state.profile, custom_system_prompt: prompt ?? null }),
@@ -520,7 +520,7 @@ export function Screen3() {
     if (isConfirming || selectedTopics.length === 0) return
     setIsConfirming(true)
     try {
-      const res = await fetch(`${API}/queries/generate`, {
+      const res = await apiFetch(`${API}/queries/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

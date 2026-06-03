@@ -1,1 +1,3 @@
-MODEL = "gpt-5.5"
+import os
+
+MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")

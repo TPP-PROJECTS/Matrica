@@ -1,5 +1,6 @@
 import { createContext, useContext, useReducer, useEffect, useRef, useState, type ReactNode } from 'react'
 import { buildResearchContext } from '../lib/buildResearchContext'
+import { setAnalyticsSession, trackEvent } from '../lib/api'
 import type { AppState, AppAction, ResearchProfile, StepState, SystemItem, SystemMatrixRow, SessionSnapshot } from '../types'
 import {
   MOCK_TOPICS, MOCK_MATRIX_ROWS, MOCK_MATRIX_COLUMNS,
@@ -483,7 +484,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const historyRef = useRef<AppState[]>([])
   const futureRef  = useRef<AppState[]>([])
 
+  // Analytics: track when the user entered the current step
+  const stepEntryTimeRef = useRef<number>(Date.now())
+
   const wrappedDispatch: React.Dispatch<AppAction> = (action) => {
+    // ── Analytics: track step navigation ────────────────────────────────────
+    if (
+      action.type === 'SET_STEP' ||
+      action.type === 'ADVANCE_STEP' ||
+      action.type === 'BACK_NAV_CONFIRM'
+    ) {
+      const cur = stateRef.current
+      const toStep =
+        action.type === 'SET_STEP'       ? action.step
+        : action.type === 'ADVANCE_STEP' ? Math.min(cur.currentStep + 1, 8)
+        : (cur.pendingBackStep ?? cur.currentStep)
+
+      trackEvent('step_change', {
+        step: toStep,
+        from_step: cur.currentStep,
+        to_step: toStep,
+        time_on_step_ms: Date.now() - stepEntryTimeRef.current,
+        direction: toStep > cur.currentStep ? 'forward' : 'back',
+        domain: cur.profile.domain || undefined,
+      })
+      stepEntryTimeRef.current = Date.now()
+    }
+
     if (!UI_ONLY_ACTIONS.has(action.type)) {
       // Push current state onto history, clear future
       historyRef.current = [...historyRef.current.slice(-(MAX_HISTORY - 1)), stateRef.current]
@@ -527,6 +554,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }, 600)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state])
+
+  // ── Analytics: sync session ID and lifecycle events ───────────────────────
+  useEffect(() => {
+    setAnalyticsSession(state.sessionId)
+  }, [state.sessionId])
+
+  useEffect(() => {
+    // Report session start once on mount
+    trackEvent('session_start', { step: stateRef.current.currentStep })
+
+    // Heartbeat every 2 min while the tab is visible — gives the backend
+    // accurate "last active" data for stuck-session detection even when the
+    // user is reading/thinking without making API calls.
+    const heartbeat = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        trackEvent('heartbeat', {
+          step: stateRef.current.currentStep,
+          domain: stateRef.current.profile.domain || undefined,
+        })
+      }
+    }, 2 * 60 * 1000)
+
+    return () => clearInterval(heartbeat)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // ── Dev debug: expose state and research context on window ────────────────
   useEffect(() => {

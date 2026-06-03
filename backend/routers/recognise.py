@@ -1,4 +1,5 @@
 import json
+from routers.json_utils import extract_json
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from openai import AsyncOpenAI
@@ -113,8 +114,9 @@ Respond with JSON in this exact format:
             instructions=SYSTEM_PROMPT,
             input=user_content,
         )
-        raw = response.output_text or ""
-        data = json.loads(raw)
+        data = extract_json(response.output_text or "")
+        if data is None:
+            raise HTTPException(status_code=500, detail="AI returned invalid JSON")
         score = int(data.get("score", 0))
         return RecogniseResponse(
             score=score,
@@ -122,7 +124,7 @@ Respond with JSON in this exact format:
             reasoning=data.get("reasoning", ""),
             suggestions=data.get("suggestions"),
         )
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail="AI returned invalid JSON")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Recognise error: {str(e)}")

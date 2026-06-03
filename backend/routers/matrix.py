@@ -1,3 +1,4 @@
+from routers.json_utils import extract_json
 import json
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -102,14 +103,15 @@ Respond with JSON:
             instructions=req.custom_system_prompt or SYSTEM_REVIEW_PROMPT,
             input=user_content,
         )
-        raw = response.output_text or ""
-        data = json.loads(raw)
+        data = extract_json(response.output_text or "")
+        if data is None:
+            raise HTTPException(status_code=500, detail="AI returned invalid JSON")
         columns = data.get("columns", [])
         if not columns:
             raise ValueError("empty columns")
         return GenerateColumnsResponse(columns=columns)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail="AI returned invalid JSON")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"System column generation error: {str(e)}")
 
@@ -240,10 +242,7 @@ List any concrete sources (official docs, peer-reviewed papers, reputable review
             instructions=CELL_EVIDENCE_PROMPT,
             input=context,
         )
-        raw = response.output_text or ""
-        import re as _re
-        match = _re.search(r'\{.*\}', raw, _re.DOTALL)
-        data = json.loads(match.group() if match else raw)
+        data = extract_json(response.output_text or "")
         return CellEvidenceResponse(
             reasoning=data.get("reasoning", ""),
             sources=data.get("sources", []),
@@ -298,10 +297,7 @@ Respond with JSON:
             instructions=req.custom_system_prompt or AUTOFILL_LITERATURE_PROMPT,
             input=user_content,
         )
-        raw = response.output_text or ""
-        import re
-        match = re.search(r'\{.*\}', raw, re.DOTALL)
-        data = json.loads(match.group() if match else raw)
+        data = extract_json(response.output_text or "")
         raw_cells = data.get("cells", {})
         cells: dict[str, CellData] = {}
         for col, cd in raw_cells.items():
@@ -359,10 +355,7 @@ Respond with JSON:
             instructions=req.custom_system_prompt or AUTOFILL_SYSTEM_PROMPT,
             input=user_content,
         )
-        raw = response.output_text or ""
-        import re
-        match = re.search(r'\{.*\}', raw, re.DOTALL)
-        data = json.loads(match.group() if match else raw)
+        data = extract_json(response.output_text or "")
         raw_cells = data.get("cells", {})
         cells: dict[str, CellData] = {}
         for col, cd in raw_cells.items():
@@ -421,13 +414,14 @@ Respond with JSON:
             instructions=req.custom_system_prompt or SYSTEM_PROMPT,
             input=user_content,
         )
-        raw = response.output_text or ""
-        data = json.loads(raw)
+        data = extract_json(response.output_text or "")
+        if data is None:
+            raise HTTPException(status_code=500, detail="AI returned invalid JSON")
         columns = data.get("columns", [])
         if not columns:
             raise ValueError("empty columns")
         return GenerateColumnsResponse(columns=columns)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail="AI returned invalid JSON")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Matrix column generation error: {str(e)}")

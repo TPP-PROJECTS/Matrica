@@ -21,3 +21,8 @@ Thumbs.db
 
 # Claude worktrees
 .claude/worktrees/
+
+# SQLite analytics database
+backend/analytics.db
+backend/analytics.db-shm
+backend/analytics.db-wal

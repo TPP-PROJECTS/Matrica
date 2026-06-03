@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useApp } from '../store/AppContext'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
 import type { MatrixCell, ConfidenceLevel, SystemMatrixRow } from '../types'
-import { API } from '../lib/api'
+import { API, apiFetch } from '../lib/api'
 
 
 // ── Evidence popover types ────────────────────────────────────────────────────
@@ -49,7 +49,7 @@ function EvidencePopover({
   useEffect(() => {
     async function fetch_() {
       try {
-        const res = await fetch(`${API}/matrix/cell-evidence`, {
+        const res = await apiFetch(`${API}/matrix/cell-evidence`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -237,7 +237,7 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
   async function runGenerate() {
     setGenerating(true); setGenError(false)
     try {
-      const res = await fetch(`${API}/matrix/generate-columns`, {
+      const res = await apiFetch(`${API}/matrix/generate-columns`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           papers: state.reviewList.map(p => ({ title: p.title, abstract: p.abstract, authors: p.authors, year: p.year })),
@@ -265,7 +265,7 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
       if (!paper) { setFillDone(d => d + 1); continue }
       setFillingRowId(row.paperId)
       try {
-        const res = await fetch(`${API}/matrix/autofill-row`, {
+        const res = await apiFetch(`${API}/matrix/autofill-row`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             paper: { title: paper.title, abstract: paper.abstract, authors: paper.authors, year: paper.year },
@@ -442,7 +442,7 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
   async function runGenerate() {
     setGenerating(true); setGenError(false)
     try {
-      const res = await fetch(`${API}/matrix/generate-system-columns`, {
+      const res = await apiFetch(`${API}/matrix/generate-system-columns`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           systems: selectedSystems.map(s => ({ name: s.name, category: s.category, vendor: s.vendor, description: s.description })),
@@ -470,7 +470,7 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
       if (!sys) { setFillDone(d => d + 1); continue }
       setFillingRowId(row.systemId)
       try {
-        const res = await fetch(`${API}/matrix/autofill-system-row`, {
+        const res = await apiFetch(`${API}/matrix/autofill-system-row`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             system: { name: sys.name, category: sys.category, vendor: sys.vendor, description: sys.description },
@@ -607,7 +607,7 @@ export function Screen5() {
     setSynthError(false)
     try {
       const selectedSystems = systemItems.filter(s => s.selected)
-      const res = await fetch(`${API}/synthesis/generate`, {
+      const res = await apiFetch(`${API}/synthesis/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

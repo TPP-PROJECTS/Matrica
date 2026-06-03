@@ -1,3 +1,4 @@
+from routers.json_utils import extract_json
 import os
 import re
 import json
@@ -98,12 +99,8 @@ async def recommend_systems(req: SystemRecommendRequest):
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"OpenAI error: {str(e)}")
 
-    raw = response.output_text or ""
-
-    try:
-        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
-        data = json.loads(json_match.group()) if json_match else json.loads(raw)
-    except (json.JSONDecodeError, AttributeError):
+    data = extract_json(response.output_text or "")
+    if data is None:
         raise HTTPException(status_code=502, detail="Invalid JSON from model")
 
     systems = []

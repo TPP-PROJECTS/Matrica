@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useApp } from '../store/AppContext'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
 import type { SynthesisBlock, Theme, MatrixCell } from '../types'
-import { API } from '../lib/api'
+import { API, apiFetch } from '../lib/api'
 
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -406,7 +406,7 @@ function AddAnalystForm({
     // AI fill
     setGenerating(true)
     try {
-      const res = await fetch(`${API}/synthesis/regenerate-block`, {
+      const res = await apiFetch(`${API}/synthesis/regenerate-block`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -507,7 +507,7 @@ export function Screen6() {
     setGapGenerating(true)
     try {
       const selectedSystems = (state.systemItems ?? []).filter(s => s.selected)
-      const res = await fetch(`${API}/gaps/generate`, {
+      const res = await apiFetch(`${API}/gaps/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -555,7 +555,7 @@ export function Screen6() {
   async function handleRegenerate(block: SynthesisBlock, customPrompt?: string | null) {
     if (!activeTheme) return
     try {
-      const res = await fetch(`${API}/synthesis/regenerate-block`, {
+      const res = await apiFetch(`${API}/synthesis/regenerate-block`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

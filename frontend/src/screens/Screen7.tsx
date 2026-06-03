@@ -5,7 +5,7 @@ import { QuestionButton } from '../components/shared/QuestionButton'
 import { QualityBar, WordCountBar } from '../components/shared/QualityBar'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
 import type { MatrixCell } from '../types'
-import { API } from '../lib/api'
+import { API, apiFetch } from '../lib/api'
 
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -480,7 +480,7 @@ export function Screen7() {
     setRegenerating(true)
     try {
       const selectedSystems = (state.systemItems ?? []).filter(s => s.selected)
-      const res = await fetch(`${API}/gaps/generate`, {
+      const res = await apiFetch(`${API}/gaps/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -524,7 +524,7 @@ export function Screen7() {
   async function handleConfirm() {
     setConfirming(true)
     try {
-      const res = await fetch(`${API}/final-question/generate`, {
+      const res = await apiFetch(`${API}/final-question/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

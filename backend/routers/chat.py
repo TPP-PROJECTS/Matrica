@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from config import MODEL
+from routers.json_utils import extract_json
 
 load_dotenv()
 
@@ -61,6 +62,7 @@ class ChatResponse(BaseModel):
     profile_updates: ProfileUpdates
 
 
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     input_messages = []
@@ -78,11 +80,12 @@ async def chat(req: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"OpenAI error: {str(e)}")
 
-    raw = response.output_text or ""
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=502, detail="Invalid JSON from OpenAI")
+    raw = (response.output_text or "").strip()
+
+    data = extract_json(raw)
+    if data is None:
+        # Couldn't find any JSON — treat the whole text as a plain reply
+        return ChatResponse(reply=raw, profile_updates=ProfileUpdates())
 
     reply = data.get("reply", "")
     updates_raw = data.get("profile_updates", {})

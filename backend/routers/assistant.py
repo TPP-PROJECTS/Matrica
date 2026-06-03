@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from config import MODEL
+from routers.json_utils import extract_json as _extract_json
 
 load_dotenv()
 
@@ -90,6 +91,7 @@ class AssistantRequest(BaseModel):
     messages: list[AssistantMessageInput]
     new_message: str
     research_context: ResearchContext = ResearchContext()
+    orchestration_trace_id: str | None = None
 
 
 class ActionPayload(BaseModel):
@@ -185,7 +187,7 @@ Always confirm what you will do in your reply, then include the action.
   label: e.g. "Override prompt: topics-generate"
 """
 
-def build_system_prompt(ctx: ResearchContext) -> str:
+def build_system_prompt(ctx: ResearchContext, trace_id: str | None = None) -> str:
     step = ctx.current_step
     p = ctx.profile
 
@@ -324,14 +326,16 @@ Rules:
 - Use exact names/titles as they appear in RESEARCH MEMORY when referencing items
 - Tell the user what you're doing in "reply", then let the action card handle execution
 - You can batch multiple related actions in one response
-- For long text rewrites (gap statement, synthesis blocks), include the full new text"""
+- For long text rewrites (gap statement, synthesis blocks), include the full new text""" + (
+        f"\n\n## Orchestration Trace\ntrace_id: {trace_id}" if trace_id else ""
+    )
 
 
 # ── Endpoint ──────────────────────────────────────────────────────────────────
 
 @router.post('/chat/assistant', response_model=AssistantResponse)
 async def assistant_chat(req: AssistantRequest):
-    system_prompt = build_system_prompt(req.research_context)
+    system_prompt = build_system_prompt(req.research_context, req.orchestration_trace_id)
 
     input_messages = [
         {'role': msg.role, 'content': msg.content}
@@ -350,17 +354,8 @@ async def assistant_chat(req: AssistantRequest):
         raise HTTPException(status_code=502, detail=f'OpenAI error: {str(e)}')
 
     raw = (response.output_text or '').strip()
-
-    # Strip markdown code fences if present
-    if raw.startswith('```'):
-        raw = raw.split('\n', 1)[-1]
-        if raw.endswith('```'):
-            raw = raw.rsplit('```', 1)[0]
-    raw = raw.strip()
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
+    data = _extract_json(raw)
+    if data is None:
         # Model didn't return JSON — treat entire response as plain reply
         return AssistantResponse(reply=raw, actions=[])
 

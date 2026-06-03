@@ -1,5 +1,7 @@
+import { useState, useEffect } from 'react'
 import { AppProvider, useApp } from './store/AppContext'
 import { AppLayout } from './components/layout/AppLayout'
+import { AnalyticsDashboard } from './screens/AnalyticsDashboard'
 import { Screen1 } from './screens/Screen1'
 import { Screen2 } from './screens/Screen2'
 import { Screen3 } from './screens/Screen3'
@@ -34,6 +36,18 @@ function WorkflowRouter() {
 }
 
 export default function App() {
+  const [hash, setHash] = useState(window.location.hash)
+
+  useEffect(() => {
+    const handler = () => setHash(window.location.hash)
+    window.addEventListener('hashchange', handler)
+    return () => window.removeEventListener('hashchange', handler)
+  }, [])
+
+  if (hash === '#analytics') {
+    return <AnalyticsDashboard />
+  }
+
   return (
     <AppProvider>
       <WorkflowRouter />

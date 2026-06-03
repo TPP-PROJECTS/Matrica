@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { API } from '../../lib/api'
+import { API, apiFetch } from '../../lib/api'
 
 
 interface Segment {
@@ -44,7 +44,7 @@ export function CustomizePromptModal({ promptKey, title, onClose, onGenerate, in
   useEffect(() => {
     async function fetchPrompt() {
       try {
-        const res = await fetch(`${API}/prompts/${promptKey}`)
+        const res = await apiFetch(`${API}/prompts/${promptKey}`)
         if (!res.ok) throw new Error()
         const data = await res.json()
         const prompt: string = data.system_prompt

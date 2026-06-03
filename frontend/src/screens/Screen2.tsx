@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useApp } from '../store/AppContext'
 import type { SystemItem } from '../types'
-import { API } from '../lib/api'
+import { API, apiFetch } from '../lib/api'
 
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -154,7 +154,7 @@ export function Screen2() {
     setIsLoading(true)
     setError(false)
     try {
-      const res = await fetch(`${API}/systems/recommend`, {
+      const res = await apiFetch(`${API}/systems/recommend`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
