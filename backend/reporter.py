@@ -16,15 +16,15 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-ORCHESTRATION_URL = os.getenv("ORCHESTRATION_URL", "http://localhost:8000")
-INBOUND_ENDPOINT = f"{ORCHESTRATION_URL}/api/events/inbound"
+ORCHESTRATION_URL = os.getenv("ORCHESTRATION_URL", "")
+INBOUND_ENDPOINT = f"{ORCHESTRATION_URL}/api/events/inbound" if ORCHESTRATION_URL else ""
 
 SKIP_PATHS = {"/api/health", "/docs", "/openapi.json", "/redoc"}
 
 
 class OrchestrationReporter(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.url.path in SKIP_PATHS:
+        if not ORCHESTRATION_URL or request.url.path in SKIP_PATHS:
             return await call_next(request)
 
         start = time.time()
