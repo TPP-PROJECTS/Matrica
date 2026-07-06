@@ -157,13 +157,25 @@ export interface StudyDesignOption {
   name: string
   recommended: boolean
   hint: string
+  category?: string       // catalog grouping, e.g. 'Evidence Synthesis'
+  guideline?: string      // reporting guideline that fixes the paper framework
+  matchReason?: string    // LLM's one-line reason when matched to the current topic
+}
+
+// LLM-generated substantive heading inside a fixed framework section,
+// like the numbered subsections (2.1, 3.2 …) of a real published paper
+export interface PaperSubsection {
+  title: string     // topic-specific heading as it would appear in the article
+  content: string   // outline of exactly what to write under this heading
 }
 
 export interface PaperSection {
   number: number
   name: string
   purpose: string
-  bullets: string[]
+  bullets: string[]               // legacy flat outline (older sessions)
+  subsections?: PaperSubsection[] // real-paper style: generated headings + content
+  origin?: 'framework' | 'ai'     // guideline anchor vs LLM-inserted content section
 }
 
 export interface TopicResearchQuestion {
@@ -355,10 +367,16 @@ export type AppAction =
   | { type: 'UPDATE_RESULT_RELEVANCE'; paperId: string; score: number; confidence: ConfidenceLevel }
   | { type: 'SET_MATRIX_COLUMNS'; columns: string[] }
   | { type: 'ADD_MATRIX_COLUMN'; column: string }
+  | { type: 'RENAME_MATRIX_COLUMN'; oldName: string; newName: string }
+  | { type: 'REMOVE_MATRIX_COLUMN'; column: string }
   | { type: 'INIT_MATRIX_ROWS' }
   | { type: 'SET_SYSTEM_MATRIX_COLUMNS'; columns: string[] }
   | { type: 'ADD_SYSTEM_MATRIX_COLUMN'; column: string }
+  | { type: 'RENAME_SYSTEM_MATRIX_COLUMN'; oldName: string; newName: string }
+  | { type: 'REMOVE_SYSTEM_MATRIX_COLUMN'; column: string }
   | { type: 'INIT_SYSTEM_MATRIX_ROWS' }
+  | { type: 'ADD_UPLOADED_PAPERS'; papers: ResultCard[] }
+  | { type: 'ADD_SYSTEM_WITH_ROW'; item: SystemItem }
   | { type: 'UPDATE_MATRIX_ROW_CELLS'; paperId: string; cells: Record<string, MatrixCell> }
   | { type: 'UPDATE_SYSTEM_MATRIX_ROW_CELLS'; systemId: string; cells: Record<string, MatrixCell> }
   | { type: 'SET_THEMES'; themes: Theme[] }
@@ -370,6 +388,7 @@ export type AppAction =
   | { type: 'SET_STUDY_DESIGN_OPTIONS'; options: StudyDesignOption[] }
   | { type: 'SET_FINAL_TOPIC_OPTIONS'; options: FinalTopicOption[] }
   | { type: 'SET_TOPIC_FINAL_DATA'; data: TopicFinalData[] }
+  | { type: 'UPDATE_PAPER_SECTIONS'; topicId: string; sections: PaperSection[] }
   | { type: 'SELECT_FINAL_TOPIC'; topicId: string }
   | { type: 'DISMISS_CONSISTENCY_ALERT' }
   | { type: 'DISMISS_BACK_NAV_MODAL' }

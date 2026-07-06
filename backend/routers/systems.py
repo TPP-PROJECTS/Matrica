@@ -115,3 +115,77 @@ async def recommend_systems(req: SystemRecommendRequest):
         ))
 
     return SystemRecommendResponse(systems=systems)
+
+
+# ── Single-system lookup by name (manual add from Matrix) ─────────────────────
+
+SYSTEM_LOOKUP_PROMPT = """You are a software-systems analyst. The user gives you the name of a software system, platform, or tool. Identify the real system they mean (correcting minor typos) and return its profile.
+
+Respond ONLY with valid JSON:
+{
+  "found": true,
+  "name": "official product name",
+  "description": "2-3 sentences: what it does and its relevance",
+  "category": "clinical_system" | "ai_platform" | "decision_support" | "health_platform" | "research_tool" | "other",
+  "url": "https://official-site" or null,
+  "vendor": "company or organisation"
+}
+If no real, identifiable system matches the name, respond {"found": false}."""
+
+
+class SystemLookupRequest(BaseModel):
+    name: str
+    domain: str = ""
+    focus: str = ""
+
+
+class SystemLookupResponse(BaseModel):
+    found: bool
+    name: str = ""
+    description: str = ""
+    category: str = "other"
+    url: str | None = None
+    vendor: str = ""
+
+
+@router.post("/systems/lookup", response_model=SystemLookupResponse)
+async def lookup_system(req: SystemLookupRequest):
+    if not req.name.strip():
+        raise HTTPException(status_code=400, detail="System name is empty")
+
+    context = f"System name to look up: {req.name.strip()}"
+    if req.domain or req.focus:
+        context += f"\nResearch context (for the relevance part of the description): domain = {req.domain}; focus = {req.focus}"
+
+    try:
+        response = await client.responses.create(
+            model=MODEL,
+            instructions=SYSTEM_LOOKUP_PROMPT,
+            input=context,
+            tools=[{"type": "web_search_preview"}],
+        )
+    except Exception:
+        try:
+            response = await client.responses.create(
+                model=MODEL,
+                instructions=SYSTEM_LOOKUP_PROMPT,
+                input=context,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"OpenAI error: {str(e)}")
+
+    data = extract_json(response.output_text or "")
+    if data is None:
+        raise HTTPException(status_code=502, detail="Invalid JSON from model")
+
+    if not data.get("found"):
+        return SystemLookupResponse(found=False)
+
+    return SystemLookupResponse(
+        found=True,
+        name=data.get("name", req.name.strip()),
+        description=data.get("description", ""),
+        category=data.get("category", "other"),
+        url=data.get("url") or None,
+        vendor=data.get("vendor", ""),
+    )

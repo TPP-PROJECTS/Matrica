@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { useApp } from '../../store/AppContext'
 import { TopBar } from './TopBar'
@@ -15,6 +16,16 @@ interface Props {
 
 export function AppLayout({ children }: Props) {
   const { state } = useApp()
+  const [rightCollapsed, setRightCollapsed] = useState(
+    () => localStorage.getItem('tpp:rightPanelCollapsed') === '1'
+  )
+
+  function toggleRightPanel() {
+    setRightCollapsed(v => {
+      localStorage.setItem('tpp:rightPanelCollapsed', v ? '0' : '1')
+      return !v
+    })
+  }
 
   const showRightPanel = state.currentStep > 1
   const isStale = state.stepStates[state.currentStep] === 'stale'
@@ -43,13 +54,32 @@ export function AppLayout({ children }: Props) {
           </div>
         </main>
 
-        {/* Right panel — steps 2+ only */}
-        {showRightPanel && (
+        {/* Right panel — steps 2+ only, collapsible */}
+        {showRightPanel && !rightCollapsed && (
           <div className="relative h-full flex flex-col">
+            <button
+              onClick={toggleRightPanel}
+              title="Hide profile & assistant"
+              className="absolute -left-3 top-1/2 -translate-y-1/2 z-20 w-6 h-14 bg-white border border-zinc-200 rounded-full shadow-sm text-zinc-400 text-[10px] hover:text-zinc-700 hover:border-zinc-400 transition-colors flex items-center justify-center"
+            >
+              ❯
+            </button>
             <div className={`flex-1 min-h-0 flex flex-col ${state.showVersionHistory ? 'opacity-40 pointer-events-none' : ''}`}>
               <RightPanel />
             </div>
           </div>
+        )}
+        {showRightPanel && rightCollapsed && (
+          <button
+            onClick={toggleRightPanel}
+            title="Show profile & assistant"
+            className="w-7 h-full shrink-0 border-l border-zinc-200 bg-zinc-50 hover:bg-zinc-100 transition-colors flex flex-col items-center justify-center gap-3 text-zinc-400 hover:text-zinc-700"
+          >
+            <span className="text-[10px]">❮</span>
+            <span className="text-[9px] font-semibold uppercase tracking-[0.12em]" style={{ writingMode: 'vertical-rl' }}>
+              Profile · Assistant
+            </span>
+          </button>
         )}
       </div>
 

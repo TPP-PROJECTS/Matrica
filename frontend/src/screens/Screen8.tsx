@@ -1,10 +1,20 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useApp } from "../store/AppContext";
 import { AIBadge } from "../components/shared/AIBadge";
 import { CustomizePromptModal } from "../components/shared/CustomizePromptModal";
 import { ExportModal } from "../components/overlays/ExportModal";
-import type { StudyDesignOption } from "../types";
+import type { StudyDesignOption, PaperSection } from "../types";
 import { API, apiFetch } from '../lib/api'
+
+const DESIGN_CATEGORY_ORDER = [
+  "Evidence Synthesis",
+  "Experimental",
+  "Observational",
+  "Qualitative",
+  "Mixed Methods",
+  "Specialised",
+  "Other",
+];
 
 
 const SECTION_COLORS = [
@@ -113,8 +123,9 @@ function FinalTopicCard({
 
 // ── Study design card ─────────────────────────────────────────────────────────
 function StudyDesignCard({ design, selected, onSelect }: { design: StudyDesignOption; selected: boolean; onSelect: () => void }) {
+  const isAlternative = !!design.matchReason && !design.recommended;
   return (
-    <div onClick={onSelect} className={`rounded-lg border p-2.5 mb-2 cursor-pointer transition-colors ${
+    <div onClick={onSelect} className={`rounded-lg border p-2 mb-1.5 cursor-pointer transition-colors ${
       selected ? "bg-green-50 border-2 border-green-500" : "bg-white border border-zinc-200 hover:bg-zinc-50"
     }`}>
       <div className="flex items-start gap-1.5">
@@ -123,17 +134,229 @@ function StudyDesignCard({ design, selected, onSelect }: { design: StudyDesignOp
         }`}>
           {selected && <div className="w-1.5 h-1.5 rounded-full bg-green-500" />}
         </div>
-        <div className="flex-1">
-          <div className="flex items-center gap-1.5 mb-0.5">
-            <span className={`text-[11px] leading-tight ${selected ? "font-bold text-zinc-900" : "font-medium text-zinc-700"}`}>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+            <span className={`text-[10px] leading-tight ${selected ? "font-bold text-zinc-900" : "font-medium text-zinc-700"}`}>
               {design.name}
             </span>
             {design.recommended && (
-              <span className="px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full text-[8px]">Recommended</span>
+              <span className="px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full text-[8px] shrink-0">✦ Best match</span>
+            )}
+            {isAlternative && (
+              <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 rounded-full text-[8px] shrink-0">Alternative</span>
             )}
           </div>
-          <p className="text-[9px] italic text-zinc-400">{design.hint}</p>
+          {design.guideline && (
+            <span className="inline-block px-1.5 py-0.5 bg-zinc-100 text-zinc-500 rounded text-[8px] mb-0.5">{design.guideline}</span>
+          )}
+          <p className="text-[9px] italic text-zinc-400 leading-snug">{design.hint}</p>
+          {design.matchReason && (
+            <p className={`text-[9px] mt-1 leading-snug ${design.recommended ? "text-green-700" : "text-blue-600"}`}>
+              ✦ {design.matchReason}
+            </p>
+          )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Editable paper section card (fixed section + real-paper subsections) ─────
+function EditableSectionCard({
+  section,
+  accent,
+  canUp,
+  canDown,
+  onChange,
+  onDelete,
+  onMove,
+}: {
+  section: PaperSection;
+  accent: string;
+  canUp: boolean;
+  canDown: boolean;
+  onChange: (updated: PaperSection) => void;
+  onDelete: () => void;
+  onMove: (dir: -1 | 1) => void;
+}) {
+  // null = viewing · 'header' = editing section name/purpose · number = editing that subsection
+  const [editTarget, setEditTarget] = useState<null | "header" | number>(null);
+  const [name, setName] = useState(section.name);
+  const [purpose, setPurpose] = useState(section.purpose);
+  const [subTitle, setSubTitle] = useState("");
+  const [subContent, setSubContent] = useState("");
+
+  const subsections = section.subsections ?? [];
+  const accentText = accent.replace("bg-", "text-");
+
+  function startHeaderEdit() {
+    setName(section.name);
+    setPurpose(section.purpose);
+    setEditTarget("header");
+  }
+  function saveHeader() {
+    onChange({ ...section, name: name.trim() || section.name, purpose: purpose.trim() });
+    setEditTarget(null);
+  }
+
+  function startSubEdit(i: number) {
+    const s = subsections[i];
+    setSubTitle(s.title);
+    setSubContent(s.content);
+    setEditTarget(i);
+  }
+  function saveSub(i: number) {
+    const next = subsections.map((s, idx) =>
+      idx === i
+        ? { title: subTitle.trim() || s.title, content: subContent.trim() }
+        : s
+    );
+    onChange({ ...section, subsections: next });
+    setEditTarget(null);
+  }
+  function deleteSub(i: number) {
+    onChange({ ...section, subsections: subsections.filter((_, idx) => idx !== i) });
+    setEditTarget(null);
+  }
+  function moveSub(i: number, dir: -1 | 1) {
+    const j = i + dir;
+    if (j < 0 || j >= subsections.length) return;
+    const next = [...subsections];
+    [next[i], next[j]] = [next[j], next[i]];
+    onChange({ ...section, subsections: next });
+  }
+  function addSub() {
+    onChange({ ...section, subsections: [...subsections, { title: "New subsection", content: "" }] });
+    setSubTitle("New subsection");
+    setSubContent("");
+    setEditTarget(subsections.length);
+  }
+
+  return (
+    <div className="flex rounded-lg border border-zinc-200 bg-white overflow-hidden group">
+      <div className={`w-[3px] shrink-0 ${accent}`} />
+      <div className="flex-1 p-3 min-w-0">
+        {/* ── Section header ── */}
+        {editTarget === "header" ? (
+          <div className="space-y-1.5 mb-2">
+            <div className="flex items-baseline gap-1.5">
+              <span className={`text-[11px] font-bold shrink-0 ${accentText}`}>{section.number}.</span>
+              <input
+                autoFocus
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="flex-1 border-b border-zinc-300 text-[12px] font-bold text-zinc-900 outline-none focus:border-blue-500 pb-0.5"
+                placeholder="Section title"
+              />
+            </div>
+            <input
+              value={purpose}
+              onChange={(e) => setPurpose(e.target.value)}
+              className="w-full border border-zinc-200 rounded px-2 py-1 text-[9px] italic text-zinc-600 outline-none focus:border-blue-400"
+              placeholder="Purpose — what this section achieves"
+            />
+            <div className="flex gap-1.5 justify-end">
+              <button onClick={() => setEditTarget(null)} className="px-2.5 h-6 border border-zinc-300 rounded text-[10px] text-zinc-500 hover:bg-zinc-50">Cancel</button>
+              <button onClick={saveHeader} className="px-2.5 h-6 bg-blue-600 text-white rounded text-[10px] font-medium hover:bg-blue-700">Save</button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="flex items-baseline gap-1.5 mb-1">
+              <span className={`text-[12px] font-bold ${accentText}`}>{section.number}.</span>
+              <span className="text-[13px] font-bold text-zinc-900 flex-1">
+                {section.name}
+                {section.origin === "ai" && (
+                  <span className="ml-1.5 px-1.5 py-0.5 bg-violet-50 text-violet-500 rounded text-[8px] font-medium align-middle">✦ topic section</span>
+                )}
+                {section.origin === "framework" && (
+                  <span className="ml-1.5 px-1.5 py-0.5 bg-zinc-100 text-zinc-400 rounded text-[8px] font-medium align-middle">guideline</span>
+                )}
+              </span>
+              <span className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                <button onClick={() => onMove(-1)} disabled={!canUp} title="Move section up"
+                  className="w-5 h-5 rounded border border-zinc-200 text-zinc-400 text-[9px] hover:bg-zinc-50 disabled:opacity-30">↑</button>
+                <button onClick={() => onMove(1)} disabled={!canDown} title="Move section down"
+                  className="w-5 h-5 rounded border border-zinc-200 text-zinc-400 text-[9px] hover:bg-zinc-50 disabled:opacity-30">↓</button>
+                <button onClick={startHeaderEdit} title="Edit section title & purpose"
+                  className="w-5 h-5 rounded border border-zinc-200 text-zinc-400 text-[9px] hover:bg-blue-50 hover:text-blue-600">✎</button>
+                <button onClick={onDelete} title="Delete section"
+                  className="w-5 h-5 rounded border border-zinc-200 text-zinc-400 text-[9px] hover:bg-red-50 hover:text-red-500">✕</button>
+              </span>
+            </div>
+            {section.purpose && <p className="text-[9px] italic text-zinc-400 mb-2 leading-relaxed">{section.purpose}</p>}
+          </>
+        )}
+
+        {/* ── Subsections (real-paper headings) ── */}
+        {subsections.length > 0 && (
+          <div className="space-y-2.5 mt-1">
+            {subsections.map((sub, i) =>
+              editTarget === i ? (
+                <div key={i} className="border border-blue-200 bg-blue-50/30 rounded-lg p-2 space-y-1.5">
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-[10px] font-bold text-zinc-400 shrink-0">{section.number}.{i + 1}</span>
+                    <input
+                      autoFocus
+                      value={subTitle}
+                      onChange={(e) => setSubTitle(e.target.value)}
+                      className="flex-1 border-b border-zinc-300 bg-transparent text-[11px] font-semibold text-zinc-900 outline-none focus:border-blue-500 pb-0.5"
+                      placeholder="Subsection heading (as printed in the paper)"
+                    />
+                  </div>
+                  <textarea
+                    value={subContent}
+                    onChange={(e) => setSubContent(e.target.value)}
+                    rows={Math.max(3, subContent.split("\n").length + 1)}
+                    className="w-full border border-zinc-200 rounded px-2 py-1.5 text-[10px] text-zinc-700 leading-relaxed outline-none focus:border-blue-400 resize-y bg-white"
+                    placeholder="What should be written under this heading"
+                  />
+                  <div className="flex gap-1.5 justify-end">
+                    <button onClick={() => setEditTarget(null)} className="px-2.5 h-6 border border-zinc-300 rounded text-[10px] text-zinc-500 hover:bg-zinc-50">Cancel</button>
+                    <button onClick={() => saveSub(i)} className="px-2.5 h-6 bg-blue-600 text-white rounded text-[10px] font-medium hover:bg-blue-700">Save</button>
+                  </div>
+                </div>
+              ) : (
+                <div key={i} className="group/sub pl-1">
+                  <div className="flex items-baseline gap-1.5">
+                    <span className={`text-[10px] font-bold shrink-0 ${accentText}`}>{section.number}.{i + 1}</span>
+                    <span className="text-[11px] font-semibold text-zinc-800 flex-1 leading-snug">{sub.title}</span>
+                    <span className="flex gap-1 opacity-0 group-hover/sub:opacity-100 transition-opacity shrink-0">
+                      <button onClick={() => moveSub(i, -1)} disabled={i === 0} title="Move up"
+                        className="w-4 h-4 rounded border border-zinc-200 text-zinc-400 text-[8px] hover:bg-zinc-50 disabled:opacity-30">↑</button>
+                      <button onClick={() => moveSub(i, 1)} disabled={i === subsections.length - 1} title="Move down"
+                        className="w-4 h-4 rounded border border-zinc-200 text-zinc-400 text-[8px] hover:bg-zinc-50 disabled:opacity-30">↓</button>
+                      <button onClick={() => startSubEdit(i)} title="Edit subsection"
+                        className="w-4 h-4 rounded border border-zinc-200 text-zinc-400 text-[8px] hover:bg-blue-50 hover:text-blue-600">✎</button>
+                      <button onClick={() => deleteSub(i)} title="Delete subsection"
+                        className="w-4 h-4 rounded border border-zinc-200 text-zinc-400 text-[8px] hover:bg-red-50 hover:text-red-500">✕</button>
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-zinc-500 leading-relaxed mt-0.5 ml-[26px]">{sub.content}</p>
+                </div>
+              )
+            )}
+          </div>
+        )}
+
+        {/* ── Legacy flat bullets (older sessions without subsections) ── */}
+        {subsections.length === 0 && (section.bullets ?? []).length > 0 && (
+          <ul className="space-y-1">
+            {(section.bullets ?? []).map((bullet, bi) => (
+              <li key={bi} className="flex items-start gap-1.5">
+                <span className={`mt-[4px] w-1 h-1 rounded-full shrink-0 ${accent}`} />
+                <span className="text-[10px] text-zinc-700 leading-relaxed">{bullet}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <button
+          onClick={addSub}
+          className="mt-2 text-[9px] text-zinc-300 hover:text-blue-600 transition-colors"
+        >
+          + Add subsection
+        </button>
       </div>
     </div>
   );
@@ -152,6 +375,9 @@ export function Screen8() {
   const [customTopicsPrompt, setCustomTopicsPrompt] = useState<string | null>(null);
   const [customStructurePrompt, setCustomStructurePrompt] = useState<string | null>(null);
 
+  const [matchingDesign, setMatchingDesign] = useState(false);
+  const [catalogLoaded, setCatalogLoaded] = useState(false);
+
   const finalTopicOptions = state.finalTopicOptions ?? [];
   const topicFinalData = state.topicFinalData ?? [];
 
@@ -159,6 +385,18 @@ export function Screen8() {
   const selectedTopic = finalTopicOptions.find((t) => t.id === state.selectedFinalTopicId);
   const activeFinalData = topicFinalData.find((d) => d.topicId === state.selectedFinalTopicId);
   const paperSections = activeFinalData?.paperSections ?? [];
+
+  const groupedDesigns = useMemo(() => {
+    const groups = new Map<string, StudyDesignOption[]>();
+    for (const d of state.studyDesignOptions ?? []) {
+      const cat = d.category ?? "Other";
+      if (!groups.has(cat)) groups.set(cat, []);
+      groups.get(cat)!.push(d);
+    }
+    return DESIGN_CATEGORY_ORDER.filter((c) => groups.has(c)).map((c) => [c, groups.get(c)!] as const);
+  }, [state.studyDesignOptions]);
+
+  const recommendedDesign = (state.studyDesignOptions ?? []).find((d) => d.recommended);
 
   // Build context payload shared by both API calls
   function buildContext() {
@@ -191,9 +429,7 @@ export function Screen8() {
       if (data.topics?.length) {
         dispatch({ type: "SET_FINAL_TOPIC_OPTIONS", options: data.topics });
       }
-      if (data.study_designs?.length) {
-        dispatch({ type: "SET_STUDY_DESIGN_OPTIONS", options: data.study_designs });
-      }
+      // Study designs are a fixed catalog — the LLM only matches, never generates them.
     } catch (e: unknown) {
       setTopicError(e instanceof Error ? e.message : "Failed to generate topics");
     } finally {
@@ -221,6 +457,7 @@ export function Screen8() {
             keyThemes: selectedTopic.keyThemes,
           },
           study_design: selectedDesign?.name ?? "Systematic Review",
+          study_design_id: selectedDesign?.id ?? null,
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -251,6 +488,95 @@ export function Screen8() {
       generateTopics(null);
     }
   }, []);
+
+  // Load the fixed study-design catalog (replaces old mock/AI-generated lists)
+  useEffect(() => {
+    const hasCatalog = (state.studyDesignOptions ?? []).some((d) => d.category);
+    if (hasCatalog) { setCatalogLoaded(true); return; }
+    (async () => {
+      try {
+        const res = await apiFetch(`${API}/final-question/study-designs`);
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        const options: StudyDesignOption[] = (data.designs ?? []).map((d: { id: string; name: string; hint: string; category: string; guideline: string }) => ({
+          id: d.id, name: d.name, recommended: false, hint: d.hint,
+          category: d.category, guideline: d.guideline,
+        }));
+        if (options.length) dispatch({ type: "SET_STUDY_DESIGN_OPTIONS", options });
+      } catch { /* keep existing fallback list */ }
+      setCatalogLoaded(true);
+    })();
+  }, []);
+
+  // Match the selected topic to catalog designs (LLM selects, never invents)
+  useEffect(() => {
+    if (!catalogLoaded || !selectedTopic) return;
+    let cancelled = false;
+    (async () => {
+      setMatchingDesign(true);
+      try {
+        const res = await apiFetch(`${API}/final-question/match-design`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...buildContext(),
+            topic_title: selectedTopic.title,
+            topic_description: selectedTopic.description,
+            topic_rationale: selectedTopic.rationale,
+          }),
+        });
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        if (cancelled) return;
+        const matches: { id: string; reason: string }[] = data.matches ?? [];
+        if (matches.length) {
+          const reasonById = new Map(matches.map((m, i) => [m.id, { reason: m.reason, rank: i }]));
+          dispatch({
+            type: "SET_STUDY_DESIGN_OPTIONS",
+            options: (state.studyDesignOptions ?? []).map((d) => ({
+              ...d,
+              recommended: reasonById.get(d.id)?.rank === 0,
+              matchReason: reasonById.get(d.id)?.reason,
+            })),
+          });
+          dispatch({ type: "SELECT_STUDY_DESIGN", designId: matches[0].id });
+        }
+      } catch { /* keep current selection */ }
+      if (!cancelled) setMatchingDesign(false);
+    })();
+    return () => { cancelled = true; };
+  }, [catalogLoaded, state.selectedFinalTopicId]);
+
+  // ── Paper-section editing ──
+  function updateSections(next: PaperSection[]) {
+    if (!selectedTopic) return;
+    dispatch({
+      type: "UPDATE_PAPER_SECTIONS",
+      topicId: selectedTopic.id,
+      sections: next.map((s, i) => ({ ...s, number: i + 1 })),
+    });
+  }
+  function changeSection(idx: number, updated: PaperSection) {
+    const next = [...paperSections];
+    next[idx] = updated;
+    updateSections(next);
+  }
+  function deleteSection(idx: number) {
+    updateSections(paperSections.filter((_, i) => i !== idx));
+  }
+  function moveSection(idx: number, dir: -1 | 1) {
+    const j = idx + dir;
+    if (j < 0 || j >= paperSections.length) return;
+    const next = [...paperSections];
+    [next[idx], next[j]] = [next[j], next[idx]];
+    updateSections(next);
+  }
+  function addSection() {
+    updateSections([
+      ...paperSections,
+      { number: paperSections.length + 1, name: "New Section", purpose: "", bullets: [] },
+    ]);
+  }
 
   return (
     <>
@@ -343,20 +669,46 @@ export function Screen8() {
           </div>
         </div>
 
-        {/* ── Column 2 — Study Design ── */}
-        <div className="w-[200px] shrink-0 flex flex-col overflow-hidden border-r border-zinc-200 bg-white">
+        {/* ── Column 2 — Study Design (fixed catalog, AI matches) ── */}
+        <div className="w-[240px] shrink-0 flex flex-col overflow-hidden border-r border-zinc-200 bg-white">
           <div className="px-3 pt-3 pb-2 border-b border-zinc-100 shrink-0">
-            <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide">Study Design</span>
-            <p className="text-[8px] text-zinc-400 mt-0.5">Shapes paper structure</p>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide flex-1">Study Design</span>
+              {matchingDesign && (
+                <span className="flex items-center gap-1 text-[8px] text-blue-500">
+                  <span className="w-2.5 h-2.5 border border-blue-200 border-t-blue-600 rounded-full animate-spin" />
+                  matching…
+                </span>
+              )}
+            </div>
+            <p className="text-[8px] text-zinc-400 mt-0.5">
+              {selectedTopic ? "AI matched this topic to the catalog" : "Select a topic to get an AI match"}
+            </p>
           </div>
           <div className="flex-1 overflow-y-auto px-2 py-2">
-            {state.studyDesignOptions.map((design) => (
-              <StudyDesignCard
-                key={design.id}
-                design={design}
-                selected={design.id === state.selectedStudyDesignId}
-                onSelect={() => dispatch({ type: "SELECT_STUDY_DESIGN", designId: design.id })}
-              />
+            {recommendedDesign && !matchingDesign && (
+              <div className="rounded-lg border border-green-200 bg-green-50 px-2.5 py-2 mb-2">
+                <p className="text-[8px] font-bold text-green-600 uppercase tracking-wide mb-0.5">✦ Best match</p>
+                <p className="text-[10px] font-bold text-zinc-800">{recommendedDesign.name}</p>
+                {recommendedDesign.guideline && (
+                  <p className="text-[8px] text-green-700 mt-0.5">Framework: {recommendedDesign.guideline}</p>
+                )}
+              </div>
+            )}
+            {groupedDesigns.map(([category, designs]) => (
+              <div key={category} className="mb-1">
+                <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest px-1 pt-1.5 pb-1 sticky top-0 bg-white/95">
+                  {category} <span className="text-zinc-300">({designs.length})</span>
+                </p>
+                {designs.map((design) => (
+                  <StudyDesignCard
+                    key={design.id}
+                    design={design}
+                    selected={design.id === state.selectedStudyDesignId}
+                    onSelect={() => dispatch({ type: "SELECT_STUDY_DESIGN", designId: design.id })}
+                  />
+                ))}
+              </div>
             ))}
           </div>
         </div>
@@ -373,6 +725,7 @@ export function Screen8() {
             {selectedDesign && (
               <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-[9px] font-medium shrink-0">
                 {selectedDesign.name}
+                {selectedDesign.guideline && <span className="ml-1 text-green-500 font-normal">· {selectedDesign.guideline}</span>}
               </span>
             )}
             {selectedTopic && (
@@ -436,29 +789,25 @@ export function Screen8() {
               </div>
             ) : (
               <div className="space-y-2">
-                {paperSections.map((section, idx) => {
-                  const accent = SECTION_COLORS[idx % SECTION_COLORS.length];
-                  return (
-                    <div key={section.number} className="flex rounded-lg border border-zinc-200 bg-white overflow-hidden">
-                      <div className={`w-[3px] shrink-0 ${accent}`} />
-                      <div className="flex-1 p-3">
-                        <div className="flex items-baseline gap-1.5 mb-1">
-                          <span className={`text-[11px] font-bold ${accent.replace("bg-", "text-")}`}>{section.number}.</span>
-                          <span className="text-[12px] font-bold text-zinc-900">{section.name}</span>
-                        </div>
-                        <p className="text-[9px] italic text-zinc-500 mb-2 leading-relaxed">{section.purpose}</p>
-                        <ul className="space-y-1">
-                          {(section.bullets ?? []).map((bullet, bi) => (
-                            <li key={bi} className="flex items-start gap-1.5">
-                              <span className={`mt-[4px] w-1 h-1 rounded-full shrink-0 ${accent}`} />
-                              <span className="text-[10px] text-zinc-700 leading-relaxed">{bullet}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    </div>
-                  );
-                })}
+                <p className="text-[8px] text-zinc-400 text-right">Hover a section to edit, reorder, or delete</p>
+                {paperSections.map((section, idx) => (
+                  <EditableSectionCard
+                    key={`${section.number}-${section.name}`}
+                    section={section}
+                    accent={SECTION_COLORS[idx % SECTION_COLORS.length]}
+                    canUp={idx > 0}
+                    canDown={idx < paperSections.length - 1}
+                    onChange={(updated) => changeSection(idx, updated)}
+                    onDelete={() => deleteSection(idx)}
+                    onMove={(dir) => moveSection(idx, dir)}
+                  />
+                ))}
+                <button
+                  onClick={addSection}
+                  className="w-full h-8 border border-dashed border-zinc-300 rounded-lg text-[10px] text-zinc-400 hover:border-blue-400 hover:text-blue-600 transition-colors"
+                >
+                  + Add section
+                </button>
               </div>
             )}
           </div>

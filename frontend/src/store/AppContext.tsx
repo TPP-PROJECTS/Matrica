@@ -303,6 +303,31 @@ function reducer(state: AppState, action: AppAction): AppState {
       return { ...state, matrixColumns: [...state.matrixColumns, action.column.trim()] }
     }
 
+    case 'RENAME_MATRIX_COLUMN': {
+      const newName = action.newName.trim()
+      if (!newName || newName === action.oldName || state.matrixColumns.includes(newName)) return state
+      return {
+        ...state,
+        matrixColumns: state.matrixColumns.map(c => c === action.oldName ? newName : c),
+        matrixRows: state.matrixRows.map(row => {
+          if (!(action.oldName in row.cells)) return row
+          const { [action.oldName]: cell, ...rest } = row.cells
+          return { ...row, cells: { ...rest, [newName]: cell } }
+        }),
+      }
+    }
+
+    case 'REMOVE_MATRIX_COLUMN':
+      return {
+        ...state,
+        matrixColumns: state.matrixColumns.filter(c => c !== action.column),
+        matrixRows: state.matrixRows.map(row => {
+          if (!(action.column in row.cells)) return row
+          const { [action.column]: _removed, ...rest } = row.cells
+          return { ...row, cells: rest }
+        }),
+      }
+
     case 'INIT_MATRIX_ROWS':
       return {
         ...state,
@@ -339,6 +364,31 @@ function reducer(state: AppState, action: AppAction): AppState {
       return { ...state, systemMatrixColumns: [...(state.systemMatrixColumns ?? []), action.column.trim()] }
     }
 
+    case 'RENAME_SYSTEM_MATRIX_COLUMN': {
+      const newName = action.newName.trim()
+      if (!newName || newName === action.oldName || (state.systemMatrixColumns ?? []).includes(newName)) return state
+      return {
+        ...state,
+        systemMatrixColumns: (state.systemMatrixColumns ?? []).map(c => c === action.oldName ? newName : c),
+        systemMatrixRows: (state.systemMatrixRows ?? []).map(row => {
+          if (!(action.oldName in row.cells)) return row
+          const { [action.oldName]: cell, ...rest } = row.cells
+          return { ...row, cells: { ...rest, [newName]: cell } }
+        }),
+      }
+    }
+
+    case 'REMOVE_SYSTEM_MATRIX_COLUMN':
+      return {
+        ...state,
+        systemMatrixColumns: (state.systemMatrixColumns ?? []).filter(c => c !== action.column),
+        systemMatrixRows: (state.systemMatrixRows ?? []).map(row => {
+          if (!(action.column in row.cells)) return row
+          const { [action.column]: _removed, ...rest } = row.cells
+          return { ...row, cells: rest }
+        }),
+      }
+
     case 'INIT_SYSTEM_MATRIX_ROWS': {
       const newSystemRows: SystemMatrixRow[] = (state.systemItems ?? [])
         .filter(s => s.selected)
@@ -351,6 +401,49 @@ function reducer(state: AppState, action: AppAction): AppState {
           cells: {} as Record<string, import('../types').MatrixCell>,
         }))
       return { ...state, systemMatrixRows: newSystemRows }
+    }
+
+    case 'ADD_UPLOADED_PAPERS': {
+      const existingTitles = new Set(
+        [...state.results, ...state.reviewList].map(r => r.title.toLowerCase().trim())
+      )
+      const fresh = action.papers.filter(p => !existingTitles.has(p.title.toLowerCase().trim()))
+      if (fresh.length === 0) return state
+      return {
+        ...state,
+        results: [...state.results, ...fresh],
+        reviewList: [...state.reviewList, ...fresh],
+        matrixRows: [
+          ...state.matrixRows,
+          ...fresh.map(p => ({
+            paperId: p.id,
+            title: p.title,
+            authors: p.authors,
+            year: p.year,
+            cells: {} as Record<string, import('../types').MatrixCell>,
+          })),
+        ],
+      }
+    }
+
+    case 'ADD_SYSTEM_WITH_ROW': {
+      const nameKey = action.item.name.toLowerCase().trim()
+      if ((state.systemItems ?? []).some(s => s.name.toLowerCase().trim() === nameKey)) return state
+      return {
+        ...state,
+        systemItems: [...(state.systemItems ?? []), action.item],
+        systemMatrixRows: [
+          ...(state.systemMatrixRows ?? []),
+          {
+            systemId: action.item.id,
+            name: action.item.name,
+            vendor: action.item.vendor,
+            category: action.item.category,
+            url: action.item.url,
+            cells: {} as Record<string, import('../types').MatrixCell>,
+          },
+        ],
+      }
     }
 
     case 'UPDATE_THEME_COLUMNS':
@@ -399,6 +492,14 @@ function reducer(state: AppState, action: AppAction): AppState {
         ...state,
         finalTopicOptions: action.options,
         selectedFinalTopicId: state.selectedFinalTopicId ?? action.options[0]?.id ?? null,
+      }
+
+    case 'UPDATE_PAPER_SECTIONS':
+      return {
+        ...state,
+        topicFinalData: (state.topicFinalData ?? []).map(d =>
+          d.topicId === action.topicId ? { ...d, paperSections: action.sections } : d
+        ),
       }
 
     case 'SET_TOPIC_FINAL_DATA':

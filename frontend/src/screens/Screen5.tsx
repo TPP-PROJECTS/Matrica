@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useApp } from '../store/AppContext'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
-import type { MatrixCell, ConfidenceLevel, SystemMatrixRow } from '../types'
+import type { MatrixCell, ConfidenceLevel, SystemMatrixRow, ResultCard, SystemItem } from '../types'
 import { API, apiFetch } from '../lib/api'
 
 
@@ -200,6 +200,372 @@ function PendingCell() {
   )
 }
 
+// ── Editable column header (rename / delete) ─────────────────────────────────
+function ColumnHeader({
+  col,
+  borderClass,
+  onRename,
+  onRemove,
+}: {
+  col: string
+  borderClass: string
+  onRename: (newName: string) => void
+  onRemove: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [val, setVal] = useState(col)
+
+  function commit() {
+    setEditing(false)
+    if (val.trim() && val.trim() !== col) onRename(val.trim())
+  }
+
+  return (
+    <th className={`border ${borderClass} px-2 py-1.5 text-[9px] font-semibold text-white min-w-[140px] group/col`}>
+      {editing ? (
+        <input
+          autoFocus
+          value={val}
+          onChange={e => setVal(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter') commit()
+            if (e.key === 'Escape') { setVal(col); setEditing(false) }
+          }}
+          onBlur={commit}
+          className="w-full bg-transparent border-b border-white/50 text-white text-[9px] font-semibold outline-none"
+        />
+      ) : (
+        <span className="flex items-center gap-1">
+          <span className="flex-1">{col}</span>
+          <button
+            onClick={() => { setVal(col); setEditing(true) }}
+            title="Rename column"
+            className="opacity-0 group-hover/col:opacity-100 text-white/50 hover:text-white text-[9px] shrink-0 transition-opacity"
+          >✎</button>
+          <button
+            onClick={onRemove}
+            title="Delete column"
+            className="opacity-0 group-hover/col:opacity-100 text-white/50 hover:text-red-300 text-[9px] shrink-0 transition-opacity"
+          >✕</button>
+        </span>
+      )}
+    </th>
+  )
+}
+
+// ── Add papers modal (file upload + URL/DOI) ─────────────────────────────────
+interface ParseItem {
+  key: string
+  kind: 'file' | 'url'
+  label: string
+  status: 'pending' | 'parsing' | 'done' | 'error'
+  error?: string
+  file?: File
+  url?: string
+  paper?: ResultCard
+}
+
+function AddPapersModal({ onClose, onAdd }: { onClose: () => void; onAdd: (papers: ResultCard[]) => void }) {
+  const [items, setItems] = useState<ParseItem[]>([])
+  const [urlText, setUrlText] = useState('')
+  const [parsing, setParsing] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  function addFiles(files: FileList | null) {
+    if (!files || files.length === 0) return
+    setItems(prev => [
+      ...prev,
+      ...Array.from(files).map((f, i) => ({
+        key: `f_${Date.now()}_${i}`, kind: 'file' as const, label: f.name, status: 'pending' as const, file: f,
+      })),
+    ])
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  function addUrls() {
+    const urls = urlText.split('\n').map(s => s.trim()).filter(Boolean)
+    if (urls.length === 0) return
+    setItems(prev => [
+      ...prev,
+      ...urls.map((u, i) => ({
+        key: `u_${Date.now()}_${i}`, kind: 'url' as const, label: u, status: 'pending' as const, url: u,
+      })),
+    ])
+    setUrlText('')
+  }
+
+  async function parseAll() {
+    if (parsing) return
+    setParsing(true)
+    const queue = items.filter(it => it.status === 'pending' || it.status === 'error')
+    for (const it of queue) {
+      setItems(prev => prev.map(p => p.key === it.key ? { ...p, status: 'parsing', error: undefined } : p))
+      try {
+        let res: Response
+        if (it.kind === 'file' && it.file) {
+          const fd = new FormData()
+          fd.append('file', it.file)
+          res = await apiFetch(`${API}/matrix/ingest-paper-file`, { method: 'POST', body: fd })
+        } else {
+          res = await apiFetch(`${API}/matrix/ingest-paper-url`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: it.url }),
+          })
+        }
+        if (!res.ok) {
+          const detail = await res.json().then(d => d.detail).catch(() => null)
+          throw new Error(typeof detail === 'string' ? detail : 'Parse failed')
+        }
+        const data = await res.json()
+        const paper: ResultCard = {
+          id: `up_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          title: data.title,
+          authors: data.authors ?? '',
+          year: data.year ?? 0,
+          source: data.source ?? (it.kind === 'file' ? 'upload' : 'url'),
+          relevanceScore: 0,
+          abstract: data.abstract ?? '',
+          topicId: '', queryId: '', confidence: 'none',
+          isDuplicate: false, status: 'included', notes: '',
+        }
+        setItems(prev => prev.map(p => p.key === it.key ? { ...p, status: 'done', paper } : p))
+      } catch (e) {
+        setItems(prev => prev.map(p => p.key === it.key
+          ? { ...p, status: 'error', error: e instanceof Error ? e.message : 'Parse failed' } : p))
+      }
+    }
+    setParsing(false)
+  }
+
+  const parsed = items.filter(it => it.status === 'done' && it.paper)
+  const hasQueue = items.some(it => it.status === 'pending' || it.status === 'error')
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/30" onClick={parsing ? undefined : onClose} />
+      <div className="fixed z-50 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[460px] max-h-[80vh] bg-white rounded-xl shadow-2xl flex flex-col">
+        <div className="flex items-center px-4 py-3 border-b border-zinc-100 shrink-0">
+          <div className="flex-1">
+            <p className="text-[13px] font-semibold text-zinc-800">Add papers to matrix</p>
+            <p className="text-[10px] text-zinc-400">Upload PDF/text files or paste URLs / DOIs — one per line</p>
+          </div>
+          <button onClick={onClose} className="text-zinc-400 hover:text-zinc-600 text-[15px]">✕</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+          <div className="flex gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept=".pdf,.txt,application/pdf,text/plain"
+              className="hidden"
+              onChange={e => addFiles(e.target.files)}
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="flex-1 h-16 border-2 border-dashed border-zinc-300 rounded-lg text-[11px] text-zinc-500 hover:border-purple-400 hover:text-purple-600 transition-colors"
+            >
+              ⬆ Choose PDF / text files
+            </button>
+          </div>
+
+          <div className="flex gap-2 items-start">
+            <textarea
+              value={urlText}
+              onChange={e => setUrlText(e.target.value)}
+              placeholder={'https://doi.org/10.1000/xyz\nhttps://pubmed.ncbi.nlm.nih.gov/…'}
+              rows={2}
+              className="flex-1 border border-zinc-300 rounded px-2 py-1.5 text-[11px] text-zinc-800 outline-none focus:border-purple-500 resize-none"
+            />
+            <button
+              onClick={addUrls}
+              disabled={!urlText.trim()}
+              className="px-3 h-8 border border-zinc-300 rounded text-[11px] text-zinc-700 hover:bg-zinc-50 disabled:opacity-40"
+            >
+              Add
+            </button>
+          </div>
+
+          {items.length > 0 && (
+            <ul className="space-y-1.5">
+              {items.map(it => (
+                <li key={it.key} className="flex items-start gap-2 border border-zinc-100 rounded px-2 py-1.5">
+                  <span className="text-[10px] mt-0.5 shrink-0">{it.kind === 'file' ? '📄' : '🔗'}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[10px] text-zinc-700 truncate">{it.label}</p>
+                    {it.status === 'done' && it.paper && (
+                      <p className="text-[9px] text-emerald-600 truncate">✓ {it.paper.title}{it.paper.year ? ` (${it.paper.year})` : ''}</p>
+                    )}
+                    {it.status === 'error' && <p className="text-[9px] text-red-500 truncate">{it.error}</p>}
+                  </div>
+                  {it.status === 'parsing' && (
+                    <span className="w-3 h-3 border border-purple-200 border-t-purple-600 rounded-full animate-spin shrink-0 mt-0.5" />
+                  )}
+                  {it.status !== 'parsing' && !parsing && (
+                    <button
+                      onClick={() => setItems(prev => prev.filter(p => p.key !== it.key))}
+                      className="text-zinc-300 hover:text-zinc-500 text-[10px] shrink-0"
+                    >✕</button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2 px-4 py-3 border-t border-zinc-100 shrink-0">
+          <span className="text-[10px] text-zinc-400 flex-1">
+            {parsed.length > 0 ? `${parsed.length} parsed` : items.length > 0 ? `${items.length} item(s)` : ''}
+          </span>
+          <button
+            onClick={parseAll}
+            disabled={!hasQueue || parsing}
+            className="px-3 h-7 border border-purple-300 text-purple-700 rounded text-[11px] hover:bg-purple-50 disabled:opacity-40 flex items-center gap-1.5"
+          >
+            {parsing && <span className="w-2.5 h-2.5 border border-purple-300 border-t-purple-600 rounded-full animate-spin" />}
+            {parsing ? 'Parsing…' : 'Parse all'}
+          </button>
+          <button
+            onClick={() => onAdd(parsed.map(it => it.paper!))}
+            disabled={parsed.length === 0 || parsing}
+            className="px-3 h-7 bg-purple-600 text-white rounded text-[11px] font-medium hover:bg-purple-700 disabled:opacity-40"
+          >
+            Add {parsed.length > 0 ? parsed.length : ''} paper{parsed.length === 1 ? '' : 's'} to matrix
+          </button>
+        </div>
+      </div>
+    </>
+  )
+}
+
+// ── Add system modal (lookup by name) ────────────────────────────────────────
+function AddSystemModal({
+  domain,
+  focus,
+  existingNames,
+  onClose,
+  onAdd,
+}: {
+  domain: string
+  focus: string
+  existingNames: Set<string>
+  onClose: () => void
+  onAdd: (item: SystemItem) => void
+}) {
+  const [name, setName] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [result, setResult] = useState<{ name: string; description: string; category: string; url: string | null; vendor: string } | null>(null)
+  const [added, setAdded] = useState<string[]>([])
+
+  async function search() {
+    const q = name.trim()
+    if (!q || loading) return
+    setLoading(true); setError(null); setResult(null)
+    try {
+      const res = await apiFetch(`${API}/systems/lookup`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: q, domain, focus }),
+      })
+      if (!res.ok) throw new Error()
+      const data = await res.json()
+      if (!data.found) { setError(`No system could be identified for “${q}”.`); return }
+      setResult(data)
+    } catch {
+      setError('Lookup failed — is the backend running?')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function addResult() {
+    if (!result) return
+    if (existingNames.has(result.name.toLowerCase().trim()) || added.some(n => n.toLowerCase() === result.name.toLowerCase())) {
+      setError(`“${result.name}” is already in the matrix.`)
+      return
+    }
+    onAdd({
+      id: `sys-manual-${Date.now()}`,
+      name: result.name,
+      description: result.description,
+      category: result.category || 'other',
+      url: result.url ?? null,
+      vendor: result.vendor ?? '',
+      aiGenerated: false,
+      selected: true,
+    })
+    setAdded(a => [...a, result.name])
+    setResult(null)
+    setName('')
+    setError(null)
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 bg-black/30" onClick={onClose} />
+      <div className="fixed z-50 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[420px] bg-white rounded-xl shadow-2xl flex flex-col">
+        <div className="flex items-center px-4 py-3 border-b border-zinc-100">
+          <div className="flex-1">
+            <p className="text-[13px] font-semibold text-zinc-800">Add system to matrix</p>
+            <p className="text-[10px] text-zinc-400">Type a system name — AI will identify and profile it</p>
+          </div>
+          <button onClick={onClose} className="text-zinc-400 hover:text-zinc-600 text-[15px]">✕</button>
+        </div>
+
+        <div className="px-4 py-3 space-y-3">
+          <div className="flex gap-2">
+            <input
+              autoFocus
+              value={name}
+              onChange={e => setName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') search() }}
+              placeholder="e.g. Epic Systems, IBM Watson Health…"
+              className="flex-1 h-8 border border-zinc-300 rounded px-2 text-[11px] text-zinc-800 outline-none focus:border-violet-500"
+            />
+            <button
+              onClick={search}
+              disabled={!name.trim() || loading}
+              className="px-3 h-8 bg-violet-600 text-white rounded text-[11px] hover:bg-violet-700 disabled:opacity-40 flex items-center gap-1.5"
+            >
+              {loading && <span className="w-2.5 h-2.5 border border-violet-300 border-t-white rounded-full animate-spin" />}
+              {loading ? 'Searching…' : 'Search'}
+            </button>
+          </div>
+
+          {error && <p className="text-[10px] text-red-500">{error}</p>}
+
+          {result && (
+            <div className="border border-violet-200 bg-violet-50/40 rounded-lg px-3 py-2.5 space-y-1">
+              <div className="flex items-center gap-2">
+                <p className="text-[12px] font-semibold text-zinc-800 flex-1">{result.name}</p>
+                <span className="text-[8px] px-1.5 py-0.5 bg-violet-100 text-violet-600 rounded">{result.category}</span>
+              </div>
+              {result.vendor && <p className="text-[10px] text-zinc-500">{result.vendor}</p>}
+              <p className="text-[10px] text-zinc-600 leading-relaxed">{result.description}</p>
+              {result.url && <p className="text-[9px] text-violet-600 truncate">{result.url}</p>}
+              <button
+                onClick={addResult}
+                className="mt-1 px-3 h-7 bg-violet-600 text-white rounded text-[11px] font-medium hover:bg-violet-700"
+              >
+                Add to matrix
+              </button>
+            </div>
+          )}
+
+          {added.length > 0 && (
+            <p className="text-[10px] text-emerald-600">✓ Added: {added.join(', ')}</p>
+          )}
+        </div>
+
+        <div className="flex justify-end px-4 py-3 border-t border-zinc-100">
+          <button onClick={onClose} className="px-3 h-7 border border-zinc-300 rounded text-[11px] text-zinc-600 hover:bg-zinc-50">Done</button>
+        </div>
+      </div>
+    </>
+  )
+}
+
 // ── Literature matrix ─────────────────────────────────────────────────────────
 function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void }) {
   const { state, dispatch } = useApp()
@@ -215,12 +581,19 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
   const [addingCol, setAddingCol] = useState(false)
   const [newColName, setNewColName] = useState('')
   const addColInputRef = useRef<HTMLInputElement>(null)
+  const [showAddPapers, setShowAddPapers] = useState(false)
 
   function submitAddCol() {
     const name = newColName.trim()
     if (name) dispatch({ type: 'ADD_MATRIX_COLUMN', column: name })
     setAddingCol(false)
     setNewColName('')
+  }
+
+  function removeCol(col: string) {
+    const filled = state.matrixRows.filter(r => r.cells[col]?.value).length
+    if (filled > 0 && !window.confirm(`Delete column "${col}"? ${filled} filled cell(s) will be lost.`)) return
+    dispatch({ type: 'REMOVE_MATRIX_COLUMN', column: col })
   }
 
   const dataCols = state.matrixColumns.filter(
@@ -254,21 +627,22 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
 
   useEffect(() => { if (!needsInit || generating) return; runGenerate() }, [needsInit])
 
-  async function handleAutoFill(prompt?: string | null) {
-    if (filling || dataCols.length === 0) return
+  async function fillPapers(
+    papers: { id: string; title: string; abstract: string; authors: string; year: number }[],
+    prompt?: string | null,
+  ) {
+    if (filling || dataCols.length === 0 || papers.length === 0) return
     abortRef.current = false
-    setFilling(true); setFillDone(0); setFillTotal(state.matrixRows.length)
+    setFilling(true); setFillDone(0); setFillTotal(papers.length)
 
-    for (const row of state.matrixRows) {
+    for (const paper of papers) {
       if (abortRef.current) break
-      const paper = state.reviewList.find(p => p.id === row.paperId)
-      if (!paper) { setFillDone(d => d + 1); continue }
-      setFillingRowId(row.paperId)
+      setFillingRowId(paper.id)
       try {
         const res = await apiFetch(`${API}/matrix/autofill-row`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            paper: { title: paper.title, abstract: paper.abstract, authors: paper.authors, year: paper.year },
+            paper: { title: paper.title, abstract: paper.abstract, authors: paper.authors, year: paper.year || null },
             columns: dataCols, profile: state.profile,
             topics: state.topics.filter(t => t.selected).map(t => ({ title: t.title, description: t.description, type: t.type })),
             custom_system_prompt: prompt ?? null,
@@ -280,17 +654,42 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
         for (const [col, cd] of Object.entries(data.cells as Record<string, { value: string; evidenceType: string; confidenceScore: number; confidenceLevel: string; extractionMethod: string }>)) {
           cells[col] = { value: cd.value, aiGenerated: true, confidenceScore: cd.confidenceScore, confidenceLevel: cd.confidenceLevel as ConfidenceLevel, evidenceType: cd.evidenceType as MatrixCell['evidenceType'], sourceRef: '', extractionMethod: cd.extractionMethod as MatrixCell['extractionMethod'], verifiedByStudent: false }
         }
-        dispatch({ type: 'UPDATE_MATRIX_ROW_CELLS', paperId: row.paperId, cells })
+        dispatch({ type: 'UPDATE_MATRIX_ROW_CELLS', paperId: paper.id, cells })
       } catch { /* skip */ }
       setFillDone(d => d + 1)
     }
     setFillingRowId(null); setFilling(false)
   }
 
+  function handleAutoFill(prompt?: string | null) {
+    const papers = state.matrixRows
+      .map(row => state.reviewList.find(p => p.id === row.paperId))
+      .filter((p): p is NonNullable<typeof p> => !!p)
+    fillPapers(papers, prompt)
+  }
+
+  function handleAddPapers(papers: ResultCard[]) {
+    setShowAddPapers(false)
+    if (papers.length === 0) return
+    const existing = new Set([...state.results, ...state.reviewList].map(r => r.title.toLowerCase().trim()))
+    const fresh = papers.filter(p => !existing.has(p.title.toLowerCase().trim()))
+    dispatch({ type: 'ADD_UPLOADED_PAPERS', papers })
+    // parse the newly added rows right away (columns must already exist;
+    // otherwise the init effect will generate columns first)
+    if (dataCols.length > 0) fillPapers(fresh, customAutoFillPrompt)
+  }
+
   if (state.reviewList.length === 0) return (
     <div className="flex items-center justify-center flex-1 flex-col gap-2">
       <p className="text-[13px] text-zinc-400">No papers in review list</p>
-      <p className="text-[11px] text-zinc-300">Go back to Select Paper and add papers first.</p>
+      <p className="text-[11px] text-zinc-300">Go back to Select Paper, or upload papers directly.</p>
+      <button
+        onClick={() => setShowAddPapers(true)}
+        className="mt-2 px-4 h-8 bg-purple-600 text-white rounded text-[12px] hover:bg-purple-700"
+      >
+        ⬆ Upload papers
+      </button>
+      {showAddPapers && <AddPapersModal onClose={() => setShowAddPapers(false)} onAdd={handleAddPapers} />}
     </div>
   )
 
@@ -336,6 +735,10 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
         ) : (
           <button onClick={() => setAddingCol(true)} className="px-3 h-6 border border-zinc-300 rounded text-[10px] text-zinc-700 hover:bg-zinc-50">+ Column</button>
         )}
+        <button onClick={() => setShowAddPapers(true)} disabled={filling}
+          className="px-3 h-6 border border-zinc-300 rounded text-[10px] text-zinc-700 hover:bg-zinc-50 disabled:opacity-50">
+          + Papers
+        </button>
         <div className="flex rounded overflow-hidden">
           <button onClick={() => handleAutoFill(customAutoFillPrompt)} disabled={filling || dataCols.length === 0}
             className="px-3 h-6 bg-purple-600 text-white rounded-l text-[10px] flex items-center gap-1.5 hover:bg-purple-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors">
@@ -370,7 +773,15 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
             <tr className="bg-zinc-900">
               <th className="sticky left-0 z-10 bg-zinc-900 border border-zinc-700 px-2 py-1.5 text-[9px] font-semibold text-white w-8">#</th>
               <th className="sticky left-8 z-10 bg-zinc-900 border border-zinc-700 px-2 py-1.5 text-[9px] font-semibold text-white w-[180px]">Title · Authors · Year</th>
-              {dataCols.map(col => <th key={col} className="border border-zinc-700 px-2 py-1.5 text-[9px] font-semibold text-white min-w-[140px]">{col}</th>)}
+              {dataCols.map(col => (
+                <ColumnHeader
+                  key={col}
+                  col={col}
+                  borderClass="border-zinc-700"
+                  onRename={newName => dispatch({ type: 'RENAME_MATRIX_COLUMN', oldName: col, newName })}
+                  onRemove={() => removeCol(col)}
+                />
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -383,7 +794,7 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
                   <td className="sticky left-8 z-10 border border-zinc-200 px-2 py-2 bg-inherit w-[180px]">
                     <p className="text-[11px] font-semibold text-zinc-900 leading-tight line-clamp-2">{row.title}</p>
                     <p className="text-[9px] text-zinc-400 mt-0.5">{row.authors}</p>
-                    <p className="text-[9px] text-zinc-400">{row.year}</p>
+                    <p className="text-[9px] text-zinc-400">{row.year || '—'}</p>
                   </td>
                   {dataCols.map(col =>
                     isBeingFilled
@@ -405,6 +816,8 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
           </tbody>
         </table>
       </div>
+
+      {showAddPapers && <AddPapersModal onClose={() => setShowAddPapers(false)} onAdd={handleAddPapers} />}
     </div>
   )
 }
@@ -421,6 +834,7 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
   const abortRef = useRef(false)
   const [addingCol, setAddingCol] = useState(false)
   const [newColName, setNewColName] = useState('')
+  const [showAddSystem, setShowAddSystem] = useState(false)
 
   function submitAddCol() {
     const name = newColName.trim()
@@ -434,6 +848,12 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
   const systemMatrixRows: SystemMatrixRow[] = state.systemMatrixRows ?? []
   const systemMatrixColumns: string[] = state.systemMatrixColumns ?? []
   const dataCols = systemMatrixColumns.filter(c => c !== 'System Name' && c !== 'Vendor' && c !== 'Category')
+
+  function removeCol(col: string) {
+    const filled = systemMatrixRows.filter(r => r.cells[col]?.value).length
+    if (filled > 0 && !window.confirm(`Delete column "${col}"? ${filled} filled cell(s) will be lost.`)) return
+    dispatch({ type: 'REMOVE_SYSTEM_MATRIX_COLUMN', column: col })
+  }
 
   const selectedIds = new Set(selectedSystems.map(s => s.id))
   const rowsMismatch = selectedSystems.length > 0 && !systemMatrixRows.every(r => selectedIds.has(r.systemId))
@@ -459,16 +879,14 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
 
   useEffect(() => { if (!needsInit || generating) return; runGenerate() }, [needsInit])
 
-  async function handleAutoFill() {
-    if (filling || dataCols.length === 0) return
+  async function fillSystems(systems: { id: string; name: string; category: string; vendor: string; description: string }[]) {
+    if (filling || dataCols.length === 0 || systems.length === 0) return
     abortRef.current = false
-    setFilling(true); setFillDone(0); setFillTotal(systemMatrixRows.length)
+    setFilling(true); setFillDone(0); setFillTotal(systems.length)
 
-    for (const row of systemMatrixRows) {
+    for (const sys of systems) {
       if (abortRef.current) break
-      const sys = selectedSystems.find(s => s.id === row.systemId)
-      if (!sys) { setFillDone(d => d + 1); continue }
-      setFillingRowId(row.systemId)
+      setFillingRowId(sys.id)
       try {
         const res = await apiFetch(`${API}/matrix/autofill-system-row`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -483,17 +901,46 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
         for (const [col, cd] of Object.entries(data.cells as Record<string, { value: string; evidenceType: string; confidenceScore: number; confidenceLevel: string; extractionMethod: string }>)) {
           cells[col] = { value: cd.value, aiGenerated: true, confidenceScore: cd.confidenceScore, confidenceLevel: cd.confidenceLevel as ConfidenceLevel, evidenceType: cd.evidenceType as MatrixCell['evidenceType'], sourceRef: '', extractionMethod: cd.extractionMethod as MatrixCell['extractionMethod'], verifiedByStudent: false }
         }
-        dispatch({ type: 'UPDATE_SYSTEM_MATRIX_ROW_CELLS', systemId: row.systemId, cells })
+        dispatch({ type: 'UPDATE_SYSTEM_MATRIX_ROW_CELLS', systemId: sys.id, cells })
       } catch { /* skip */ }
       setFillDone(d => d + 1)
     }
     setFillingRowId(null); setFilling(false)
   }
 
+  function handleAutoFill() {
+    const systems = systemMatrixRows
+      .map(row => selectedSystems.find(s => s.id === row.systemId))
+      .filter((s): s is NonNullable<typeof s> => !!s)
+    fillSystems(systems)
+  }
+
+  function handleAddSystem(item: SystemItem) {
+    dispatch({ type: 'ADD_SYSTEM_WITH_ROW', item })
+    if (dataCols.length > 0) {
+      fillSystems([{ id: item.id, name: item.name, category: item.category, vendor: item.vendor, description: item.description }])
+    }
+  }
+
   if (selectedSystems.length === 0) return (
     <div className="flex items-center justify-center flex-1 flex-col gap-2">
       <p className="text-[13px] text-zinc-400">No systems selected</p>
-      <p className="text-[11px] text-zinc-300">Go back to System Review and select at least one system.</p>
+      <p className="text-[11px] text-zinc-300">Go back to System Review, or add a system by name.</p>
+      <button
+        onClick={() => setShowAddSystem(true)}
+        className="mt-2 px-4 h-8 bg-violet-600 text-white rounded text-[12px] hover:bg-violet-700"
+      >
+        + Add system
+      </button>
+      {showAddSystem && (
+        <AddSystemModal
+          domain={state.profile.domain}
+          focus={state.profile.focus}
+          existingNames={new Set(systemItems.map(s => s.name.toLowerCase().trim()))}
+          onClose={() => setShowAddSystem(false)}
+          onAdd={handleAddSystem}
+        />
+      )}
     </div>
   )
   if (generating) return (
@@ -536,6 +983,10 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
         ) : (
           <button onClick={() => setAddingCol(true)} className="px-3 h-6 border border-violet-300 rounded text-[10px] text-violet-700 hover:bg-violet-100">+ Column</button>
         )}
+        <button onClick={() => setShowAddSystem(true)} disabled={filling}
+          className="px-3 h-6 border border-violet-300 rounded text-[10px] text-violet-700 hover:bg-violet-100 disabled:opacity-50">
+          + System
+        </button>
         <button onClick={handleAutoFill} disabled={filling || dataCols.length === 0}
           className="px-3 h-6 bg-violet-600 text-white rounded text-[10px] flex items-center gap-1.5 hover:bg-violet-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors">
           {filling ? <><span className="w-2.5 h-2.5 border border-violet-300 border-t-white rounded-full animate-spin" />{fillDone}/{fillTotal} rows…</> : <><span>✦</span> Auto-fill All</>}
@@ -550,7 +1001,15 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
             <tr className="bg-violet-900">
               <th className="sticky left-0 z-10 bg-violet-900 border border-violet-700 px-2 py-1.5 text-[9px] font-semibold text-white w-8">#</th>
               <th className="sticky left-8 z-10 bg-violet-900 border border-violet-700 px-2 py-1.5 text-[9px] font-semibold text-white w-[180px]">System · Vendor · Category</th>
-              {dataCols.map(col => <th key={col} className="border border-violet-700 px-2 py-1.5 text-[9px] font-semibold text-white min-w-[140px]">{col}</th>)}
+              {dataCols.map(col => (
+                <ColumnHeader
+                  key={col}
+                  col={col}
+                  borderClass="border-violet-700"
+                  onRename={newName => dispatch({ type: 'RENAME_SYSTEM_MATRIX_COLUMN', oldName: col, newName })}
+                  onRemove={() => removeCol(col)}
+                />
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -586,6 +1045,16 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
           </tbody>
         </table>
       </div>
+
+      {showAddSystem && (
+        <AddSystemModal
+          domain={state.profile.domain}
+          focus={state.profile.focus}
+          existingNames={new Set(systemItems.map(s => s.name.toLowerCase().trim()))}
+          onClose={() => setShowAddSystem(false)}
+          onAdd={handleAddSystem}
+        />
+      )}
     </div>
   )
 }
@@ -594,7 +1063,6 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
 export function Screen5() {
   const { state, dispatch } = useApp()
   const systemItems = state.systemItems ?? []
-  const hasSelectedSystems = systemItems.some(s => s.selected)
   const [activeTab, setActiveTab] = useState<'literature' | 'system'>('literature')
   const [evidenceTarget, setEvidenceTarget] = useState<EvidenceTarget | null>(null)
   const [synthesising, setSynthesising] = useState(false)
@@ -672,13 +1140,11 @@ export function Screen5() {
           Literature Review Matrix
           <span className="ml-1.5 text-[10px] text-zinc-400">({state.matrixRows.length})</span>
         </button>
-        {hasSelectedSystems && (
-          <button onClick={() => setActiveTab('system')}
-            className={`px-4 h-8 text-[12px] font-medium border-b-2 transition-colors ${activeTab === 'system' ? 'border-violet-600 text-violet-700' : 'border-transparent text-zinc-400 hover:text-violet-600'}`}>
-            System Review Matrix
-            <span className="ml-1.5 text-[10px] text-zinc-400">({systemItems.filter(s => s.selected).length})</span>
-          </button>
-        )}
+        <button onClick={() => setActiveTab('system')}
+          className={`px-4 h-8 text-[12px] font-medium border-b-2 transition-colors ${activeTab === 'system' ? 'border-violet-600 text-violet-700' : 'border-transparent text-zinc-400 hover:text-violet-600'}`}>
+          System Review Matrix
+          <span className="ml-1.5 text-[10px] text-zinc-400">({systemItems.filter(s => s.selected).length})</span>
+        </button>
         <div className="flex-1" />
         <span className="text-[10px] text-zinc-400 pb-2">Step 5 · Matrix</span>
       </div>

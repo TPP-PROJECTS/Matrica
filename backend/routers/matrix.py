@@ -1,15 +1,28 @@
 from routers.json_utils import extract_json
+import io
 import json
-from fastapi import APIRouter, HTTPException
+import re
+import httpx
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 from config import MODEL
+from routers.search import reconstruct_abstract
 
 router = APIRouter()
 client = AsyncOpenAI()
 
-SYSTEM_PROMPT = """You are an expert systematic review methodologist.
-Generate concise, specific column names for a literature review extraction matrix.
+SYSTEM_PROMPT = """You are a senior systematic review methodologist who designs data-extraction forms following the Cochrane Handbook, JBI extraction guidance, and Garrard's Matrix Method.
+
+Your task is to propose column headers for a literature review extraction matrix.
+
+Design principles you must follow:
+1. Together, the columns must let a reader reconstruct each study at a glance, in this canonical order: study design & methodology → sample and setting → intervention / exposure / phenomenon of interest → measures and instruments → key findings → quality, limitations and gaps.
+2. One column = one construct. Never merge two constructs into a single column (no "Design & Sample").
+3. Every column must be answerable from a title and abstract alone; do not propose columns that require full-text tables or appendices.
+4. Use precise methodological vocabulary ("Study Design", "Sampling Strategy", "Outcome Measures", "Effect Direction", "Theoretical Framework") — never vague labels such as "Details", "Information", "Notes" or "Other".
+5. Adapt column choice to the review type: scoping reviews need mapping/characterisation columns (concepts, contexts, evidence types); effectiveness reviews need PICO-aligned columns (intervention, comparator, outcomes, effect estimates); qualitative syntheses need phenomenon, methodology and key-theme columns.
+6. At least two columns must be tailored to the reviewer's stated domain, population and focus rather than generic.
 Respond with valid JSON only — no markdown, no commentary.
 """
 
@@ -60,8 +73,17 @@ class GenerateSystemColumnsRequest(BaseModel):
     custom_system_prompt: str | None = None
 
 
-SYSTEM_REVIEW_PROMPT = """You are an expert in health technology assessment and systematic review methodology.
-Generate concise, specific column names for a system review comparison matrix.
+SYSTEM_REVIEW_PROMPT = """You are a health-informatics evaluation specialist who designs technology comparison frameworks, drawing on health technology assessment (HTA) practice, the NASSS framework, and ISO/IEC 25010 software quality characteristics.
+
+Your task is to propose column headers for a matrix that compares software systems side-by-side in a systematic technology review.
+
+Design principles you must follow:
+1. One column = one comparison dimension on which the listed systems genuinely differ; avoid dimensions where every system would have the same answer.
+2. Cover the evaluation lifecycle in order: intended use & target users → core functional capabilities → underlying technology or algorithmic approach → evidence base & validation studies → integration & interoperability (standards, EHR/data exchange) → regulatory or certification status → deployment maturity & adoption → known limitations.
+   Select the 5–8 dimensions from this lifecycle that matter most for the systems and research focus at hand.
+3. Use professional evaluation terminology ("Validation Evidence", "Interoperability Standards", "Regulatory Status", "Deployment Maturity") — never vague labels such as "Details", "Features", "Notes" or "Other".
+4. At least one column must be tailored to the reviewer's stated research domain and focus rather than generic.
+5. Every column must be fillable from publicly documented knowledge about the system (websites, publications, regulatory databases).
 Respond with valid JSON only — no markdown, no commentary.
 """
 
@@ -88,10 +110,10 @@ SYSTEMS BEING REVIEWED ({len(req.systems)} total):
 RESEARCH TOPICS:
 {topic_list}
 
-Generate 5–8 meaningful column names for comparing these systems side-by-side.
-Focus on dimensions relevant to THIS domain (e.g. core functionality, evidence base, integration, regulatory status, user adoption, limitations — tailored to the specific systems).
+Generate 5–8 comparison dimensions (column names) for evaluating these systems side-by-side.
+Choose the dimensions where THESE systems meaningfully differ and that matter most for the stated research focus — e.g. intended use, core capabilities, underlying technology, validation evidence, interoperability, regulatory status, adoption, limitations.
 Do NOT include System Name, Vendor, or Category — those are fixed columns.
-Keep names short (2–4 words each).
+Order the columns from intended use through to limitations. Keep names short (2–4 words each) and use professional evaluation terminology.
 
 Respond with JSON:
 {{"columns": ["Column Name 1", "Column Name 2", ...]}}
@@ -399,10 +421,11 @@ PAPERS TO REVIEW ({len(req.papers)} total):
 RESEARCH TOPICS:
 {topic_list}
 
-Generate 5–8 meaningful data column names for extracting key information from these papers.
-The columns should capture what matters most for THIS specific review (e.g. study design, sample, outcomes, measures, findings, limitations — but tailored to the domain).
+Generate 5–8 extraction column names for capturing key information from these papers.
+Follow the canonical extraction order (design → sample/setting → intervention or phenomenon → measures → findings → quality/limitations), adapt the columns to the stated review type, and make at least two columns specific to this domain and focus.
+Every column must be answerable from a title and abstract alone.
 Do NOT include Title, Authors, or Year — those are fixed columns.
-Keep names short (2–4 words each).
+Keep names short (2–4 words each) and use precise methodological terminology.
 
 Respond with JSON:
 {{"columns": ["Column Name 1", "Column Name 2", ...]}}
@@ -425,3 +448,134 @@ Respond with JSON:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Matrix column generation error: {str(e)}")
+
+
+# ── Manual paper ingestion (file upload / URL) ────────────────────────────────
+
+class IngestedPaper(BaseModel):
+    title: str
+    authors: str = ''
+    year: int | None = None
+    abstract: str = ''
+    url: str = ''
+    source: str = 'upload'
+
+
+PAPER_METADATA_PROMPT = """You are a bibliographic metadata extraction specialist.
+Given raw text from a research paper (or a web page describing it), identify:
+- title: the full paper title
+- authors: author names as "A. Name, B. Name" — first three, then " et al." if more
+- year: publication year as an integer, or null if not determinable
+- abstract: the paper's abstract verbatim if present; otherwise a faithful 3–5 sentence summary of the paper's aim, methods and findings from the available text; empty string if impossible
+Respond ONLY with valid JSON: {"title": "...", "authors": "...", "year": 2021, "abstract": "..."}
+"""
+
+DOI_RE = re.compile(r'10\.\d{4,9}/[^\s"<>]+')
+_UA = {"User-Agent": "ResearchAI-tool (research@example.com)"}
+
+
+async def _extract_paper_metadata(text: str, hint: str = '') -> dict:
+    response = await client.responses.create(
+        model=MODEL,
+        instructions=PAPER_METADATA_PROMPT,
+        input=f"{hint}\n\nDOCUMENT TEXT:\n{text}" if hint else f"DOCUMENT TEXT:\n{text}",
+    )
+    data = extract_json(response.output_text or "")
+    if not data or not data.get("title"):
+        raise HTTPException(status_code=422, detail="Could not identify paper metadata in this document")
+    return data
+
+
+@router.post("/matrix/ingest-paper-file", response_model=IngestedPaper)
+async def ingest_paper_file(file: UploadFile = File(...)):
+    raw = await file.read()
+    filename = file.filename or 'upload'
+    text = ''
+
+    if filename.lower().endswith('.pdf') or raw[:5] == b'%PDF-':
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(raw))
+            text = '\n'.join((p.extract_text() or '') for p in reader.pages[:8])
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Could not read PDF: {str(e)}")
+    else:
+        text = raw.decode('utf-8', errors='ignore')
+
+    text = text.strip()[:15000]
+    if len(text) < 40:
+        raise HTTPException(status_code=422, detail="No extractable text found (scanned PDF without OCR?)")
+
+    data = await _extract_paper_metadata(text, hint=f"FILENAME: {filename}")
+    year = data.get("year")
+    return IngestedPaper(
+        title=str(data.get("title", "")).strip(),
+        authors=str(data.get("authors", "") or ""),
+        year=int(year) if year else None,
+        abstract=str(data.get("abstract", "") or ""),
+        url='',
+        source='upload',
+    )
+
+
+class IngestUrlRequest(BaseModel):
+    url: str
+
+
+@router.post("/matrix/ingest-paper-url", response_model=IngestedPaper)
+async def ingest_paper_url(req: IngestUrlRequest):
+    raw = req.url.strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="URL is empty")
+
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as http:
+        # 1) DOI (raw DOI, doi.org link, or DOI embedded in a publisher URL) → OpenAlex metadata
+        doi_match = DOI_RE.search(raw)
+        if doi_match:
+            doi = doi_match.group(0).rstrip('.,;)')
+            try:
+                r = await http.get(f"https://api.openalex.org/works/https://doi.org/{doi}", headers=_UA)
+                if r.status_code == 200:
+                    item = r.json()
+                    authorships = item.get("authorships") or []
+                    names = [a["author"]["display_name"] for a in authorships[:3] if a.get("author")]
+                    authors = ", ".join(names) + (" et al." if len(authorships) > 3 else "")
+                    return IngestedPaper(
+                        title=item.get("title") or item.get("display_name") or "",
+                        authors=authors,
+                        year=item.get("publication_year"),
+                        abstract=reconstruct_abstract(item.get("abstract_inverted_index")),
+                        url=item.get("doi") or raw,
+                        source='doi',
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                pass  # fall through to page fetch
+
+        # 2) Any other URL → fetch the page and extract metadata with the LLM
+        url = raw if raw.startswith(('http://', 'https://')) else f'https://{raw}'
+        try:
+            r = await http.get(url, headers=_UA)
+            r.raise_for_status()
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"Could not fetch URL: {str(e)}")
+
+        html = r.text
+        # crude tag strip — enough for LLM metadata extraction
+        page_text = re.sub(r'<(script|style)[^>]*>.*?</\1>', ' ', html, flags=re.S | re.I)
+        page_text = re.sub(r'<[^>]+>', ' ', page_text)
+        page_text = re.sub(r'\s+', ' ', page_text).strip()[:15000]
+        if len(page_text) < 40:
+            raise HTTPException(status_code=422, detail="Page contained no readable text")
+
+        data = await _extract_paper_metadata(page_text, hint=f"SOURCE URL: {url}")
+        year = data.get("year")
+        return IngestedPaper(
+            title=str(data.get("title", "")).strip(),
+            authors=str(data.get("authors", "") or ""),
+            year=int(year) if year else None,
+            abstract=str(data.get("abstract", "") or ""),
+            url=url,
+            source='url',
+        )

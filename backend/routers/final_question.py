@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from typing import Any
 from openai import OpenAI
 from config import MODEL
+from routers.study_design_catalog import STUDY_DESIGN_CATALOG, CATALOG_BY_ID
 
 router = APIRouter()
 client = OpenAI()
@@ -118,21 +119,12 @@ Return ONLY raw JSON (no markdown, no code fences):
         }
       ]
     }
-  ],
-  "study_designs": [
-    {
-      "id": "sd1",
-      "name": "Systematic Review",
-      "recommended": true,
-      "hint": "Best for synthesising existing evidence"
-    }
   ]
 }
 
 Rules:
 - Topics must be SPECIFIC to the student's domain and gap statement — never generic.
 - The recommended RQ format must match what's methodologically strongest for each topic.
-- The recommended study design must match the research context and gap type.
 - Do not return markdown. Return only raw JSON.
 """
 
@@ -149,7 +141,95 @@ def generate_topics(ctx: BaseContext):
     return parse_json(response.output_text)
 
 
-# ── Endpoint 2: generate paper structure ─────────────────────────────────────
+# ── Endpoint 2: study design catalog (fixed enum) ─────────────────────────────
+
+@router.get("/final-question/study-designs")
+def list_study_designs():
+    """Return the full fixed catalog of study designs with their frameworks."""
+    return {
+        "designs": [
+            {
+                "id": d["id"],
+                "name": d["name"],
+                "category": d["category"],
+                "guideline": d["guideline"],
+                "hint": d["hint"],
+                "sections": [s["name"] for s in d["sections"]],
+            }
+            for d in STUDY_DESIGN_CATALOG
+        ]
+    }
+
+
+# ── Endpoint 3: match topic → study design (LLM only selects, never invents) ──
+
+MATCH_SYSTEM = """\
+You are a senior research methodology consultant. You are given a research topic and a FIXED catalog
+of study designs. Your only task is to SELECT — from the catalog and nothing else — the designs that
+best fit the topic.
+
+Selection logic:
+- What kind of knowledge does the topic seek (synthesis of evidence? causal effect? experience?
+  prevalence? measurement? artifact building?) — match it to the design whose purpose fits.
+- Respect feasibility for a student research project derived from a literature review.
+- Prefer the most methodologically defensible option, not the most ambitious one.
+
+Return ONLY raw JSON (no markdown):
+{
+  "matches": [
+    {"id": "<catalog id>", "reason": "<one sentence: why this design fits this topic>"},
+    {"id": "<catalog id>", "reason": "..."},
+    {"id": "<catalog id>", "reason": "..."}
+  ]
+}
+Rules:
+- Exactly 3 matches, ranked best-first.
+- "id" MUST be one of the catalog ids given. Never invent ids or names.
+"""
+
+class MatchRequest(BaseContext):
+    topic_title: str
+    topic_description: str = ''
+    topic_rationale: str = ''
+
+@router.post("/final-question/match-design")
+def match_design(req: MatchRequest):
+    catalog_text = '\n'.join(
+        f"- {d['id']}: {d['name']} [{d['category']}, {d['guideline']}] — {d['hint']}"
+        for d in STUDY_DESIGN_CATALOG
+    )
+    user_msg = f"""{build_context_text(req)}
+
+Research Topic to match:
+- Title: {req.topic_title}
+- Description: {req.topic_description}
+- Rationale: {req.topic_rationale}
+
+STUDY DESIGN CATALOG (choose ONLY from these ids):
+{catalog_text}
+
+Select the 3 best-fitting study designs for this topic, ranked best-first."""
+
+    response = client.responses.create(
+        model=MODEL,
+        input=[
+            {"role": "system", "content": req.custom_system_prompt or MATCH_SYSTEM},
+            {"role": "user", "content": user_msg},
+        ],
+    )
+    data = parse_json(response.output_text)
+    # keep only valid catalog ids, preserving rank order
+    matches = [
+        {"id": m["id"], "reason": m.get("reason", "")}
+        for m in data.get("matches", [])
+        if m.get("id") in CATALOG_BY_ID
+    ][:3]
+    if not matches:
+        matches = [{"id": "systematic_review", "reason": "Default: synthesis of existing evidence."}]
+    return {"matches": matches}
+
+
+# ── Endpoint 4: generate paper structure (fixed framework, LLM fills outline) ─
 
 class TopicDetail(BaseModel):
     id: str
@@ -160,41 +240,88 @@ class TopicDetail(BaseModel):
 
 class StructureRequest(BaseContext):
     topic: TopicDetail
-    study_design: str = 'Systematic Review'
+    study_design: str = 'Systematic Review'   # display name (legacy)
+    study_design_id: str | None = None         # catalog id (preferred)
 
 STRUCTURE_SYSTEM = """\
-You are a senior academic research methodology expert. Generate a complete, publication-ready paper structure
-for a specific research topic and study design.
+You are a senior academic who has published extensively in this domain and now designs the working
+outline of a new article. You are given a research topic and the ANCHOR sections that the reporting
+guideline requires (Introduction, Methods, … Conclusions). Your output is the COMPLETE list of
+top-level sections of the future article:
 
-CRITICAL requirements:
-- Every section name, purpose, and bullet must be SPECIFIC to this exact topic — never generic boilerplate.
-- The study design determines the structural framework:
-  * Systematic Review → PRISMA framework, GRADE evidence certainty, quality appraisal tools
-  * Scoping Review → JBI/Arksey-O'Malley framework, concept mapping, evidence gap mapping
-  * Meta-Analysis → PRISMA-MA, pooled effect sizes, heterogeneity (I²), forest plots
-  * RCT → CONSORT-AI, allocation concealment, SAP pre-registration, intention-to-treat
-  * Cohort Study → STROBE, longitudinal follow-up, exposure-outcome temporality
-  * Qualitative → epistemological stance, thematic/IPA/grounded theory, transferability
-  * Mixed Methods → convergent/sequential design, integration rationale
-- Include the research question explicitly as a bullet in the Introduction section.
-- 5–7 sections total, 5–7 substantive bullets each.
-- Section names should reflect the topic content, not just "Introduction" / "Methods".
+1. Include EVERY anchor section, with its exact given name, in the given relative order.
+2. INSERT additional top-level content sections where a real published article on this topic would
+   have them — these carry LLM-generated, topic-specific printed titles. Typical insertions:
+   * a Background / Related Work / conceptual-framing section right after the Introduction, titled
+     with the topic's own constructs (e.g. "AI-Based Medication Alerts and the Problem of Override"),
+   * additional thematic content sections where the design reports rich material (e.g. separate
+     top-level chapters for major result domains, a taxonomy/framework section in reviews),
+   * a standalone Implications / Recommendations section before the Conclusions when conventional.
+   Do NOT invent bureaucratic filler sections — every added section must be a heading a reader
+   would actually see printed in the journal.
+3. A typical article has 7–10 top-level sections in total. Mark each section with
+   "origin": "framework" (anchor) or "origin": "ai" (your insertion).
+
+For EVERY section (anchor or inserted) produce:
+- "purpose": one sentence stating what this section achieves FOR THIS SPECIFIC TOPIC.
+- "subsections": 2–5 subsections, each with:
+  * "title": the actual heading as it would be printed in the article. Substantive and
+    topic-specific, never a placeholder:
+      - Introduction subsections walk background → problem → gap → aim, but titled with the
+        topic's own constructs (e.g. "Alert fatigue as an emerging patient-safety threat in ICUs",
+        not "Background").
+      - Methods subsections name the concrete procedures/instruments/analyses
+        (e.g. "Semi-structured interviews with ICU nursing staff", "Reflexive thematic analysis").
+      - Results/Findings subsections state the expected findings or themes as declarative headings,
+        the way published papers title their result themes.
+      - Discussion subsections carry the actual arguments (comparison with prior work, mechanisms,
+        implications for design/practice/policy, limitations).
+  * "content": 3–5 sentences of concrete writing instructions for that subsection: which claims to
+    make, which constructs/variables/instruments/analyses to cover, what evidence or literature to
+    marshal, and which tables/figures belong here (e.g. "Table 1: participant characteristics",
+    "PRISMA flow diagram as Figure 1").
+
+Quality bar: reading ONLY the subsection titles top-to-bottom must feel like the table of contents
+of a real published article in this field — a coherent argument, not generic scaffolding.
+
+Also:
+- The research question must appear verbatim inside the content of the aim/objectives subsection
+  of the Introduction.
+- Use the guideline's own vocabulary (e.g. PRISMA flow diagram, CONSORT participant flow,
+  COREQ reflexivity, GRADE certainty).
 
 Return ONLY raw JSON (no markdown, no code fences):
 {
   "sections": [
     {
       "number": 1,
-      "name": "<topic-specific section name>",
-      "purpose": "<one sentence stating what this section achieves>",
-      "bullets": ["<specific bullet 1>", "<specific bullet 2>", ...]
+      "name": "<anchor name verbatim, or your inserted printed title>",
+      "origin": "framework" | "ai",
+      "purpose": "<one sentence>",
+      "subsections": [
+        {"title": "<printed heading>", "content": "<3-5 sentence writing instructions>"}
+      ]
     }
   ]
 }
+Every anchor section must appear with its exact given name and in the given relative order.
 """
 
 @router.post("/final-question/generate-structure")
 def generate_structure(req: StructureRequest):
+    design = CATALOG_BY_ID.get(req.study_design_id or "")
+    if design is None:
+        # legacy fallback: match by display name, else default to systematic review
+        design = next(
+            (d for d in STUDY_DESIGN_CATALOG if d["name"].lower() == req.study_design.lower()),
+            CATALOG_BY_ID["systematic_review"],
+        )
+
+    framework_text = '\n'.join(
+        f"{i + 1}. {s['name']} — expected content: {s['note']}"
+        for i, s in enumerate(design["sections"])
+    )
+
     context = build_context_text(req)
     user_msg = f"""{context}
 
@@ -204,10 +331,15 @@ Selected Final Topic:
 - Rationale: {req.topic.rationale}
 - Key Themes: {', '.join(req.topic.keyThemes) or '(none)'}
 
-Study Design: {req.study_design}
+Study Design: {design['name']}
+Reporting Guideline: {design['guideline']}
 
-Generate a complete, academically rigorous paper structure for this topic using the {req.study_design} framework.
-Every bullet point must be specific to "{req.topic.title}" — not generic."""
+ANCHOR SECTIONS required by the guideline (keep these names verbatim, in this order):
+{framework_text}
+
+Produce the COMPLETE top-level section list of the future article: all anchors PLUS the additional
+topic-specific content sections a real published paper would have (7–10 sections total), each with
+purpose and real-paper subsections. Everything must be specific to "{req.topic.title}" — not generic."""
 
     response = client.responses.create(
         model=MODEL,
@@ -216,7 +348,58 @@ Every bullet point must be specific to "{req.topic.title}" — not generic."""
             {"role": "user", "content": user_msg},
         ],
     )
-    return parse_json(response.output_text)
+    data = parse_json(response.output_text)
+
+    # Merge: keep the LLM's full section list (anchors + inserted content sections),
+    # but guarantee every guideline anchor is present, named verbatim, in relative order.
+    anchor_names = [s["name"].strip().lower() for s in design["sections"]]
+
+    def clean_subsections(raw) -> list[dict]:
+        return [
+            {
+                "title": str(sub.get("title", "")).strip(),
+                "content": str(sub.get("content", "")).strip(),
+            }
+            for sub in (raw or [])
+            if str(sub.get("title", "")).strip()
+        ]
+
+    sections = []
+    for s in data.get("sections", []):
+        name = str(s.get("name", "")).strip()
+        if not name:
+            continue
+        is_anchor = name.lower() in anchor_names
+        sections.append({
+            "name": name,
+            "origin": "framework" if is_anchor else "ai",
+            "purpose": str(s.get("purpose", "")).strip(),
+            "bullets": s.get("bullets", []),  # legacy fallback if the model returns flat bullets
+            "subsections": clean_subsections(s.get("subsections")),
+        })
+
+    # Insert any anchor the model dropped, right after the last preceding anchor present
+    present = {s["name"].lower() for s in sections}
+    for idx, fs in enumerate(design["sections"]):
+        if fs["name"].lower() in present:
+            continue
+        insert_pos = 0
+        for pos, s in enumerate(sections):
+            if s["origin"] == "framework" and anchor_names.index(s["name"].lower()) < idx:
+                insert_pos = pos + 1
+        sections.insert(insert_pos, {
+            "name": fs["name"], "origin": "framework",
+            "purpose": fs["note"], "bullets": [], "subsections": [],
+        })
+        present.add(fs["name"].lower())
+
+    for i, s in enumerate(sections):
+        s["number"] = i + 1
+
+    return {
+        "sections": sections,
+        "design": {"id": design["id"], "name": design["name"], "guideline": design["guideline"]},
+    }
 
 
 # ── Legacy endpoint (kept for backward compatibility) ─────────────────────────

@@ -4,7 +4,7 @@ services:
     # ports:           # uncomment if you need direct access to the backend outside Docker
     #   - "8001:8000"
     ports:
-      - "8001:8000"   # exposed for orchestration External Component Registry
+      - "8001:8000" # exposed for orchestration External Component Registry
     env_file: .env
     restart: unless-stopped
 
