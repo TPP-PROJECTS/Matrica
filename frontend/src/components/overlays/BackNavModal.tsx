@@ -2,12 +2,14 @@ import { useApp } from '../../store/AppContext'
 
 const STEP_NAMES: Record<number, string> = {
   1: 'Chat & Define Topic',
-  2: 'Explore & Search',
-  3: 'Review List',
-  4: 'Matrix',
-  5: 'Synthesis',
-  6: 'Gap & Statement',
-  7: 'Final Question',
+  2: 'Matrix Schema',
+  3: 'System Review',
+  4: 'Explore & Search',
+  5: 'Select Paper',
+  6: 'Matrix',
+  7: 'Synthesis',
+  8: 'Gap & Statement',
+  9: 'Final Question',
 }
 
 export function BackNavModal() {

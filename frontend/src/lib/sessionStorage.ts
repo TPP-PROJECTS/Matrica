@@ -22,7 +22,12 @@ export function toSnapshot(state: AppState): SessionSnapshot {
     // Step 1
     profile: state.profile,
     chatMessages: state.chatMessages,
-    // Step 2
+    // Step 2 — Matrix Schema
+    systemMatrixEnabled: state.systemMatrixEnabled,
+    matrixColumnSuggestions: state.matrixColumnSuggestions,
+    systemMatrixColumnSuggestions: state.systemMatrixColumnSuggestions,
+    columnDescriptions: state.columnDescriptions,
+    systemColumnDescriptions: state.systemColumnDescriptions,
     systemItems: state.systemItems,
     // Step 3
     topics: state.topics,

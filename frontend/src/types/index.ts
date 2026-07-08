@@ -254,7 +254,13 @@ export interface SessionSnapshot {
   // Step 1
   profile: ResearchProfile
   chatMessages: ChatMessage[]
-  // Step 2
+  // Step 2 — Matrix Schema
+  systemMatrixEnabled: boolean
+  matrixColumnSuggestions: string[]
+  systemMatrixColumnSuggestions: string[]
+  columnDescriptions: Record<string, string>
+  systemColumnDescriptions: Record<string, string>
+  // System Review
   systemItems: SystemItem[]
   // Step 3
   topics: TopicCard[]
@@ -262,6 +268,12 @@ export interface SessionSnapshot {
   // Step 4
   results: ResultCard[]
   reviewList: ResultCard[]
+  // Step 2 (Matrix Schema) — schema decided up-front, applied to the Matrix step
+  systemMatrixEnabled: boolean
+  matrixColumnSuggestions: string[]
+  systemMatrixColumnSuggestions: string[]
+  columnDescriptions: Record<string, string>
+  systemColumnDescriptions: Record<string, string>
   // Step 5
   matrixColumns: string[]
   matrixRows: MatrixRow[]
@@ -304,7 +316,13 @@ export interface AppState {
   // Step 1
   profile: ResearchProfile
   chatMessages: ChatMessage[]
-  // Step 2
+  // Step 2 (Matrix Schema)
+  systemMatrixEnabled: boolean
+  matrixColumnSuggestions: string[]
+  systemMatrixColumnSuggestions: string[]
+  columnDescriptions: Record<string, string>
+  systemColumnDescriptions: Record<string, string>
+  // Step 2b — System Review
   systemItems: SystemItem[]
   // Step 3
   topics: TopicCard[]
@@ -365,6 +383,10 @@ export type AppAction =
   | { type: 'UPDATE_GAP_STATEMENT'; text: string }
   | { type: 'UPDATE_THEME_COLUMNS'; themeId: string; columns: string[] }
   | { type: 'UPDATE_RESULT_RELEVANCE'; paperId: string; score: number; confidence: ConfidenceLevel }
+  | { type: 'SET_SYSTEM_MATRIX_ENABLED'; enabled: boolean }
+  | { type: 'SET_MATRIX_COLUMN_SUGGESTIONS'; columns: string[] }
+  | { type: 'SET_SYSTEM_MATRIX_COLUMN_SUGGESTIONS'; columns: string[] }
+  | { type: 'MERGE_COLUMN_DESCRIPTIONS'; system: boolean; descriptions: Record<string, string> }
   | { type: 'SET_MATRIX_COLUMNS'; columns: string[] }
   | { type: 'ADD_MATRIX_COLUMN'; column: string }
   | { type: 'RENAME_MATRIX_COLUMN'; oldName: string; newName: string }

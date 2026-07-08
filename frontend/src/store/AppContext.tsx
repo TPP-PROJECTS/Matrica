@@ -14,8 +14,10 @@ import {
 
 
 const initialStepStates: Record<number, StepState> = {
-  1: 'active', 2: 'locked', 3: 'locked', 4: 'locked', 5: 'locked', 6: 'locked', 7: 'locked', 8: 'locked',
+  1: 'active', 2: 'locked', 3: 'locked', 4: 'locked', 5: 'locked', 6: 'locked', 7: 'locked', 8: 'locked', 9: 'locked',
 }
+
+const LAST_STEP = 9
 
 function freshState(): AppState {
   const now = new Date().toISOString()
@@ -27,6 +29,11 @@ function freshState(): AppState {
     stepStates: initialStepStates,
     profile: { domain: '', population: '', focus: '', method: '', reviewType: '' },
     profileCompleteness: 0,
+    systemMatrixEnabled: true,
+    matrixColumnSuggestions: [],
+    systemMatrixColumnSuggestions: [],
+    columnDescriptions: {},
+    systemColumnDescriptions: {},
     topics: MOCK_TOPICS,
     systemItems: [],
     queries: [],
@@ -72,6 +79,11 @@ function snapshotToState(snap: SessionSnapshot): AppState {
     stepStates: computeStepStates(snap.currentStep, snap.staleSteps ?? []),
     profileCompleteness: computeCompleteness(snap.profile),
     profile: snap.profile,
+    systemMatrixEnabled: snap.systemMatrixEnabled ?? base.systemMatrixEnabled,
+    matrixColumnSuggestions: snap.matrixColumnSuggestions ?? base.matrixColumnSuggestions,
+    systemMatrixColumnSuggestions: snap.systemMatrixColumnSuggestions ?? base.systemMatrixColumnSuggestions,
+    columnDescriptions: snap.columnDescriptions ?? base.columnDescriptions,
+    systemColumnDescriptions: snap.systemColumnDescriptions ?? base.systemColumnDescriptions,
     chatMessages: snap.chatMessages ?? base.chatMessages,
     systemItems: snap.systemItems ?? [],
     topics: snap.topics ?? base.topics,
@@ -107,7 +119,7 @@ function getInitialState(): AppState {
 
 function computeStepStates(current: number, stale: number[]): Record<number, StepState> {
   const states: Record<number, StepState> = {}
-  for (let i = 1; i <= 8; i++) {
+  for (let i = 1; i <= LAST_STEP; i++) {
     if (i === current) states[i] = 'active'
     else if (stale.includes(i)) states[i] = 'stale'
     else if (i < current) states[i] = 'done'
@@ -138,7 +150,7 @@ function reducer(state: AppState, action: AppAction): AppState {
     }
 
     case 'ADVANCE_STEP': {
-      const next = Math.min(state.currentStep + 1, 8)
+      const next = Math.min(state.currentStep + 1, LAST_STEP)
       return { ...state, currentStep: next, stepStates: computeStepStates(next, state.staleSteps), editMode: false }
     }
 
@@ -294,6 +306,20 @@ function reducer(state: AppState, action: AppAction): AppState {
           r.id === action.paperId ? { ...r, relevanceScore: action.score, confidence: action.confidence } : r
         ),
       }
+
+    case 'SET_SYSTEM_MATRIX_ENABLED':
+      return { ...state, systemMatrixEnabled: action.enabled }
+
+    case 'SET_MATRIX_COLUMN_SUGGESTIONS':
+      return { ...state, matrixColumnSuggestions: action.columns }
+
+    case 'SET_SYSTEM_MATRIX_COLUMN_SUGGESTIONS':
+      return { ...state, systemMatrixColumnSuggestions: action.columns }
+
+    case 'MERGE_COLUMN_DESCRIPTIONS':
+      return action.system
+        ? { ...state, systemColumnDescriptions: { ...state.systemColumnDescriptions, ...action.descriptions } }
+        : { ...state, columnDescriptions: { ...state.columnDescriptions, ...action.descriptions } }
 
     case 'SET_MATRIX_COLUMNS':
       return { ...state, matrixColumns: action.columns }
@@ -598,7 +624,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const cur = stateRef.current
       const toStep =
         action.type === 'SET_STEP'       ? action.step
-        : action.type === 'ADVANCE_STEP' ? Math.min(cur.currentStep + 1, 8)
+        : action.type === 'ADVANCE_STEP' ? Math.min(cur.currentStep + 1, LAST_STEP)
         : (cur.pendingBackStep ?? cur.currentStep)
 
       trackEvent('step_change', {

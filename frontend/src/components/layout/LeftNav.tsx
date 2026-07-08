@@ -3,13 +3,14 @@ import type { StepState } from '../../types'
 
 const STEPS = [
   { id: 1, label: 'Chat & Define Topic' },
-  { id: 2, label: 'System Review' },
-  { id: 3, label: 'Explore & Search' },
-  { id: 4, label: 'Select Paper' },
-  { id: 5, label: 'Matrix' },
-  { id: 6, label: 'Synthesis' },
-  { id: 7, label: 'Gap & Statement' },
-  { id: 8, label: 'Final Question' },
+  { id: 2, label: 'Matrix Schema' },
+  { id: 3, label: 'System Review' },
+  { id: 4, label: 'Explore & Search' },
+  { id: 5, label: 'Select Paper' },
+  { id: 6, label: 'Matrix' },
+  { id: 7, label: 'Synthesis' },
+  { id: 8, label: 'Gap & Statement' },
+  { id: 9, label: 'Final Question' },
 ]
 
 function badgeBorderColor(state: StepState) {

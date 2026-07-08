@@ -52,11 +52,31 @@ class GenerateColumnsRequest(BaseModel):
     papers: list[PaperInfo]
     topics: list[TopicInfo]
     profile: ProfileInfo
+    exclude_columns: list[str] = []
     custom_system_prompt: str | None = None
 
 
 class GenerateColumnsResponse(BaseModel):
     columns: list[str]
+    descriptions: dict[str, str] = {}
+
+
+def _parse_columns(data: dict) -> tuple[list[str], dict[str, str]]:
+    """Accept either ["Name", ...] or [{"name": ..., "description": ...}, ...]."""
+    names: list[str] = []
+    descs: dict[str, str] = {}
+    for item in data.get("columns", []):
+        if isinstance(item, dict):
+            name = str(item.get("name", "")).strip()
+            if not name:
+                continue
+            names.append(name)
+            desc = str(item.get("description", "")).strip()
+            if desc:
+                descs[name] = desc
+        elif isinstance(item, str) and item.strip():
+            names.append(item.strip())
+    return names, descs
 
 
 class SystemInfo(BaseModel):
@@ -70,7 +90,20 @@ class GenerateSystemColumnsRequest(BaseModel):
     systems: list[SystemInfo]
     profile: ProfileInfo
     topics: list[TopicInfo] = []
+    exclude_columns: list[str] = []
     custom_system_prompt: str | None = None
+
+
+def _exclude_note(exclude_columns: list[str]) -> str:
+    if not exclude_columns:
+        return ''
+    listed = '\n'.join(f'- {c}' for c in exclude_columns)
+    return (
+        "\n\nCOLUMNS ALREADY IN THE MATRIX — do NOT propose any of these again, "
+        "and do NOT propose close synonyms or overlapping dimensions. "
+        "Suggest only genuinely NEW, complementary columns that add information not already captured:\n"
+        f"{listed}"
+    )
 
 
 SYSTEM_REVIEW_PROMPT = """You are a health-informatics evaluation specialist who designs technology comparison frameworks, drawing on health technology assessment (HTA) practice, the NASSS framework, and ISO/IEC 25010 software quality characteristics.
@@ -109,14 +142,16 @@ SYSTEMS BEING REVIEWED ({len(req.systems)} total):
 
 RESEARCH TOPICS:
 {topic_list}
+{_exclude_note(req.exclude_columns)}
 
 Generate 5–8 comparison dimensions (column names) for evaluating these systems side-by-side.
 Choose the dimensions where THESE systems meaningfully differ and that matter most for the stated research focus — e.g. intended use, core capabilities, underlying technology, validation evidence, interoperability, regulatory status, adoption, limitations.
 Do NOT include System Name, Vendor, or Category — those are fixed columns.
 Order the columns from intended use through to limitations. Keep names short (2–4 words each) and use professional evaluation terminology.
+For each column also give a one-sentence description of what it captures and how it is judged; when the column is categorical, list the expected values in the description (e.g. "One of: FDA-cleared, CE-marked, none").
 
 Respond with JSON:
-{{"columns": ["Column Name 1", "Column Name 2", ...]}}
+{{"columns": [{{"name": "Column Name", "description": "what it captures / how it is judged; list expected values if categorical"}}, ...]}}
 """
 
     try:
@@ -128,14 +163,94 @@ Respond with JSON:
         data = extract_json(response.output_text or "")
         if data is None:
             raise HTTPException(status_code=500, detail="AI returned invalid JSON")
-        columns = data.get("columns", [])
+        columns, descriptions = _parse_columns(data)
         if not columns:
             raise ValueError("empty columns")
-        return GenerateColumnsResponse(columns=columns)
+        return GenerateColumnsResponse(columns=columns, descriptions=descriptions)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"System column generation error: {str(e)}")
+
+
+# ── Up-front schema assessment (Matrix Schema step, before systems/papers exist) ──
+
+class AssessSystemSchemaRequest(BaseModel):
+    profile: ProfileInfo
+    topics: list[TopicInfo] = []
+    exclude_columns: list[str] = []
+    custom_system_prompt: str | None = None
+
+
+class AssessSystemSchemaResponse(BaseModel):
+    recommended: bool
+    rationale: str
+    columns: list[str]
+    descriptions: dict[str, str] = {}
+
+
+SYSTEM_SCHEMA_ASSESS_PROMPT = SYSTEM_REVIEW_PROMPT + """
+
+Before proposing columns, first JUDGE whether a *system/technology comparison matrix* is even
+appropriate for this review. It is appropriate only when the research question centres on comparing
+software systems, digital tools, apps, platforms, devices or algorithms. It is NOT appropriate for
+reviews of clinical interventions, epidemiology, psychosocial phenomena, policy, or education where no
+software artefacts are being compared.
+
+Respond with valid JSON only, no markdown:
+{"recommended": true/false, "rationale": "<one sentence>", "columns": [{"name": "Col 1", "description": "what it captures; list expected values if categorical"}, ...]}
+If recommended is false, return an empty columns array.
+"""
+
+
+@router.post("/matrix/assess-system-schema", response_model=AssessSystemSchemaResponse)
+async def assess_system_schema(req: AssessSystemSchemaRequest):
+    topic_list = '\n'.join(f'- [{t.type}] {t.title}: {t.description}' for t in req.topics) if req.topics else '(none yet)'
+
+    user_content = f"""Decide whether this systematic review needs a technology/system comparison matrix,
+and if so propose its comparison columns.
+
+RESEARCH PROFILE:
+Domain: {req.profile.domain}
+Population: {req.profile.population}
+Focus: {req.profile.focus}
+Method: {req.profile.method}
+Review type: {req.profile.reviewType}
+
+RESEARCH TOPICS:
+{topic_list}
+{_exclude_note(req.exclude_columns)}
+
+If a system comparison matrix is warranted, generate 5–8 comparison dimensions (column names), ordered
+from intended use through to limitations, using professional evaluation terminology. Do NOT include
+System Name, Vendor, or Category — those are fixed columns. For each column give a one-sentence
+description of what it captures and how it is judged; when categorical, list the expected values.
+
+Respond with JSON:
+{{"recommended": true/false, "rationale": "<one sentence>", "columns": [{{"name": "Column Name", "description": "what it captures; list expected values if categorical"}}, ...]}}
+"""
+
+    try:
+        response = await client.responses.create(
+            model=MODEL,
+            instructions=req.custom_system_prompt or SYSTEM_SCHEMA_ASSESS_PROMPT,
+            input=user_content,
+        )
+        data = extract_json(response.output_text or "")
+        if data is None:
+            raise HTTPException(status_code=500, detail="AI returned invalid JSON")
+        recommended = bool(data.get("recommended", False))
+        columns, descriptions = _parse_columns(data) if recommended else ([], {})
+        return AssessSystemSchemaResponse(
+            recommended=recommended,
+            rationale=str(data.get("rationale", "")),
+            columns=columns,
+            descriptions=descriptions,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"System schema assessment error: {str(e)}")
 
 
 class CellData(BaseModel):
@@ -420,15 +535,17 @@ PAPERS TO REVIEW ({len(req.papers)} total):
 
 RESEARCH TOPICS:
 {topic_list}
+{_exclude_note(req.exclude_columns)}
 
 Generate 5–8 extraction column names for capturing key information from these papers.
 Follow the canonical extraction order (design → sample/setting → intervention or phenomenon → measures → findings → quality/limitations), adapt the columns to the stated review type, and make at least two columns specific to this domain and focus.
 Every column must be answerable from a title and abstract alone.
 Do NOT include Title, Authors, or Year — those are fixed columns.
 Keep names short (2–4 words each) and use precise methodological terminology.
+For each column also give a one-sentence description of what it captures and how it is measured; when the column is categorical, list the expected values in the description (e.g. "One of: RCT, cohort, case-control, qualitative").
 
 Respond with JSON:
-{{"columns": ["Column Name 1", "Column Name 2", ...]}}
+{{"columns": [{{"name": "Column Name", "description": "what it captures / how it is measured; list expected values if categorical"}}, ...]}}
 """
 
     try:
@@ -440,10 +557,10 @@ Respond with JSON:
         data = extract_json(response.output_text or "")
         if data is None:
             raise HTTPException(status_code=500, detail="AI returned invalid JSON")
-        columns = data.get("columns", [])
+        columns, descriptions = _parse_columns(data)
         if not columns:
             raise ValueError("empty columns")
-        return GenerateColumnsResponse(columns=columns)
+        return GenerateColumnsResponse(columns=columns, descriptions=descriptions)
     except HTTPException:
         raise
     except Exception as e:

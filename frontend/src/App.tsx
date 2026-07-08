@@ -3,6 +3,7 @@ import { AppProvider, useApp } from './store/AppContext'
 import { AppLayout } from './components/layout/AppLayout'
 import { AnalyticsDashboard } from './screens/AnalyticsDashboard'
 import { Screen1 } from './screens/Screen1'
+import { ScreenMatrixInit } from './screens/ScreenMatrixInit'
 import { Screen2 } from './screens/Screen2'
 import { Screen3 } from './screens/Screen3'
 import { Screen4 } from './screens/Screen4'
@@ -17,13 +18,14 @@ function WorkflowRouter() {
   function renderScreen() {
     switch (state.currentStep) {
       case 1: return <Screen1 />
-      case 2: return <Screen2 />
-      case 3: return <Screen3 />
-      case 4: return <Screen4 />
-      case 5: return <Screen5 />
-      case 6: return <Screen6 />
-      case 7: return <Screen7 />
-      case 8: return <Screen8 />
+      case 2: return <ScreenMatrixInit />
+      case 3: return <Screen2 />
+      case 4: return <Screen3 />
+      case 5: return <Screen4 />
+      case 6: return <Screen5 />
+      case 7: return <Screen6 />
+      case 8: return <Screen7 />
+      case 9: return <Screen8 />
       default: return <Screen1 />
     }
   }

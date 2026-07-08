@@ -31,7 +31,7 @@ export function resolveAction(action: ProposedAction, state: AppState): AppActio
     // ── Navigation ─────────────────────────────────────────────────────────────
     case 'NAVIGATE_TO_STEP': {
       const step = Number(p.step)
-      if (isNaN(step) || step < 1 || step > 8) return []
+      if (isNaN(step) || step < 1 || step > 9) return []
       if (step < state.currentStep) {
         return [{ type: 'BACK_NAV_REQUEST', step }]
       }

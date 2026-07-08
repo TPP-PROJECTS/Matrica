@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useApp } from '../store/AppContext'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
+import { SchemaBuilder } from '../components/matrix/SchemaBuilder'
 import type { MatrixCell, ConfidenceLevel, SystemMatrixRow, ResultCard, SystemItem } from '../types'
 import { API, apiFetch } from '../lib/api'
 
@@ -201,55 +202,80 @@ function PendingCell() {
 }
 
 // ── Editable column header (rename / delete) ─────────────────────────────────
-function ColumnHeader({
-  col,
-  borderClass,
-  onRename,
-  onRemove,
-}: {
-  col: string
-  borderClass: string
-  onRename: (newName: string) => void
-  onRemove: () => void
-}) {
-  const [editing, setEditing] = useState(false)
-  const [val, setVal] = useState(col)
+function ColumnHeader({ col, borderClass, description }: { col: string; borderClass: string; description?: string }) {
+  const ref = useRef<HTMLTableCellElement>(null)
+  const [tip, setTip] = useState<{ left: number; top: number } | null>(null)
 
-  function commit() {
-    setEditing(false)
-    if (val.trim() && val.trim() !== col) onRename(val.trim())
+  function showTip() {
+    if (!description) return
+    const r = ref.current?.getBoundingClientRect()
+    if (!r) return
+    const width = 280
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8))
+    setTip({ left, top: r.bottom + 4 })
   }
 
   return (
-    <th className={`border ${borderClass} px-2 py-1.5 text-[9px] font-semibold text-white min-w-[140px] group/col`}>
-      {editing ? (
-        <input
-          autoFocus
-          value={val}
-          onChange={e => setVal(e.target.value)}
-          onKeyDown={e => {
-            if (e.key === 'Enter') commit()
-            if (e.key === 'Escape') { setVal(col); setEditing(false) }
-          }}
-          onBlur={commit}
-          className="w-full bg-transparent border-b border-white/50 text-white text-[9px] font-semibold outline-none"
-        />
-      ) : (
-        <span className="flex items-center gap-1">
-          <span className="flex-1">{col}</span>
-          <button
-            onClick={() => { setVal(col); setEditing(true) }}
-            title="Rename column"
-            className="opacity-0 group-hover/col:opacity-100 text-white/50 hover:text-white text-[9px] shrink-0 transition-opacity"
-          >✎</button>
-          <button
-            onClick={onRemove}
-            title="Delete column"
-            className="opacity-0 group-hover/col:opacity-100 text-white/50 hover:text-red-300 text-[9px] shrink-0 transition-opacity"
-          >✕</button>
-        </span>
+    <th
+      ref={ref}
+      onMouseEnter={showTip}
+      onMouseLeave={() => setTip(null)}
+      className={`border ${borderClass} px-2 py-1.5 text-[9px] font-semibold text-white min-w-[140px] ${description ? 'cursor-help' : ''}`}
+    >
+      <span className="inline-flex items-center gap-1">
+        <span>{col}</span>
+        {description && <span className="text-white/50 text-[8px]" aria-hidden>ⓘ</span>}
+      </span>
+      {tip && description && (
+        <div
+          style={{ position: 'fixed', left: tip.left, top: tip.top, width: 280, zIndex: 60 }}
+          className="px-2.5 py-1.5 rounded-md bg-zinc-900 text-white text-[10px] font-normal normal-case leading-snug shadow-xl border border-zinc-700 pointer-events-none whitespace-normal"
+        >
+          <span className="block font-semibold mb-0.5">{col}</span>
+          {description}
+        </div>
       )}
     </th>
+  )
+}
+
+// Fresh recommendation pool for a Regenerate: replaces the previous pool.
+// Drops internal duplicates and anything already chosen as a column.
+function freshSuggestions(fresh: string[], exclude: string[]): string[] {
+  const ex = new Set(exclude.map(c => c.toLowerCase().trim()))
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const c of fresh) {
+    const k = c.toLowerCase().trim()
+    if (ex.has(k) || seen.has(k)) continue
+    seen.add(k)
+    out.push(c)
+  }
+  return out
+}
+
+// Keep only descriptions for columns the user hasn't already selected, so a
+// regenerate never rewrites the description of a column already in the matrix.
+function newColumnDescriptions(descriptions: Record<string, string> | undefined, exclude: string[]): Record<string, string> {
+  if (!descriptions) return {}
+  const ex = new Set(exclude.map(c => c.toLowerCase().trim()))
+  return Object.fromEntries(Object.entries(descriptions).filter(([k]) => !ex.has(k.toLowerCase().trim())))
+}
+
+function EditColumnsModal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white rounded-xl shadow-2xl flex flex-col w-[720px] max-h-[85vh]">
+        <div className="flex items-center px-5 py-3.5 border-b border-zinc-200 shrink-0">
+          <span className="text-[13px] font-bold text-zinc-900 flex-1">{title}</span>
+          <button onClick={onClose} className="text-zinc-400 hover:text-zinc-700 text-[18px] leading-none">×</button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-5 py-4">{children}</div>
+        <div className="flex items-center justify-end px-5 py-3 border-t border-zinc-200 shrink-0">
+          <button onClick={onClose} className="px-4 h-8 bg-zinc-900 text-white rounded text-[11px] font-semibold hover:bg-zinc-700">Done</button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -578,27 +604,41 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
   const abortRef = useRef(false)
   const [showAutoFillModal, setShowAutoFillModal] = useState(false)
   const [customAutoFillPrompt, setCustomAutoFillPrompt] = useState<string | null>(null)
-  const [addingCol, setAddingCol] = useState(false)
-  const [newColName, setNewColName] = useState('')
-  const addColInputRef = useRef<HTMLInputElement>(null)
+  const [showEditCols, setShowEditCols] = useState(false)
+  const [editColsLoading, setEditColsLoading] = useState(false)
+  const [editColsPrompt, setEditColsPrompt] = useState<string | null>(null)
+  const [newCols, setNewCols] = useState<string[]>([])
   const [showAddPapers, setShowAddPapers] = useState(false)
-
-  function submitAddCol() {
-    const name = newColName.trim()
-    if (name) dispatch({ type: 'ADD_MATRIX_COLUMN', column: name })
-    setAddingCol(false)
-    setNewColName('')
-  }
-
-  function removeCol(col: string) {
-    const filled = state.matrixRows.filter(r => r.cells[col]?.value).length
-    if (filled > 0 && !window.confirm(`Delete column "${col}"? ${filled} filled cell(s) will be lost.`)) return
-    dispatch({ type: 'REMOVE_MATRIX_COLUMN', column: col })
-  }
 
   const dataCols = state.matrixColumns.filter(
     c => c !== '#' && c !== 'Title' && c !== 'Authors' && c !== 'Year'
   )
+
+  // Re-recommend columns from the *selected papers* (edit context), appended below
+  // the existing suggestion pool and deduped against current columns.
+  async function regenLitColumns(prompt?: string | null) {
+    setEditColsPrompt(prompt ?? null)
+    setEditColsLoading(true)
+    try {
+      const res = await apiFetch(`${API}/matrix/generate-columns`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          papers: state.reviewList.map(p => ({ title: p.title, abstract: p.abstract, authors: p.authors, year: p.year })),
+          topics: state.topics.filter(t => t.selected).map(t => ({ title: t.title, description: t.description, type: t.type })),
+          profile: state.profile,
+          exclude_columns: dataCols,
+          custom_system_prompt: prompt ?? null,
+        }),
+      })
+      if (!res.ok) throw new Error()
+      const data = await res.json()
+      const fresh = freshSuggestions(data.columns, dataCols)
+      dispatch({ type: 'SET_MATRIX_COLUMN_SUGGESTIONS', columns: fresh })
+      setNewCols(fresh)
+      const descs = newColumnDescriptions(data.descriptions, dataCols)
+      if (Object.keys(descs).length) dispatch({ type: 'MERGE_COLUMN_DESCRIPTIONS', system: false, descriptions: descs })
+    } catch { /* keep prior suggestions */ } finally { setEditColsLoading(false) }
+  }
 
   const reviewListIds = new Set(state.reviewList.map(p => p.id))
   const rowsMismatch = state.reviewList.length > 0 &&
@@ -621,6 +661,7 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
       if (!res.ok) throw new Error()
       const data = await res.json()
       dispatch({ type: 'SET_MATRIX_COLUMNS', columns: data.columns })
+      if (data.descriptions) dispatch({ type: 'MERGE_COLUMN_DESCRIPTIONS', system: false, descriptions: data.descriptions })
       dispatch({ type: 'INIT_MATRIX_ROWS' })
     } catch { setGenError(true) } finally { setGenerating(false) }
   }
@@ -715,26 +756,8 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
       <div className="h-8 bg-zinc-50 border-b border-zinc-200 flex items-center px-4 gap-3 shrink-0">
         <span className="text-[9px] text-zinc-400">{filledCount}/{totalCells} cells filled</span>
         <div className="flex-1" />
-        {addingCol ? (
-          <div className="flex items-center gap-1">
-            <input
-              ref={addColInputRef}
-              autoFocus
-              value={newColName}
-              onChange={e => setNewColName(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter') submitAddCol()
-                if (e.key === 'Escape') { setAddingCol(false); setNewColName('') }
-              }}
-              placeholder="Column name…"
-              className="h-6 px-2 border border-zinc-400 rounded text-[10px] text-zinc-800 outline-none focus:border-purple-500 w-36"
-            />
-            <button onClick={submitAddCol} className="px-2 h-6 bg-zinc-900 text-white rounded text-[10px] hover:bg-zinc-700">Add</button>
-            <button onClick={() => { setAddingCol(false); setNewColName('') }} className="px-2 h-6 border border-zinc-300 rounded text-[10px] text-zinc-500 hover:bg-zinc-100">✕</button>
-          </div>
-        ) : (
-          <button onClick={() => setAddingCol(true)} className="px-3 h-6 border border-zinc-300 rounded text-[10px] text-zinc-700 hover:bg-zinc-50">+ Column</button>
-        )}
+        <button onClick={() => setShowEditCols(true)}
+          className="px-3 h-6 border border-zinc-300 rounded text-[10px] text-zinc-700 hover:bg-zinc-50">✎ Edit Columns</button>
         <button onClick={() => setShowAddPapers(true)} disabled={filling}
           className="px-3 h-6 border border-zinc-300 rounded text-[10px] text-zinc-700 hover:bg-zinc-50 disabled:opacity-50">
           + Papers
@@ -774,13 +797,7 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
               <th className="sticky left-0 z-10 bg-zinc-900 border border-zinc-700 px-2 py-1.5 text-[9px] font-semibold text-white w-8">#</th>
               <th className="sticky left-8 z-10 bg-zinc-900 border border-zinc-700 px-2 py-1.5 text-[9px] font-semibold text-white w-[180px]">Title · Authors · Year</th>
               {dataCols.map(col => (
-                <ColumnHeader
-                  key={col}
-                  col={col}
-                  borderClass="border-zinc-700"
-                  onRename={newName => dispatch({ type: 'RENAME_MATRIX_COLUMN', oldName: col, newName })}
-                  onRemove={() => removeCol(col)}
-                />
+                <ColumnHeader key={col} col={col} borderClass="border-zinc-700" description={state.columnDescriptions[col]} />
               ))}
             </tr>
           </thead>
@@ -818,6 +835,25 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
       </div>
 
       {showAddPapers && <AddPapersModal onClose={() => setShowAddPapers(false)} onAdd={handleAddPapers} />}
+
+      {showEditCols && (
+        <EditColumnsModal title="Edit Literature Matrix Columns" onClose={() => setShowEditCols(false)}>
+          <SchemaBuilder
+            title="Literature matrix columns"
+            accent="zinc"
+            available={state.matrixColumnSuggestions}
+            selected={dataCols}
+            descriptions={state.columnDescriptions}
+            newColumns={newCols}
+            loading={editColsLoading}
+            customPrompt={editColsPrompt}
+            promptKey="matrix-lit-columns"
+            promptTitle="Literature Matrix Columns"
+            onRegenerate={regenLitColumns}
+            onChange={cols => dispatch({ type: 'SET_MATRIX_COLUMNS', columns: cols })}
+          />
+        </EditColumnsModal>
+      )}
     </div>
   )
 }
@@ -832,16 +868,11 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
   const [fillTotal, setFillTotal] = useState(0)
   const [fillingRowId, setFillingRowId] = useState<string | null>(null)
   const abortRef = useRef(false)
-  const [addingCol, setAddingCol] = useState(false)
-  const [newColName, setNewColName] = useState('')
+  const [showEditCols, setShowEditCols] = useState(false)
+  const [editColsLoading, setEditColsLoading] = useState(false)
+  const [editColsPrompt, setEditColsPrompt] = useState<string | null>(null)
+  const [newCols, setNewCols] = useState<string[]>([])
   const [showAddSystem, setShowAddSystem] = useState(false)
-
-  function submitAddCol() {
-    const name = newColName.trim()
-    if (name) dispatch({ type: 'ADD_SYSTEM_MATRIX_COLUMN', column: name })
-    setAddingCol(false)
-    setNewColName('')
-  }
 
   const systemItems = state.systemItems ?? []
   const selectedSystems = systemItems.filter(s => s.selected)
@@ -849,10 +880,30 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
   const systemMatrixColumns: string[] = state.systemMatrixColumns ?? []
   const dataCols = systemMatrixColumns.filter(c => c !== 'System Name' && c !== 'Vendor' && c !== 'Category')
 
-  function removeCol(col: string) {
-    const filled = systemMatrixRows.filter(r => r.cells[col]?.value).length
-    if (filled > 0 && !window.confirm(`Delete column "${col}"? ${filled} filled cell(s) will be lost.`)) return
-    dispatch({ type: 'REMOVE_SYSTEM_MATRIX_COLUMN', column: col })
+  // Re-recommend columns from the *selected systems* (edit context), appended below
+  // the existing suggestion pool and deduped against current columns.
+  async function regenSysColumns(prompt?: string | null) {
+    setEditColsPrompt(prompt ?? null)
+    setEditColsLoading(true)
+    try {
+      const res = await apiFetch(`${API}/matrix/generate-system-columns`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systems: selectedSystems.map(s => ({ name: s.name, category: s.category, vendor: s.vendor, description: s.description })),
+          topics: state.topics.filter(t => t.selected).map(t => ({ title: t.title, description: t.description, type: t.type })),
+          profile: state.profile,
+          exclude_columns: dataCols,
+          custom_system_prompt: prompt ?? null,
+        }),
+      })
+      if (!res.ok) throw new Error()
+      const data = await res.json()
+      const fresh = freshSuggestions(data.columns, dataCols)
+      dispatch({ type: 'SET_SYSTEM_MATRIX_COLUMN_SUGGESTIONS', columns: fresh })
+      setNewCols(fresh)
+      const descs = newColumnDescriptions(data.descriptions, dataCols)
+      if (Object.keys(descs).length) dispatch({ type: 'MERGE_COLUMN_DESCRIPTIONS', system: true, descriptions: descs })
+    } catch { /* keep prior suggestions */ } finally { setEditColsLoading(false) }
   }
 
   const selectedIds = new Set(selectedSystems.map(s => s.id))
@@ -873,6 +924,7 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
       if (!res.ok) throw new Error()
       const data = await res.json()
       dispatch({ type: 'SET_SYSTEM_MATRIX_COLUMNS', columns: data.columns })
+      if (data.descriptions) dispatch({ type: 'MERGE_COLUMN_DESCRIPTIONS', system: true, descriptions: data.descriptions })
       dispatch({ type: 'INIT_SYSTEM_MATRIX_ROWS' })
     } catch { setGenError(true) } finally { setGenerating(false) }
   }
@@ -964,25 +1016,8 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
       <div className="h-8 bg-violet-50 border-b border-violet-200 flex items-center px-4 gap-3 shrink-0">
         <span className="text-[9px] text-violet-400">{filledCount}/{totalCells} cells filled · {selectedSystems.length} systems</span>
         <div className="flex-1" />
-        {addingCol ? (
-          <div className="flex items-center gap-1">
-            <input
-              autoFocus
-              value={newColName}
-              onChange={e => setNewColName(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter') submitAddCol()
-                if (e.key === 'Escape') { setAddingCol(false); setNewColName('') }
-              }}
-              placeholder="Column name…"
-              className="h-6 px-2 border border-violet-400 rounded text-[10px] text-zinc-800 outline-none focus:border-violet-600 w-36"
-            />
-            <button onClick={submitAddCol} className="px-2 h-6 bg-violet-700 text-white rounded text-[10px] hover:bg-violet-600">Add</button>
-            <button onClick={() => { setAddingCol(false); setNewColName('') }} className="px-2 h-6 border border-violet-200 rounded text-[10px] text-violet-500 hover:bg-violet-50">✕</button>
-          </div>
-        ) : (
-          <button onClick={() => setAddingCol(true)} className="px-3 h-6 border border-violet-300 rounded text-[10px] text-violet-700 hover:bg-violet-100">+ Column</button>
-        )}
+        <button onClick={() => setShowEditCols(true)}
+          className="px-3 h-6 border border-violet-300 rounded text-[10px] text-violet-700 hover:bg-violet-100">✎ Edit Columns</button>
         <button onClick={() => setShowAddSystem(true)} disabled={filling}
           className="px-3 h-6 border border-violet-300 rounded text-[10px] text-violet-700 hover:bg-violet-100 disabled:opacity-50">
           + System
@@ -1002,13 +1037,7 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
               <th className="sticky left-0 z-10 bg-violet-900 border border-violet-700 px-2 py-1.5 text-[9px] font-semibold text-white w-8">#</th>
               <th className="sticky left-8 z-10 bg-violet-900 border border-violet-700 px-2 py-1.5 text-[9px] font-semibold text-white w-[180px]">System · Vendor · Category</th>
               {dataCols.map(col => (
-                <ColumnHeader
-                  key={col}
-                  col={col}
-                  borderClass="border-violet-700"
-                  onRename={newName => dispatch({ type: 'RENAME_SYSTEM_MATRIX_COLUMN', oldName: col, newName })}
-                  onRemove={() => removeCol(col)}
-                />
+                <ColumnHeader key={col} col={col} borderClass="border-violet-700" description={state.systemColumnDescriptions[col]} />
               ))}
             </tr>
           </thead>
@@ -1054,6 +1083,25 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
           onClose={() => setShowAddSystem(false)}
           onAdd={handleAddSystem}
         />
+      )}
+
+      {showEditCols && (
+        <EditColumnsModal title="Edit System Matrix Columns" onClose={() => setShowEditCols(false)}>
+          <SchemaBuilder
+            title="System matrix columns"
+            accent="violet"
+            available={state.systemMatrixColumnSuggestions}
+            selected={dataCols}
+            descriptions={state.systemColumnDescriptions}
+            newColumns={newCols}
+            loading={editColsLoading}
+            customPrompt={editColsPrompt}
+            promptKey="matrix-sys-columns"
+            promptTitle="System Matrix Columns"
+            onRegenerate={regenSysColumns}
+            onChange={cols => dispatch({ type: 'SET_SYSTEM_MATRIX_COLUMNS', columns: cols })}
+          />
+        </EditColumnsModal>
       )}
     </div>
   )
@@ -1140,18 +1188,20 @@ export function Screen5() {
           Literature Review Matrix
           <span className="ml-1.5 text-[10px] text-zinc-400">({state.matrixRows.length})</span>
         </button>
-        <button onClick={() => setActiveTab('system')}
-          className={`px-4 h-8 text-[12px] font-medium border-b-2 transition-colors ${activeTab === 'system' ? 'border-violet-600 text-violet-700' : 'border-transparent text-zinc-400 hover:text-violet-600'}`}>
-          System Review Matrix
-          <span className="ml-1.5 text-[10px] text-zinc-400">({systemItems.filter(s => s.selected).length})</span>
-        </button>
+        {state.systemMatrixEnabled && (
+          <button onClick={() => setActiveTab('system')}
+            className={`px-4 h-8 text-[12px] font-medium border-b-2 transition-colors ${activeTab === 'system' ? 'border-violet-600 text-violet-700' : 'border-transparent text-zinc-400 hover:text-violet-600'}`}>
+            System Review Matrix
+            <span className="ml-1.5 text-[10px] text-zinc-400">({systemItems.filter(s => s.selected).length})</span>
+          </button>
+        )}
         <div className="flex-1" />
-        <span className="text-[10px] text-zinc-400 pb-2">Step 5 · Matrix</span>
+        <span className="text-[10px] text-zinc-400 pb-2">Step 6 · Matrix</span>
       </div>
 
       {/* Active matrix */}
       <div className="flex flex-col flex-1 overflow-hidden">
-        {activeTab === 'literature'
+        {activeTab === 'literature' || !state.systemMatrixEnabled
           ? <LiteratureMatrix onEvidence={setEvidenceTarget} />
           : <SystemMatrix onEvidence={setEvidenceTarget} />
         }

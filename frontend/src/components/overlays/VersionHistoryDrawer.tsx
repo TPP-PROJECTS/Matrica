@@ -4,7 +4,7 @@ import { listSessions, deleteSession, loadSession } from '../../lib/sessionStora
 import type { SessionMeta } from '../../types'
 
 const STEP_LABELS = [
-  '', 'Chat & Define Topic', 'System Review', 'Explore & Search', 'Select Paper',
+  '', 'Chat & Define Topic', 'Matrix Schema', 'System Review', 'Explore & Search', 'Select Paper',
   'Matrix', 'Synthesis', 'Gap & Statement', 'Final Question',
 ]
 
@@ -23,7 +23,7 @@ function formatDate(iso: string): string {
 }
 
 function stepDots(currentStep: number) {
-  return Array.from({ length: 8 }, (_, i) => i + 1).map(s => (
+  return Array.from({ length: 9 }, (_, i) => i + 1).map(s => (
     <div
       key={s}
       className={`w-1.5 h-1.5 rounded-full ${
