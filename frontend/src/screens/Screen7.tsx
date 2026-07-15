@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useApp } from '../store/AppContext'
 import { AIBadge } from '../components/shared/AIBadge'
 import { QuestionButton } from '../components/shared/QuestionButton'
-import { QualityBar, WordCountBar } from '../components/shared/QualityBar'
+import { WordCountBar } from '../components/shared/QualityBar'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
 import type { MatrixCell } from '../types'
 import { API, apiFetch } from '../lib/api'
@@ -12,93 +12,10 @@ import { API, apiFetch } from '../lib/api'
 const META_COLS = new Set(['#', 'Title', 'Authors', 'Year'])
 
 const EXAMPLE_PATTERNS = [
-  'Despite extensive research on X, little attention has been given to Y…',
-  'While previous studies have examined X, none have addressed Z in the context of…',
-  'The absence of longitudinal data means that the long-term effects of X remain unknown.',
+  'The reviewed papers establish X, but they do not yet explain how Y operates for Z population/context…',
+  'Although several studies report X, the evidence does not directly compare Y against Z, leaving the practical decision point unresolved…',
+  'Current studies measure X mostly through short-term or proxy outcomes, so the longer-term implementation implications remain unclear…',
 ]
-
-const QUALITY_INDICATORS = [
-  { label: 'Specificity',   score: 72 },
-  { label: 'Evidence link', score: 55 },
-  { label: 'Clarity',       score: 88 },
-]
-
-// ── Gap dimension model ───────────────────────────────────────────────────────
-interface GapDim {
-  type: string
-  label: string
-  color: string    // tailwind classes for badge
-  severity: 'high' | 'medium' | 'low'
-  description: string
-  insertText: string
-  triggered: boolean  // whether the data crosses the threshold
-}
-
-function computeGapDims(col: string, matrixRows: { cells: Record<string, MatrixCell> }[]): GapDim[] {
-  const cells      = matrixRows.map(r => r.cells[col]).filter(c => c?.value)
-  const total      = matrixRows.length
-  const emptyCount = total - cells.length
-  const emptyRate  = emptyCount / Math.max(total, 1)
-  const avgConf    = cells.length
-    ? cells.reduce((s, c) => s + (c.confidenceScore ?? 0), 0) / cells.length
-    : 0
-  const inferredCount = cells.filter(c => c.extractionMethod === 'inferred').length
-  const lowConfCount  = cells.filter(c => c.confidenceLevel === 'low').length
-
-  return [
-    {
-      type: 'evidence',
-      label: 'Evidence Gap',
-      color: 'bg-red-100 text-red-700 border-red-300',
-      severity: emptyRate > 0.6 ? 'high' : emptyRate > 0.3 ? 'medium' : 'low',
-      description: `${emptyCount} of ${total} papers do not address "${col}" — this area lacks coverage in the literature.`,
-      insertText: `There is an evidence gap regarding ${col.toLowerCase()}: ${emptyCount} of ${total} reviewed papers do not address this aspect, indicating an underexplored area for future research.`,
-      triggered: emptyRate > 0.2,
-    },
-    {
-      type: 'quality',
-      label: 'Insufficient Evidence',
-      color: 'bg-amber-100 text-amber-700 border-amber-300',
-      severity: avgConf < 0.55 ? 'high' : avgConf < 0.75 ? 'medium' : 'low',
-      description: `Average extraction confidence is ${Math.round(avgConf * 100)}% across papers that do address "${col}" — the evidence quality is insufficient to support strong conclusions.`,
-      insertText: `Even where "${col}" is reported, evidence quality is low (avg. ${Math.round(avgConf * 100)}% confidence), limiting the strength of conclusions that can be drawn.`,
-      triggered: avgConf < 0.80 && cells.length > 0,
-    },
-    {
-      type: 'reliability',
-      label: 'Reliability Gap',
-      color: 'bg-orange-100 text-orange-700 border-orange-300',
-      severity: inferredCount > cells.length * 0.5 ? 'high' : inferredCount > 0 ? 'medium' : 'low',
-      description: `${inferredCount} of ${cells.length} extracted values are AI-inferred rather than explicitly stated in the papers — conclusions about "${col}" rest on uncertain ground.`,
-      insertText: `Reliability concerns exist for "${col}": ${inferredCount} of ${cells.length} data points are inferred rather than explicitly stated, meaning this evidence should be treated with caution.`,
-      triggered: inferredCount > 0,
-    },
-    {
-      type: 'contested',
-      label: 'Contested Conclusions',
-      color: 'bg-purple-100 text-purple-700 border-purple-300',
-      severity: lowConfCount > cells.length * 0.4 ? 'high' : lowConfCount > 0 ? 'medium' : 'low',
-      description: `${lowConfCount} papers show low-confidence findings on "${col}" — the evidence is inconsistent or contested across the literature, and no consensus has emerged.`,
-      insertText: `The evidence on "${col}" is contested: findings across ${lowConfCount} papers show low confidence, suggesting the literature has not reached consensus on this dimension.`,
-      triggered: lowConfCount > 0,
-    },
-    {
-      type: 'design',
-      label: 'Design Weakness',
-      color: 'bg-blue-100 text-blue-700 border-blue-300',
-      severity: 'medium',
-      description: `Studies addressing "${col}" rely predominantly on observational designs, reviews, or self-report — the evidence base lacks the experimental rigour needed for causal claims.`,
-      insertText: `A design gap affects "${col}": the available studies use observational or review methods that cannot establish causation, and experimental evidence is largely absent.`,
-      triggered: /method|finding|design/i.test(col),
-    },
-  ]
-}
-
-// ── Severity indicator ────────────────────────────────────────────────────────
-function SeverityDot({ severity }: { severity: GapDim['severity'] }) {
-  const cls = severity === 'high' ? 'bg-red-500' : severity === 'medium' ? 'bg-amber-400' : 'bg-zinc-300'
-  return <span className={`inline-block w-1.5 h-1.5 rounded-full ${cls} shrink-0`} />
-}
 
 // ── Heatmap cell helpers ──────────────────────────────────────────────────────
 function cellBg(cell: MatrixCell | undefined) {
@@ -193,84 +110,57 @@ function MatrixHeatmap({
   )
 }
 
-// ── Gap dimension card for one selected column ────────────────────────────────
+// ── Cross-paper evidence for one selected schema axis ─────────────────────────
 function ColumnGapCard({
   col,
   matrixRows,
-  onInsert,
+  gap,
+  loading,
+  onGenerate,
 }: {
   col: string
-  matrixRows: { cells: Record<string, MatrixCell> }[]
-  onInsert: (text: string) => void
+  matrixRows: { title: string; authors?: string; year?: number | null; cells: Record<string, MatrixCell> }[]
+  gap?: string
+  loading: boolean
+  onGenerate: () => void
 }) {
-  const dims = computeGapDims(col, matrixRows)
-  const triggered = dims.filter(d => d.triggered)
-  const [checked, setChecked] = useState<Record<string, boolean>>(
-    Object.fromEntries(triggered.map(d => [d.type, d.triggered]))
-  )
-
-  function toggle(type: string) {
-    setChecked(prev => ({ ...prev, [type]: !prev[type] }))
-  }
-
-  function insertSelected() {
-    const sentences = dims
-      .filter(d => checked[d.type])
-      .map(d => d.insertText)
-      .join(' ')
-    if (sentences) onInsert(sentences)
-  }
+  const reported = matrixRows.filter(row => row.cells[col]?.value)
+  const missing = matrixRows.length - reported.length
 
   return (
     <div className="rounded-lg border border-zinc-200 bg-white overflow-hidden">
-      {/* Column header */}
       <div className="flex items-center gap-2 px-3 py-2 bg-zinc-50 border-b border-zinc-200">
         <span className="text-[11px] font-bold text-zinc-800 flex-1">{col}</span>
-        <span className="text-[9px] text-zinc-400">{triggered.length} gap type{triggered.length !== 1 ? 's' : ''} detected</span>
+        <span className="text-[9px] text-zinc-400">{reported.length}/{matrixRows.length} papers report this axis</span>
       </div>
-
-      {/* Dimension rows */}
-      <div className="divide-y divide-zinc-100">
-        {dims.map(dim => (
-          <label
-            key={dim.type}
-            className={`flex items-start gap-2.5 px-3 py-2.5 cursor-pointer transition-colors ${
-              dim.triggered ? 'hover:bg-zinc-50' : 'opacity-40 cursor-default'
-            }`}
+      <div className="px-3 py-3 bg-blue-50">
+        <div className="flex items-center gap-2 mb-1">
+          <p className="text-[10px] font-semibold text-blue-800 flex-1">Schema gap across papers</p>
+          <button
+            onClick={onGenerate}
+            disabled={loading}
+            className="px-2 h-5 rounded border border-blue-200 bg-white text-[9px] text-blue-700 hover:bg-blue-100 disabled:opacity-50"
           >
-            <input
-              type="checkbox"
-              checked={!!checked[dim.type]}
-              disabled={!dim.triggered}
-              onChange={() => dim.triggered && toggle(dim.type)}
-              className="mt-0.5 shrink-0 accent-zinc-900"
-            />
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-1.5 mb-0.5">
-                <SeverityDot severity={dim.severity} />
-                <span className={`px-1.5 py-0.5 rounded-full text-[8px] font-semibold border ${dim.color}`}>
-                  {dim.label}
-                </span>
-              </div>
-              <p className="text-[10px] text-zinc-600 leading-relaxed">{dim.description}</p>
-            </div>
-          </label>
-        ))}
+            {loading ? 'Generating…' : 'Generate'}
+          </button>
+        </div>
+        <p className="text-[10px] text-blue-700 leading-relaxed">
+          This compares all papers under this one schema direction and identifies the gap created by their shared pattern, disagreement, or incomparability.
+        </p>
       </div>
-
-      {/* Insert action */}
-      <div className="flex items-center justify-between px-3 py-2 border-t border-zinc-100 bg-zinc-50">
-        <span className="text-[9px] text-zinc-400">
-          {Object.values(checked).filter(Boolean).length} selected
-        </span>
-        <button
-          onClick={insertSelected}
-          disabled={!Object.values(checked).some(Boolean)}
-          className="text-[9px] text-blue-600 hover:text-blue-800 border border-blue-200 rounded px-2 py-0.5 hover:bg-blue-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-        >
-          → Insert into statement
-        </button>
+      <div className="px-3 py-3 border-t border-blue-100">
+        {loading ? (
+          <div className="flex items-center gap-2 text-[10px] text-zinc-400">
+            <span className="w-3 h-3 border border-blue-200 border-t-blue-600 rounded-full animate-spin" />
+            Comparing papers on this schema direction…
+          </div>
+        ) : gap ? (
+          <p className="text-[11px] text-zinc-700 leading-relaxed whitespace-pre-line">{gap}</p>
+        ) : (
+          <p className="text-[10px] text-zinc-400">Generate this schema gap to see the cross-paper comparison result here.</p>
+        )}
       </div>
+      {missing > 0 && <div className="px-3 py-2 border-t border-zinc-100 bg-zinc-50 text-[9px] text-zinc-400">{missing} paper{missing === 1 ? '' : 's'} do not report this axis.</div>}
     </div>
   )
 }
@@ -356,93 +246,54 @@ function SystemHeatmap({
 // ── Gap card for system columns ───────────────────────────────────────────────
 function SystemColumnGapCard({
   col,
-  onInsert,
+  gap,
+  loading,
+  onGenerate,
 }: {
   col: string
-  onInsert: (text: string) => void
+  gap?: string
+  loading: boolean
+  onGenerate: () => void
 }) {
   const { state } = useApp()
   const sysRows = state.systemMatrixRows ?? []
-  const total = sysRows.length
-  const cells = sysRows.map(r => r.cells[col]).filter(c => c?.value)
-  const missing = total - cells.length
-  const missingRate = missing / Math.max(total, 1)
-  const avgConf = cells.length ? cells.reduce((s, c) => s + (c.confidenceScore ?? 0), 0) / cells.length : 0
-  const lowConfCount = cells.filter(c => c.confidenceLevel === 'low' || c.confidenceLevel === 'none').length
-
-  const dims = [
-    {
-      type: 'coverage',
-      label: 'Coverage Gap',
-      color: 'bg-red-100 text-red-700 border-red-300',
-      severity: (missingRate > 0.5 ? 'high' : missingRate > 0.2 ? 'medium' : 'low') as 'high' | 'medium' | 'low',
-      description: `${missing} of ${total} systems lack data for "${col}" — this dimension is not fully assessed across the system landscape.`,
-      insertText: `A coverage gap exists for "${col}" in the system review: ${missing} of ${total} evaluated systems were not assessed on this dimension, limiting comparative conclusions.`,
-      triggered: missing > 0,
-    },
-    {
-      type: 'quality',
-      label: 'Evidence Quality',
-      color: 'bg-amber-100 text-amber-700 border-amber-300',
-      severity: (avgConf < 50 ? 'high' : avgConf < 70 ? 'medium' : 'low') as 'high' | 'medium' | 'low',
-      description: `Average confidence for "${col}" across systems is ${Math.round(avgConf)}% — the system evidence on this dimension has limited reliability.`,
-      insertText: `The system review evidence on "${col}" has low average confidence (${Math.round(avgConf)}%), suggesting that published system data on this dimension should be interpreted cautiously.`,
-      triggered: avgConf < 75 && cells.length > 0,
-    },
-    {
-      type: 'low_conf',
-      label: 'Contested Claims',
-      color: 'bg-purple-100 text-purple-700 border-purple-300',
-      severity: (lowConfCount > cells.length * 0.4 ? 'high' : lowConfCount > 0 ? 'medium' : 'low') as 'high' | 'medium' | 'low',
-      description: `${lowConfCount} systems show low-confidence data for "${col}" — vendor claims or publicly available information conflicts with independent assessments.`,
-      insertText: `For "${col}", ${lowConfCount} systems in the review have low-confidence data, indicating that independent evaluation of system capabilities on this dimension is needed.`,
-      triggered: lowConfCount > 0,
-    },
-  ]
-
-  const [checked, setChecked] = useState<Record<string, boolean>>(
-    Object.fromEntries(dims.map(d => [d.type, d.triggered]))
-  )
+  const reported = sysRows.filter(row => row.cells[col]?.value)
+  const missing = sysRows.length - reported.length
 
   return (
     <div className="rounded-lg border border-violet-200 bg-white overflow-hidden">
       <div className="flex items-center gap-2 px-3 py-2 bg-violet-50 border-b border-violet-100">
         <span className="text-[11px] font-bold text-violet-800 flex-1">{col}</span>
-        <span className="text-[9px] text-violet-400">System review · {dims.filter(d => d.triggered).length} gap type{dims.filter(d => d.triggered).length !== 1 ? 's' : ''}</span>
+        <span className="text-[9px] text-violet-400">{reported.length}/{sysRows.length} systems report this axis</span>
       </div>
-      <div className="divide-y divide-zinc-100">
-        {dims.map(dim => (
-          <label key={dim.type} className={`flex items-start gap-2.5 px-3 py-2.5 cursor-pointer transition-colors ${dim.triggered ? 'hover:bg-zinc-50' : 'opacity-40 cursor-default'}`}>
-            <input
-              type="checkbox"
-              checked={!!checked[dim.type]}
-              disabled={!dim.triggered}
-              onChange={() => dim.triggered && setChecked(p => ({ ...p, [dim.type]: !p[dim.type] }))}
-              className="mt-0.5 shrink-0 accent-violet-600"
-            />
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-1.5 mb-0.5">
-                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dim.severity === 'high' ? 'bg-red-500' : dim.severity === 'medium' ? 'bg-amber-400' : 'bg-zinc-300'}`} />
-                <span className={`px-1.5 py-0.5 rounded-full text-[8px] font-semibold border ${dim.color}`}>{dim.label}</span>
-              </div>
-              <p className="text-[10px] text-zinc-600 leading-relaxed">{dim.description}</p>
-            </div>
-          </label>
-        ))}
+      <div className="px-3 py-3 bg-violet-50/60">
+        <div className="flex items-center gap-2 mb-1">
+          <p className="text-[10px] font-semibold text-violet-800 flex-1">Schema gap across systems</p>
+          <button
+            onClick={onGenerate}
+            disabled={loading}
+            className="px-2 h-5 rounded border border-violet-200 bg-white text-[9px] text-violet-700 hover:bg-violet-100 disabled:opacity-50"
+          >
+            {loading ? 'Generating…' : 'Generate'}
+          </button>
+        </div>
+        <p className="text-[10px] text-violet-700 leading-relaxed">
+          This compares all systems under this one schema direction and identifies the system-level gap or validation gap.
+        </p>
       </div>
-      <div className="flex items-center justify-between px-3 py-2 border-t border-zinc-100 bg-zinc-50">
-        <span className="text-[9px] text-zinc-400">{Object.values(checked).filter(Boolean).length} selected</span>
-        <button
-          onClick={() => {
-            const text = dims.filter(d => checked[d.type]).map(d => d.insertText).join(' ')
-            if (text) onInsert(text)
-          }}
-          disabled={!Object.values(checked).some(Boolean)}
-          className="text-[9px] text-violet-600 hover:text-violet-800 border border-violet-200 rounded px-2 py-0.5 hover:bg-violet-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-        >
-          → Insert into statement
-        </button>
+      <div className="px-3 py-3 border-t border-violet-100">
+        {loading ? (
+          <div className="flex items-center gap-2 text-[10px] text-zinc-400">
+            <span className="w-3 h-3 border border-violet-200 border-t-violet-600 rounded-full animate-spin" />
+            Comparing systems on this schema direction…
+          </div>
+        ) : gap ? (
+          <p className="text-[11px] text-zinc-700 leading-relaxed whitespace-pre-line">{gap}</p>
+        ) : (
+          <p className="text-[10px] text-zinc-400">Generate this schema gap to see the cross-system comparison result here.</p>
+        )}
       </div>
+      {missing > 0 && <div className="px-3 py-2 border-t border-zinc-100 bg-zinc-50 text-[9px] text-zinc-400">{missing} system{missing === 1 ? '' : 's'} do not report this axis.</div>}
     </div>
   )
 }
@@ -456,19 +307,21 @@ export function Screen7() {
   const [confirming, setConfirming] = useState(false)
   const [showRegenModal, setShowRegenModal] = useState(false)
   const [customRegenPrompt, setCustomRegenPrompt] = useState<string | null>(null)
+  const [axisGaps, setAxisGaps] = useState<Record<string, string>>({})
+  const [axisLoading, setAxisLoading] = useState<string | null>(null)
 
   const wordCount = state.gapStatement.split(/\s+/).filter(Boolean).length
 
   function toggleCol(col: string) {
-    setSelectedCols(prev =>
-      prev.includes(col) ? prev.filter(c => c !== col) : [...prev, col]
-    )
+    const isSelected = selectedCols.includes(col)
+    setSelectedCols(isSelected ? [] : [col])
+    if (!isSelected) void handleGenerateAxisGap('lit', col)
   }
 
   function toggleSysCol(col: string) {
-    setSelectedSysCols(prev =>
-      prev.includes(col) ? prev.filter(c => c !== col) : [...prev, col]
-    )
+    const isSelected = selectedSysCols.includes(col)
+    setSelectedSysCols(isSelected ? [] : [col])
+    if (!isSelected) void handleGenerateAxisGap('sys', col)
   }
 
   function insertIntoStatement(text: string) {
@@ -476,42 +329,70 @@ export function Screen7() {
     dispatch({ type: 'UPDATE_GAP_STATEMENT', text: state.gapStatement + sep + text })
   }
 
-  async function handleRegenerate(prompt?: string | null) {
-    setRegenerating(true)
+  function buildGapPayload(prompt?: string | null, focusCols: string[] = [], focusSysCols: string[] = []) {
+    const selectedSystems = (state.systemItems ?? []).filter(s => s.selected)
+    return {
+      custom_system_prompt: prompt ?? null,
+      matrix_rows: state.matrixRows.map(r => ({
+        title: r.title, authors: r.authors, year: r.year,
+        cells: Object.fromEntries(Object.entries(r.cells).map(([k, c]) => [k, {
+          value: c.value, confidenceScore: c.confidenceScore,
+          confidenceLevel: c.confidenceLevel, evidenceType: c.evidenceType,
+          extractionMethod: c.extractionMethod,
+        }])),
+      })),
+      system_rows: (state.systemMatrixRows ?? []).filter(r =>
+        selectedSystems.some(s => s.id === r.systemId)
+      ).map(r => ({
+        name: r.name, vendor: r.vendor, category: r.category,
+        cells: Object.fromEntries(Object.entries(r.cells).map(([k, c]) => [k, {
+          value: c.value, confidenceScore: c.confidenceScore,
+          confidenceLevel: c.confidenceLevel, evidenceType: c.evidenceType,
+          extractionMethod: c.extractionMethod,
+        }])),
+      })),
+      columns: state.matrixColumns,
+      system_columns: state.systemMatrixColumns ?? [],
+      focus_columns: focusCols,
+      focus_system_columns: focusSysCols,
+      profile: state.profile,
+      topics: state.topics.filter(t => t.selected).map(t => ({
+        title: t.title,
+        description: t.description,
+        type: t.type,
+      })),
+      themes: state.themes.map(t => ({
+        name: t.name,
+        coverageLabel: t.coverageLabel,
+        blocks: t.blocks.map(b => ({ blockType: b.blockType, content: b.content })),
+      })),
+    }
+  }
+
+  async function handleGenerateAxisGap(kind: 'lit' | 'sys', col: string) {
+    const key = `${kind}:${col}`
+    setAxisLoading(key)
     try {
-      const selectedSystems = (state.systemItems ?? []).filter(s => s.selected)
       const res = await apiFetch(`${API}/gaps/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          custom_system_prompt: prompt ?? null,
-          matrix_rows: state.matrixRows.map(r => ({
-            title: r.title, authors: r.authors, year: r.year,
-            cells: Object.fromEntries(Object.entries(r.cells).map(([k, c]) => [k, {
-              value: c.value, confidenceScore: c.confidenceScore,
-              confidenceLevel: c.confidenceLevel, evidenceType: c.evidenceType,
-              extractionMethod: c.extractionMethod,
-            }])),
-          })),
-          system_rows: (state.systemMatrixRows ?? []).filter(r =>
-            selectedSystems.some(s => s.id === r.systemId)
-          ).map(r => ({
-            name: r.name, vendor: r.vendor, category: r.category,
-            cells: Object.fromEntries(Object.entries(r.cells).map(([k, c]) => [k, {
-              value: c.value, confidenceScore: c.confidenceScore,
-              confidenceLevel: c.confidenceLevel, evidenceType: c.evidenceType,
-              extractionMethod: c.extractionMethod,
-            }])),
-          })),
-          columns: state.matrixColumns,
-          system_columns: state.systemMatrixColumns ?? [],
-          profile: state.profile,
-          themes: state.themes.map(t => ({
-            name: t.name,
-            coverageLabel: t.coverageLabel,
-            blocks: t.blocks.map(b => ({ blockType: b.blockType, content: b.content })),
-          })),
-        }),
+        body: JSON.stringify(buildGapPayload(null, kind === 'lit' ? [col] : [], kind === 'sys' ? [col] : [])),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.statement) setAxisGaps(prev => ({ ...prev, [key]: data.statement }))
+      }
+    } catch { /* silent */ }
+    finally { setAxisLoading(current => current === key ? null : current) }
+  }
+
+  async function handleRegenerate(prompt?: string | null) {
+    setRegenerating(true)
+    try {
+      const res = await apiFetch(`${API}/gaps/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildGapPayload(prompt)),
       })
       if (res.ok) {
         const data = await res.json()
@@ -569,7 +450,7 @@ export function Screen7() {
             <div className="px-4 pt-3 pb-2 border-b border-zinc-100">
               <p className="text-[12px] font-bold text-zinc-800">Matrix Coverage</p>
               <p className="text-[9px] text-zinc-400 mt-0.5">
-                Click a column to analyse all gap dimensions — evidence, quality, reliability, and contested conclusions.
+                Select one schema direction to generate a cross-paper or cross-system gap for that direction.
               </p>
             </div>
 
@@ -616,8 +497,7 @@ export function Screen7() {
                 <div className="text-center mt-8 px-4">
                   <p className="text-[11px] text-zinc-400 mb-1">No column selected</p>
                   <p className="text-[10px] text-zinc-300 leading-relaxed">
-                    Click a column header above to surface all gap types — not just missing evidence, but also
-                    quality problems, reliability issues, and contested conclusions.
+                    Click a schema column above first. The left panel will compare all papers/systems on that selected direction.
                   </p>
                 </div>
               ) : (
@@ -632,7 +512,9 @@ export function Screen7() {
                           key={`lit-${col}`}
                           col={col}
                           matrixRows={state.matrixRows}
-                          onInsert={insertIntoStatement}
+                          gap={axisGaps[`lit:${col}`]}
+                          loading={axisLoading === `lit:${col}`}
+                          onGenerate={() => handleGenerateAxisGap('lit', col)}
                         />
                       ))}
                     </>
@@ -646,7 +528,9 @@ export function Screen7() {
                         <SystemColumnGapCard
                           key={`sys-${col}`}
                           col={col}
-                          onInsert={insertIntoStatement}
+                          gap={axisGaps[`sys:${col}`]}
+                          loading={axisLoading === `sys:${col}`}
+                          onGenerate={() => handleGenerateAxisGap('sys', col)}
                         />
                       ))}
                     </>
@@ -660,12 +544,12 @@ export function Screen7() {
         {/* ── Right: Gap Statement ── */}
         <div className="flex-1 flex flex-col overflow-y-auto px-4 py-4 bg-white">
           <div className="flex items-center gap-2 mb-2">
-            <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide flex-1">Gap Statement</span>
+            <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide flex-1">Overall Gap Statement</span>
             <AIBadge />
             <QuestionButton />
           </div>
           <p className="text-[10px] italic text-purple-400 mb-3">
-            AI-drafted from matrix gaps. Edit freely — this goes into your introduction.
+            Drafted from all papers and selected systems. Schema-specific gaps stay in the left panel.
           </p>
 
           <textarea
@@ -690,7 +574,7 @@ export function Screen7() {
                   ? <span className="w-3 h-3 border border-zinc-300 border-t-zinc-600 rounded-full animate-spin" />
                   : '↺'}
                 {customRegenPrompt && <span className="w-1 h-1 rounded-full bg-amber-400 shrink-0" />}
-                {regenerating ? 'Regenerating…' : 'Regenerate'}
+                {regenerating ? 'Regenerating overall gap…' : 'Regenerate overall gap'}
               </button>
               <button
                 onClick={() => setShowRegenModal(true)}
@@ -717,33 +601,9 @@ export function Screen7() {
             />
           )}
 
-          {/* Gaps cited */}
-          {selectedCols.length > 0 && (
-            <div className="mb-4">
-              <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide mb-2">Gaps Cited</p>
-              <div className="flex flex-wrap gap-1.5">
-                {selectedCols.map(col => {
-                  const cited = state.gapStatement.toLowerCase().includes(col.toLowerCase().split(' ')[0])
-                  return (
-                    <span
-                      key={col}
-                      className={`px-2 py-0.5 rounded-full border text-[9px] ${
-                        cited
-                          ? 'bg-blue-100 text-blue-700 border-blue-300'
-                          : 'bg-zinc-100 text-zinc-400 border-zinc-200'
-                      }`}
-                    >
-                      {col}{!cited && ' (not yet cited)'}
-                    </span>
-                  )
-                })}
-              </div>
-            </div>
-          )}
-
           {/* Example patterns */}
           <div className="mb-4">
-            <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide mb-2">Example Patterns</p>
+            <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide mb-2">Paper-level Gap Patterns</p>
             <div className="flex flex-col gap-1.5">
               {EXAMPLE_PATTERNS.map((p, i) => (
                 <button
@@ -753,16 +613,6 @@ export function Screen7() {
                 >
                   {p}
                 </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Quality check */}
-          <div className="bg-zinc-50 border border-zinc-200 rounded-lg p-3 mb-4">
-            <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide mb-2">Quality Check</p>
-            <div className="flex flex-col gap-1.5">
-              {QUALITY_INDICATORS.map(qi => (
-                <QualityBar key={qi.label} score={qi.score} label={qi.label} />
               ))}
             </div>
           </div>

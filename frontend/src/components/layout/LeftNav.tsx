@@ -3,11 +3,11 @@ import type { StepState } from '../../types'
 
 const STEPS = [
   { id: 1, label: 'Chat & Define Topic' },
-  { id: 2, label: 'Matrix Schema' },
+  { id: 2, label: 'Matrix Initial' },
   { id: 3, label: 'System Review' },
   { id: 4, label: 'Explore & Search' },
   { id: 5, label: 'Select Paper' },
-  { id: 6, label: 'Matrix' },
+  { id: 6, label: 'Matrix Table' },
   { id: 7, label: 'Synthesis' },
   { id: 8, label: 'Gap & Statement' },
   { id: 9, label: 'Final Question' },

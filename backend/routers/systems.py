@@ -43,6 +43,7 @@ class SystemRecommendRequest(BaseModel):
     method: str = ""
     reviewType: str = ""
     topics: list[dict] = []
+    exclude_systems: list[str] = []
 
 
 class SystemCard(BaseModel):
@@ -80,6 +81,14 @@ async def recommend_systems(req: SystemRecommendRequest):
         "Return systems that researchers in this domain commonly study or evaluate:\n\n"
         + "\n".join(profile_parts)
     )
+
+    if req.exclude_systems:
+        excluded = "\n".join(f"- {name}" for name in req.exclude_systems)
+        user_content += (
+            "\n\nThe researcher has ALREADY selected the systems below. Do NOT return any of "
+            "these again — suggest different, additional systems that complement them:\n"
+            + excluded
+        )
 
     try:
         response = await client.responses.create(

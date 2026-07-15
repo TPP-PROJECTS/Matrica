@@ -76,7 +76,7 @@ const STEP_LABELS: Record<number, string> = {
   2: 'System Review',
   3: 'Explore & Search',
   4: 'Select Papers',
-  5: 'Matrix',
+  5: 'Matrix Table',
   6: 'Synthesis',
   7: 'Gap & Statement',
   8: 'Final Question',

@@ -2,11 +2,11 @@ import { useApp } from '../../store/AppContext'
 
 const STEP_NAMES: Record<number, string> = {
   1: 'Chat & Define Topic',
-  2: 'Matrix Schema',
+  2: 'Matrix Initial',
   3: 'System Review',
   4: 'Explore & Search',
   5: 'Select Paper',
-  6: 'Matrix',
+  6: 'Matrix Table',
   7: 'Synthesis',
   8: 'Gap & Statement',
   9: 'Final Question',

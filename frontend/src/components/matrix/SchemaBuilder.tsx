@@ -18,8 +18,12 @@ const ACCENTS: Record<Accent, { btn: string; chip: string; ring: string; dot: st
   },
 }
 
+function NewBadge() {
+  return <span className="px-1 py-px rounded bg-emerald-100 text-emerald-700 text-[8px] font-bold uppercase tracking-wide shrink-0">NEW</span>
+}
+
 interface Props {
-  title: string
+  title?: string
   available: string[]           // full recommendation pool (left list source)
   selected: string[]            // chosen columns (right list)
   descriptions?: Record<string, string>  // column name → what it captures
@@ -37,74 +41,43 @@ export function SchemaBuilder({
   title, available, selected, descriptions = {}, newColumns = [], loading = false, accent = 'zinc',
   promptKey, promptTitle, customPrompt = null, onChange, onRegenerate,
 }: Props) {
-  const [checked, setChecked] = useState<Set<string>>(new Set())
   const [showPrompt, setShowPrompt] = useState(false)
+  const [manual, setManual] = useState('')
   const a = ACCENTS[accent]
   const newSet = new Set(newColumns)
 
   // Left list = recommendations that aren't already selected
   const avail = available.filter(c => !selected.includes(c))
-  const allChecked = avail.length > 0 && avail.every(c => checked.has(c))
-
-  function toggle(col: string) {
-    setChecked(prev => {
-      const next = new Set(prev)
-      next.has(col) ? next.delete(col) : next.add(col)
-      return next
-    })
-  }
-
-  function toggleAll() {
-    setChecked(allChecked ? new Set() : new Set(avail))
-  }
-
-  function moveChecked() {
-    const moving = avail.filter(c => checked.has(c))
-    if (moving.length === 0) return
-    onChange([...selected, ...moving])
-    setChecked(new Set())
-  }
 
   function moveAll() {
     if (avail.length === 0) return
     onChange([...selected, ...avail])
-    setChecked(new Set())
   }
 
   function remove(col: string) {
     onChange(selected.filter(c => c !== col))
   }
 
+  function addManual() {
+    const name = manual.trim()
+    if (!name || selected.includes(name)) { setManual(''); return }
+    onChange([...selected, name])
+    setManual('')
+  }
+
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-center gap-2">
-        <span className="text-[12px] font-bold text-zinc-900 flex-1">{title}</span>
-        <button
-          onClick={() => onRegenerate(customPrompt)}
-          disabled={loading}
-          className="px-2.5 h-7 border border-zinc-300 rounded text-[11px] text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 flex items-center gap-1.5"
-        >
-          {loading
-            ? <><span className="w-2.5 h-2.5 border border-zinc-300 border-t-zinc-700 rounded-full animate-spin" /> Regenerating…</>
-            : <>↻ Regenerate</>}
-          {customPrompt && <span className={`w-1 h-1 rounded-full ${a.dot}`} />}
-        </button>
-        <button
-          onClick={() => setShowPrompt(true)}
-          disabled={loading}
-          title="Customize AI prompt"
-          className="px-2 h-7 border border-zinc-300 rounded text-[11px] text-zinc-600 hover:bg-zinc-50 disabled:opacity-50"
-        >⚙</button>
-      </div>
+      {title && (
+        <div className="flex items-center gap-2">
+          <span className="text-[12px] font-bold text-zinc-900 flex-1">{title}</span>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-3">
         {/* Left — recommended */}
         <div className="border border-zinc-200 rounded-lg flex flex-col min-h-[220px] max-h-[340px]">
           <div className="flex items-center gap-2 px-3 h-8 border-b border-zinc-200 bg-zinc-50 shrink-0">
-            <label className="flex items-center gap-1.5 text-[10px] font-semibold text-zinc-500 uppercase tracking-wide cursor-pointer">
-              <input type="checkbox" checked={allChecked} onChange={toggleAll} disabled={avail.length === 0} className="accent-zinc-700" />
-              Recommended
-            </label>
+            <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wide">Recommended</span>
             <span className="text-[10px] text-zinc-400">{avail.length}</span>
           </div>
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
@@ -114,7 +87,7 @@ export function SchemaBuilder({
               </div>
             )}
             {!loading && avail.length === 0 && (
-              <p className="text-[11px] text-zinc-400 text-center py-8">All recommendations added. Use Regenerate for more.</p>
+              <p className="text-[11px] text-zinc-400 text-center py-8">All recommendations added. Use Generate more for more.</p>
             )}
             {avail.map(col => (
               <label
@@ -122,11 +95,10 @@ export function SchemaBuilder({
                 className="flex items-start gap-2 px-2 py-1.5 rounded hover:bg-zinc-50 cursor-pointer text-[12px] text-zinc-700"
                 title={descriptions[col] || undefined}
               >
-                <input type="checkbox" checked={checked.has(col)} onChange={() => toggle(col)} className="accent-zinc-700 shrink-0 mt-0.5" />
                 <span className="flex-1 min-w-0">
                   <span className="flex items-center gap-1.5">
                     <span>{col}</span>
-                    {newSet.has(col) && <span className="px-1 py-px rounded bg-emerald-100 text-emerald-700 text-[8px] font-bold uppercase tracking-wide shrink-0">New</span>}
+                    {newSet.has(col) && <NewBadge />}
                   </span>
                   {descriptions[col] && <span className="text-[10px] text-zinc-400 leading-snug line-clamp-2">{descriptions[col]}</span>}
                 </span>
@@ -140,15 +112,27 @@ export function SchemaBuilder({
           </div>
           <div className="flex items-center gap-2 px-2 h-9 border-t border-zinc-200 shrink-0">
             <button
-              onClick={moveChecked}
-              disabled={checked.size === 0}
-              className={`px-3 h-6 rounded text-[11px] text-white ${a.btn} disabled:opacity-40`}
-            >Add selected →</button>
-            <button
               onClick={moveAll}
               disabled={avail.length === 0}
               className="px-2 h-6 rounded text-[11px] text-zinc-600 border border-zinc-300 hover:bg-zinc-50 disabled:opacity-40"
             >Add all</button>
+            <button
+              onClick={() => onRegenerate(customPrompt)}
+              disabled={loading}
+              className={`px-3 h-6 rounded text-[11px] text-white ${a.btn} disabled:opacity-40 flex items-center gap-1.5`}
+              title="Generate new columns, given the columns you've already selected"
+            >
+              {loading
+                ? <><span className="w-2.5 h-2.5 border border-white/40 border-t-white rounded-full animate-spin" /> Generating…</>
+                : <>✦ Generate more</>}
+              {customPrompt && <span className="w-1 h-1 rounded-full bg-white/80" />}
+            </button>
+            <button
+              onClick={() => setShowPrompt(true)}
+              disabled={loading}
+              title="Customize AI prompt"
+              className="px-2 h-6 rounded text-[11px] text-zinc-600 border border-zinc-300 hover:bg-zinc-50 disabled:opacity-50"
+            >⚙</button>
           </div>
         </div>
 
@@ -168,14 +152,31 @@ export function SchemaBuilder({
                 className={`flex items-start gap-2 px-2 py-1.5 rounded border ${a.chip} text-[12px]`}
                 title={descriptions[col] || undefined}
               >
+                <button onClick={() => remove(col)} title="Remove" className="text-zinc-400 hover:text-zinc-800 text-[13px] mt-0.5 shrink-0">←</button>
                 <span className="text-[9px] text-zinc-400 w-4 shrink-0 mt-0.5">{i + 1}</span>
                 <span className="flex-1 min-w-0">
-                  <span className="block">{col}</span>
+                  <span className="flex items-center gap-1.5">
+                    <span>{col}</span>
+                    {newSet.has(col) && <NewBadge />}
+                  </span>
                   {descriptions[col] && <span className="text-[10px] text-zinc-500 leading-snug line-clamp-2">{descriptions[col]}</span>}
                 </span>
-                <button onClick={() => remove(col)} title="Remove" className="text-zinc-400 hover:text-red-500 text-[12px] mt-0.5">✕</button>
               </div>
             ))}
+          </div>
+          <div className="flex items-center gap-2 px-2 h-9 border-t border-zinc-200 shrink-0">
+            <input
+              value={manual}
+              onChange={e => setManual(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addManual() } }}
+              placeholder="Add a column manually…"
+              className={`flex-1 min-w-0 h-6 px-2 border border-zinc-300 rounded text-[11px] text-zinc-700 bg-white outline-none ${a.ring}`}
+            />
+            <button
+              onClick={addManual}
+              disabled={!manual.trim()}
+              className={`px-3 h-6 rounded text-[11px] text-white ${a.btn} disabled:opacity-40`}
+            >Add</button>
           </div>
         </div>
       </div>

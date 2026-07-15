@@ -90,7 +90,7 @@ export function ScreenMatrixInit() {
       <div className="h-[44px] bg-zinc-50 border-b border-zinc-200 flex items-center px-4 gap-3 shrink-0">
         <div className="w-7 h-7 rounded-full bg-zinc-900 flex items-center justify-center text-white text-[11px] shrink-0">✦</div>
         <div className="flex flex-col">
-          <span className="text-[13px] font-bold text-zinc-900 leading-tight">Matrix Schema</span>
+          <span className="text-[13px] font-bold text-zinc-900 leading-tight">Matrix Initial</span>
           <span className="text-[10px] text-zinc-500 leading-tight">
             Choose the columns your extraction matrix will use — move the AI's recommendations into your schema
           </span>
@@ -107,7 +107,7 @@ export function ScreenMatrixInit() {
         ) : (
           <>
             <SchemaBuilder
-              title="Literature matrix columns"
+              title="Literature Matrix"
               accent="zinc"
               available={state.matrixColumnSuggestions}
               selected={litSelected}

@@ -18,6 +18,12 @@ class ProfileInfo(BaseModel):
     reviewType: str = ''
 
 
+class TopicInfo(BaseModel):
+    title: str
+    description: str = ''
+    type: str = ''
+
+
 class CellInfo(BaseModel):
     value: str = ''
     confidenceScore: float = 0.5
@@ -51,7 +57,10 @@ class GenerateGapRequest(BaseModel):
     system_rows: list[SystemRowInfo] = []
     columns: list[str] = []
     system_columns: list[str] = []
+    focus_columns: list[str] = []
+    focus_system_columns: list[str] = []
     profile: ProfileInfo = ProfileInfo()
+    topics: list[TopicInfo] = []
     themes: list[ThemeInfo] = []
     custom_system_prompt: str | None = None
 
@@ -60,23 +69,35 @@ class GenerateGapResponse(BaseModel):
     statement: str
 
 
-GAP_SYSTEM_PROMPT = """You are an expert systematic review methodologist writing a gap statement for a research paper introduction.
-You have access to TWO evidence sources:
-1. A LITERATURE MATRIX — structured data extracted from academic papers
-2. A SYSTEM REVIEW MATRIX — comparative data on software/clinical systems
+GAP_SYSTEM_PROMPT = """You are a senior systematic review methodologist writing the research gap section of a publishable paper.
 
-Your task: write a cohesive 3–4 paragraph gap statement that:
-- Acknowledges what the existing literature AND system landscape have established
-- Identifies specific gaps in the evidence (missing data, low confidence, contested findings, absent populations)
-- Identifies gaps in the system landscape (missing system types, unassessed dimensions, limited comparative evidence)
-- Concludes with the specific research opportunity that these combined gaps create
+Your job is NOT to report matrix coverage, confidence scores, or generic "AI found a gap" claims. Your job is to infer a real scholarly gap by comparing:
+1. What the researcher wants to discuss or investigate (profile + selected topics)
+2. What the reviewed papers actually report (literature matrix)
+3. What remains absent, thin, contradictory, methodologically weak, or disconnected from the intended research focus
+4. Where relevant, what the system landscape shows or fails to show (system matrix)
+
+Definition of a valid paper-level gap:
+- A question, population, setting, mechanism, comparison, outcome, method, or implementation issue that is important to the research focus but is not adequately answered by the reviewed papers.
+- It must be grounded in specific evidence from the matrix: name papers or groups of papers and describe what they did find before stating what they did not resolve.
+- Low confidence, missing cells, or inferred values are NOT themselves the gap. They are only signals that may help identify a deeper substantive gap.
+
+Write a cohesive 3–4 paragraph gap analysis suitable for an introduction or discussion section:
+1. Paragraph 1: Establish the state of knowledge. Say what the papers collectively show, using concrete findings from named papers.
+2. Paragraph 2: Identify the main unresolved issue/tension. Explain the mismatch between the researcher's intended focus and what the literature actually covers.
+3. Paragraph 3: Deepen the gap with methodological, population, outcome, implementation, or system-comparison limitations. Reference specific papers/systems where possible.
+4. Final paragraph: State the research opportunity in precise terms: what a new study/review should examine, for whom, and why it matters.
 
 Rules:
-- Be specific — reference actual paper titles (shortened) and system names from the data
-- Do NOT invent findings. If data is sparse, say so
-- Write in academic, third-person prose suitable for a journal introduction
-- Each paragraph should be 3–5 sentences
-- The final paragraph must frame the gap as a clear research opportunity
+- Be specific, analytical, and evidence-led.
+- Do not invent studies, results, populations, systems, or claims.
+- Do not write "there is a gap because confidence is low"; translate data-quality issues into substantive research limitations only when justified.
+- Prefer paper-level reasoning over template phrases.
+- Use academic prose, third person, suitable for a journal manuscript.
+- Each paragraph should be 3–5 sentences.
+- If evidence is sparse, say exactly what is sparse and why that limits interpretation.
+- When focus schema axes are provided, make those axes the centre of the analysis. Cross-compare papers/systems on that same axis and infer what the field still does not know in that direction. Do not merely explain what the schema axis means.
+- A poor answer explains the schema axis (for example, "outcome indicators are important"). A good answer compares the actual extracted values under that axis across papers/systems, then states the gap created by their inconsistency, absence, narrowness, or lack of connection to the review focus.
 
 Respond with valid JSON only — no markdown: {"statement": "paragraph1\\n\\nparagraph2\\n\\n..."}
 """
@@ -88,14 +109,16 @@ def _summarise_lit(rows: list[MatrixRowInfo], cols: list[str]) -> str:
         return '(no literature data)'
     lines = []
     for r in rows:
-        filled = {c: r.cells[c].value[:100] for c in data_cols if r.cells.get(c) and r.cells[c].value}
-        conf_vals = [r.cells[c].confidenceScore for c in data_cols if r.cells.get(c) and r.cells[c].value]
-        avg_conf = round(sum(conf_vals) / len(conf_vals)) if conf_vals else 0
+        filled = {}
+        for c in data_cols:
+            cell = r.cells.get(c)
+            if cell and cell.value:
+                filled[c] = cell.value[:180]
         missing = [c for c in data_cols if not r.cells.get(c) or not r.cells[c].value]
-        summary = '; '.join(f'{k}: {v}' for k, v in list(filled.items())[:4])
+        summary = '; '.join(f'{k}: {v}' for k, v in list(filled.items())[:8])
         lines.append(
-            f'• [{r.year or "?"}] {r.title} (avg conf {avg_conf}%) — {summary or "(no data)"}'
-            + (f' | MISSING: {", ".join(missing[:3])}' if missing else '')
+            f'• [{r.year or "?"}] {r.title} — {summary or "(no extracted findings)"}'
+            + (f' | Not addressed in matrix: {", ".join(missing[:6])}' if missing else '')
         )
     return '\n'.join(lines)
 
@@ -105,30 +128,106 @@ def _summarise_sys(rows: list[SystemRowInfo], cols: list[str]) -> str:
         return '(no system review data)'
     lines = []
     for r in rows:
-        filled = {c: r.cells[c].value[:100] for c in cols if r.cells.get(c) and r.cells[c].value}
+        filled = {}
+        for c in cols:
+            cell = r.cells.get(c)
+            if cell and cell.value:
+                filled[c] = cell.value[:160]
         missing = [c for c in cols if not r.cells.get(c) or not r.cells[c].value]
-        summary = '; '.join(f'{k}: {v}' for k, v in list(filled.items())[:4])
+        summary = '; '.join(f'{k}: {v}' for k, v in list(filled.items())[:6])
         lines.append(
             f'• {r.name} ({r.vendor or r.category}) — {summary or "(no data)"}'
-            + (f' | MISSING: {", ".join(missing[:3])}' if missing else '')
+            + (f' | Not assessed: {", ".join(missing[:5])}' if missing else '')
         )
     return '\n'.join(lines)
+
+
+def _summarise_lit_axes(rows: list[MatrixRowInfo], focus_cols: list[str]) -> str:
+    if not focus_cols:
+        return '(no focused literature schema axis selected)'
+    if not rows:
+        return '(no literature data)'
+    sections = []
+    for col in focus_cols:
+        lines = [f'AXIS: {col}']
+        values = []
+        missing = []
+        for r in rows:
+            cell = r.cells.get(col)
+            if cell and cell.value:
+                value = cell.value.strip().replace('\n', ' ')
+                values.append(f'  - [{r.year or "?"}] {r.title}: {value[:260]}')
+            else:
+                missing.append(r.title)
+        lines.extend(values or ['  - No papers report a substantive finding on this axis.'])
+        if missing:
+            lines.append(f'  - Papers not addressing this axis: {", ".join(missing[:10])}')
+        sections.append('\n'.join(lines))
+    return '\n\n'.join(sections)
+
+
+def _summarise_sys_axes(rows: list[SystemRowInfo], focus_cols: list[str]) -> str:
+    if not focus_cols:
+        return '(no focused system schema axis selected)'
+    if not rows:
+        return '(no system review data)'
+    sections = []
+    for col in focus_cols:
+        lines = [f'AXIS: {col}']
+        values = []
+        missing = []
+        for r in rows:
+            cell = r.cells.get(col)
+            if cell and cell.value:
+                value = cell.value.strip().replace('\n', ' ')
+                values.append(f'  - {r.name} ({r.vendor or r.category}): {value[:240]}')
+            else:
+                missing.append(r.name)
+        lines.extend(values or ['  - No systems are substantively assessed on this axis.'])
+        if missing:
+            lines.append(f'  - Systems not assessed on this axis: {", ".join(missing[:10])}')
+        sections.append('\n'.join(lines))
+    return '\n\n'.join(sections)
 
 
 @router.post('/gaps/generate', response_model=GenerateGapResponse)
 async def generate_gap_statement(req: GenerateGapRequest):
     lit_summary = _summarise_lit(req.matrix_rows, req.columns)
     sys_summary = _summarise_sys(req.system_rows, req.system_columns)
+    focused_lit = _summarise_lit_axes(req.matrix_rows, req.focus_columns)
+    focused_sys = _summarise_sys_axes(req.system_rows, req.focus_system_columns)
+    topic_context = '\n'.join(
+        f'• [{t.type or "topic"}] {t.title}'
+        + (f' — {t.description}' if t.description else '')
+        for t in req.topics
+    ) or '(no selected topics provided)'
 
     theme_context = ''
     if req.themes:
         theme_context = '\nSYNTHESIS THEMES (from prior step):\n' + '\n'.join(
             f'• {t.name} ({t.coverageLabel})'
-            + (f': {t.blocks[2].get("content", "")[:150]}…' if len(t.blocks) > 2 and isinstance(t.blocks[2], dict) else '')
+            + ''.join(
+                f'\n  - {str(b.get("title") or b.get("blockType") or "block")}: {str(b.get("content", ""))[:240]}'
+                for b in t.blocks
+                if isinstance(b, dict) and b.get("content")
+            )
             for t in req.themes
         )
 
-    user_content = f"""Write a gap statement for this systematic review.
+    custom_instruction = ''
+    if req.custom_system_prompt:
+        custom_instruction = f"""
+
+ADDITIONAL USER INSTRUCTIONS:
+{req.custom_system_prompt}
+"""
+
+    focused_mode = bool(req.focus_columns or req.focus_system_columns)
+
+    if focused_mode:
+        user_content = f"""FOCUSED AXIS CROSS-COMPARISON MODE.
+
+Write a publishable gap analysis by cross-comparing the selected schema direction across all papers/systems.
 
 RESEARCH PROFILE:
 Domain: {req.profile.domain}
@@ -136,6 +235,52 @@ Population: {req.profile.population}
 Focus: {req.profile.focus}
 Method: {req.profile.method}
 Review type: {req.profile.reviewType}
+
+SELECTED TOPICS / INTENDED DISCUSSION TARGET:
+{topic_context}
+{theme_context}
+{custom_instruction}
+
+SELECTED SCHEMA DIRECTION:
+Literature axis: {", ".join(req.focus_columns) or "none"}
+System axis: {", ".join(req.focus_system_columns) or "none"}
+
+CROSS-PAPER VALUES UNDER THE SELECTED DIRECTION:
+{focused_lit}
+
+CROSS-SYSTEM VALUES UNDER THE SELECTED DIRECTION:
+{focused_sys}
+
+TASK:
+Compare the actual values above across papers/systems. Do not restate them row by row. Synthesise them into patterns:
+1. What kinds of findings/outcomes/capabilities are being reported under this same direction?
+2. Where do papers/systems converge?
+3. Where do they diverge, use different measures, stay too generic, or fail to connect to the review focus?
+4. What specific unanswered research gap emerges from that cross-comparison?
+
+STRICT OUTPUT REQUIREMENTS:
+- Do not explain what the schema direction means.
+- Do not write a table-like inventory.
+- Do not say the gap is simply missing rows.
+- The first paragraph must compare at least two concrete papers/systems if available.
+- The second paragraph must identify the cross-paper/system pattern or inconsistency.
+- The final paragraph must state the gap as an unanswered research problem in this direction.
+- If the selected direction is about results/outcomes/indicators/measures/evaluation, focus on whether the reviewed work uses comparable outcomes, meaningful endpoints, implementation outcomes, longitudinal outcomes, or system-linked validation.
+
+Write 2–3 paragraphs. Respond with JSON: {{"statement": "para1\\n\\npara2\\n\\npara3"}}
+"""
+    else:
+        user_content = f"""Write a publishable, evidence-led gap analysis for this systematic review.
+
+RESEARCH PROFILE:
+Domain: {req.profile.domain}
+Population: {req.profile.population}
+Focus: {req.profile.focus}
+Method: {req.profile.method}
+Review type: {req.profile.reviewType}
+
+SELECTED TOPICS / INTENDED DISCUSSION TARGET:
+{topic_context}
 {theme_context}
 
 LITERATURE MATRIX ({len(req.matrix_rows)} papers):
@@ -143,15 +288,20 @@ LITERATURE MATRIX ({len(req.matrix_rows)} papers):
 
 SYSTEM REVIEW ({len(req.system_rows)} systems):
 {sys_summary}
+{custom_instruction}
 
-Write 3–4 paragraphs as a gap statement. Integrate evidence from BOTH sources.
+Analyse the mismatch between the intended discussion target and the actual evidence. Start from what the papers actually found, then identify what remains unresolved, under-explained, methodologically weak, or absent.
+
+Do not simply list missing matrix cells or confidence scores. Use those only as clues for substantive gaps such as missing populations, untested interventions, absent implementation evidence, weak outcome measurement, lack of longitudinal evidence, lack of direct comparison, or lack of system validation.
+
+Write 3–4 paragraphs as a gap statement. Integrate evidence from BOTH sources when system data is relevant; otherwise explain that the paper evidence is the primary basis.
 Respond with JSON: {{"statement": "para1\\n\\npara2\\n\\npara3"}}
 """
 
     try:
         response = await client.responses.create(
             model=MODEL,
-            instructions=req.custom_system_prompt or GAP_SYSTEM_PROMPT,
+            instructions=GAP_SYSTEM_PROMPT,
             input=user_content,
         )
         data = extract_json(response.output_text or '')
