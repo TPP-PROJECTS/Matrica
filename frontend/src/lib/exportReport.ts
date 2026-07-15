@@ -211,6 +211,32 @@ export async function exportAsDocx(state: AppState): Promise<void> {
     )
   }
 
+  // ── 10. Final Topic & Paper Structure ────────────────────────────────────
+  const finalTopic = state.finalTopicOptions.find(t => t.id === state.selectedFinalTopicId)
+  const finalData = state.topicFinalData.find(d => d.topicId === state.selectedFinalTopicId)
+  const paperSections = finalData?.paperSections ?? []
+  if (finalTopic || paperSections.length > 0) {
+    sections.push(h1('10. Final Research Topic & Paper Structure'), spacer())
+    if (finalTopic) {
+      sections.push(para(finalTopic.title, { bold: true }))
+      if (finalTopic.description) sections.push(para(finalTopic.description))
+      sections.push(spacer())
+    }
+    for (const s of paperSections) {
+      sections.push(h2(`${s.number}. ${s.name}`))
+      if (s.purpose) sections.push(para(s.purpose, { italic: true }))
+      if (s.subsections && s.subsections.length > 0) {
+        for (const sub of s.subsections) {
+          sections.push(h3(sub.title))
+          if (sub.content) sections.push(para(sub.content))
+        }
+      } else {
+        for (const b of s.bullets) sections.push(bullet(b))
+      }
+      sections.push(spacer())
+    }
+  }
+
   // ── Build document ───────────────────────────────────────────────────────
   const doc = new Document({
     creator: 'ResearchAI',
@@ -242,6 +268,8 @@ export function exportAsPdf(state: AppState): void {
   const selectedGaps = state.gaps.filter(g => g.selected)
   const selectedRQ = state.rqOptions.find(r => r.id === state.selectedRQId)
   const selectedDesign = state.studyDesignOptions.find(d => d.id === state.selectedStudyDesignId)
+  const finalTopic = state.finalTopicOptions.find(t => t.id === state.selectedFinalTopicId)
+  const paperSections = (state.topicFinalData.find(d => d.topicId === state.selectedFinalTopicId)?.paperSections) ?? []
 
   const section = (heading: string, content: string) =>
     `<h2 style="margin:20px 0 6px;font-size:13px;font-weight:700;border-bottom:1px solid #ddd;padding-bottom:4px;color:#111">${heading}</h2>${content}`
@@ -321,6 +349,18 @@ ${selectedRQ ? section('8. Research Question', `
 ${selectedDesign ? section('9. Study Design', `
   <p><strong>${selectedDesign.name}</strong></p>
   <p style="color:#555">${selectedDesign.hint}</p>
+`) : ''}
+
+${(finalTopic || paperSections.length > 0) ? section('10. Final Research Topic & Paper Structure', `
+  ${finalTopic ? `<p><strong>${finalTopic.title}</strong></p>${finalTopic.description ? `<p style="color:#555">${finalTopic.description}</p>` : ''}` : ''}
+  ${paperSections.map(s => `
+    <div style="margin-top:10px">
+      <p><strong>${s.number}. ${s.name}</strong></p>
+      ${s.purpose ? `<p style="font-style:italic;color:#555">${s.purpose}</p>` : ''}
+      ${(s.subsections && s.subsections.length > 0)
+        ? s.subsections.map(sub => `<p style="margin-left:12px"><strong>${sub.title}</strong><br>${sub.content}</p>`).join('')
+        : `<ul>${s.bullets.map(b => `<li>${b}</li>`).join('')}</ul>`}
+    </div>`).join('')}
 `) : ''}
 
 </body>
