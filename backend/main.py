@@ -1,7 +1,7 @@
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import topics, chat, reasoning, queries, search, recognise, matrix, systems, synthesis, gaps, final_question, prompts, assistant, bridge
+from routers import topics, chat, reasoning, queries, search, recognise, matrix, systems, synthesis, gaps, final_question, prompts, assistant, bridge, projects
 from reporter import OrchestrationReporter
 from analytics.middleware import AnalyticsMiddleware
 from analytics.router import router as analytics_router
@@ -46,6 +46,7 @@ app.include_router(final_question.router, prefix="/api")
 app.include_router(prompts.router, prefix="/api")
 app.include_router(assistant.router, prefix="/api")
 app.include_router(bridge.router, prefix="/api")
+app.include_router(projects.router, prefix="/api")
 
 
 @app.get("/api/health")
