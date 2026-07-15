@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useApp } from '../../store/AppContext'
 import { ChatMessage } from './ChatMessage'
 import { buildResearchContext } from '../../lib/buildResearchContext'
-import { resolveAction } from '../../lib/resolveAction'
+import { resolveAction, buildActionsSpec } from '../../lib/actionRegistry'
 import type { ProposedAction } from '../../types'
 import { API, apiFetch } from '../../lib/api'
 
@@ -29,6 +29,8 @@ async function callAssistantAPI(
       messages: history,
       new_message: newMessage,
       research_context: researchContext,
+      // Single source of truth for what the assistant may do — see actionRegistry.
+      available_actions: buildActionsSpec(),
     }),
   })
   if (!res.ok) throw new Error(`Assistant API error: ${res.status}`)
@@ -130,11 +132,16 @@ export function ChatPanel() {
   }
 
   function handleApply(messageId: string, action: ProposedAction) {
-    // Resolve the AI action to one or more AppActions and dispatch them
-    const appActions = resolveAction(action, stateRef.current)
-    appActions.forEach(a => dispatch(a))
+    // Resolve the AI action to one or more AppActions and dispatch them.
+    const { actions, error } = resolveAction(action, stateRef.current)
 
-    // Mark action as applied
+    if (error) {
+      // Surface the failure instead of silently marking it "applied".
+      dispatch({ type: 'UPDATE_ACTION_STATUS', messageId, actionId: action.id, status: 'failed', note: error })
+      return
+    }
+
+    actions.forEach(a => dispatch(a))
     dispatch({ type: 'UPDATE_ACTION_STATUS', messageId, actionId: action.id, status: 'applied' })
   }
 

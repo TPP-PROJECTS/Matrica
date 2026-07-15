@@ -92,6 +92,10 @@ class AssistantRequest(BaseModel):
     new_message: str
     research_context: ResearchContext = ResearchContext()
     orchestration_trace_id: str | None = None
+    # Action catalogue supplied by the frontend action registry (single source of
+    # truth). When present it replaces the built-in ACTIONS_SPEC so new actions
+    # become chatbot-operable without editing this file.
+    available_actions: str | None = None
 
 
 class ActionPayload(BaseModel):
@@ -187,7 +191,8 @@ Always confirm what you will do in your reply, then include the action.
   label: e.g. "Override prompt: topics-generate"
 """
 
-def build_system_prompt(ctx: ResearchContext, trace_id: str | None = None) -> str:
+def build_system_prompt(ctx: ResearchContext, trace_id: str | None = None,
+                        actions_spec: str | None = None) -> str:
     step = ctx.current_step
     p = ctx.profile
 
@@ -297,6 +302,10 @@ def build_system_prompt(ctx: ResearchContext, trace_id: str | None = None) -> st
 
     memory_block = '\n\n'.join(sections) if sections else 'No research data collected yet.'
 
+    # Prefer the catalogue the frontend sent (its action registry is authoritative);
+    # fall back to the built-in spec for older clients.
+    actions_block = actions_spec.strip() if actions_spec and actions_spec.strip() else ACTIONS_SPEC
+
     return f"""You are an intelligent Research Assistant embedded in a systematic review tool.
 The student is on Step {step} of 8: {STEP_LABELS.get(step, f'Step {step}')}.
 
@@ -304,7 +313,7 @@ The student is on Step {step} of 8: {STEP_LABELS.get(step, f'Step {step}')}.
 {memory_block}
 ===== END MEMORY =====
 
-{ACTIONS_SPEC}
+{actions_block}
 
 ## RESPONSE FORMAT
 Always respond with valid JSON only — no markdown, no code blocks:
@@ -335,7 +344,9 @@ Rules:
 
 @router.post('/chat/assistant', response_model=AssistantResponse)
 async def assistant_chat(req: AssistantRequest):
-    system_prompt = build_system_prompt(req.research_context, req.orchestration_trace_id)
+    system_prompt = build_system_prompt(
+        req.research_context, req.orchestration_trace_id, req.available_actions,
+    )
 
     input_messages = [
         {'role': msg.role, 'content': msg.content}
