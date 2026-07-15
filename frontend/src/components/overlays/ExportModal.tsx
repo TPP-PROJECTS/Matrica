@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useApp } from '../../store/AppContext'
 import { exportAsDocx, exportAsPdf } from '../../lib/exportReport'
+import { exportBibTeX, exportRIS, exportMatrixCSV, exportPrismaCSV } from '../../lib/exportData'
 
 interface Props {
   onClose: () => void
@@ -17,6 +18,17 @@ export function ExportModal({ onClose }: Props) {
   const gapsCount    = state.gaps.filter(g => g.selected).length
   const hasRQ        = !!state.selectedRQId
   const hasDesign    = !!state.selectedStudyDesignId
+  const paperStructureCount = state.topicFinalData.find(d => d.topicId === state.selectedFinalTopicId)?.paperSections.length ?? 0
+  const hasStructure = !!state.selectedFinalTopicId || paperStructureCount > 0
+  const citableCount = state.reviewList.filter(r => r.status === 'included' || r.status === 'maybe' || r.status === 'saved').length
+  const matrixCount  = state.matrixRows.length
+
+  const dataExports = [
+    { key: 'bib',    label: 'BibTeX (.bib)',    hint: 'Import into Zotero / Mendeley', ready: citableCount > 0, run: () => exportBibTeX(state) },
+    { key: 'ris',    label: 'RIS (.ris)',       hint: 'Import into EndNote / RefWorks', ready: citableCount > 0, run: () => exportRIS(state) },
+    { key: 'csv',    label: 'Matrix (.csv)',    hint: 'Open the literature matrix in Excel', ready: matrixCount > 0, run: () => exportMatrixCSV(state) },
+    { key: 'prisma', label: 'PRISMA flow (.csv)', hint: 'Screening counts for a PRISMA diagram', ready: state.results.length > 0, run: () => exportPrismaCSV(state) },
+  ]
 
   const sections = [
     { label: 'Research Profile',    ready: !!state.profile.domain },
@@ -28,6 +40,7 @@ export function ExportModal({ onClose }: Props) {
     { label: `Gap Analysis (${gapsCount})`, ready: gapsCount > 0 },
     { label: 'Research Question',   ready: hasRQ },
     { label: 'Study Design',        ready: hasDesign },
+    { label: 'Final Topic & Structure', ready: hasStructure },
   ]
 
   async function handleExportDocx() {
@@ -127,6 +140,27 @@ export function ExportModal({ onClose }: Props) {
               </div>
             </div>
           </button>
+        </div>
+
+        {/* Data exports — reference managers & analysis */}
+        <div className="px-5 pb-4">
+          <p className="text-[11px] font-semibold text-zinc-500 uppercase tracking-wide mb-2">
+            References &amp; data
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            {dataExports.map(d => (
+              <button
+                key={d.key}
+                onClick={() => { d.run(); onClose() }}
+                disabled={!d.ready || loading !== null}
+                title={d.hint}
+                className="flex flex-col items-start px-3 py-2 border border-zinc-200 rounded-lg hover:bg-zinc-50 hover:border-zinc-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-left"
+              >
+                <span className="text-[12px] font-semibold text-zinc-800">{d.label}</span>
+                <span className="text-[10px] text-zinc-500 mt-0.5">{d.hint}</span>
+              </button>
+            ))}
+          </div>
         </div>
 
         {/* Footer */}

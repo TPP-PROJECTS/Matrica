@@ -19,7 +19,7 @@ Your task is to propose column headers for a literature review extraction matrix
 Design principles you must follow:
 1. Together, the columns must let a reader reconstruct each study at a glance, in this canonical order: study design & methodology → sample and setting → intervention / exposure / phenomenon of interest → measures and instruments → key findings → quality, limitations and gaps.
 2. One column = one construct. Never merge two constructs into a single column (no "Design & Sample").
-3. Every column must be answerable from a title and abstract alone; do not propose columns that require full-text tables or appendices.
+3. Most columns should be answerable from a title and abstract. You MAY additionally include up to two columns that usually require full text (e.g. "Sample Size", "Effect Estimate", "Analysis Method") — the system attempts open-access full-text extraction to fill these; do not propose columns that require appendices or supplementary files.
 4. Use precise methodological vocabulary ("Study Design", "Sampling Strategy", "Outcome Measures", "Effect Direction", "Theoretical Framework") — never vague labels such as "Details", "Information", "Notes" or "Other".
 5. Adapt column choice to the review type: scoping reviews need mapping/characterisation columns (concepts, contexts, evidence types); effectiveness reviews need PICO-aligned columns (intervention, comparator, outcomes, effect estimates); qualitative syntheses need phenomenon, methodology and key-theme columns.
 6. At least two columns must be tailored to the reviewer's stated domain, population and focus rather than generic.
@@ -32,6 +32,7 @@ class PaperInfo(BaseModel):
     abstract: str = ''
     authors: str = ''
     year: int | None = None
+    url: str = ''   # locator hint (DOI / OpenAlex / publisher link) for OA full-text lookup
 
 
 class TopicInfo(BaseModel):
@@ -271,6 +272,7 @@ class AutofillRowRequest(BaseModel):
 
 class AutofillRowResponse(BaseModel):
     cells: dict[str, CellData]
+    fullTextUsed: bool = False
 
 
 class AutofillSystemRowRequest(BaseModel):
@@ -280,10 +282,13 @@ class AutofillSystemRowRequest(BaseModel):
     custom_system_prompt: str | None = None
 
 
-AUTOFILL_LITERATURE_PROMPT = """You are an expert systematic reviewer extracting structured data from research paper abstracts.
+AUTOFILL_LITERATURE_PROMPT = """You are an expert systematic reviewer extracting structured data from research papers.
+You are given each paper's abstract and, when the paper is open-access, the extracted FULL TEXT.
 For each column, extract or infer the relevant information.
+- Prefer the FULL TEXT for details abstracts usually omit (sample size, effect estimates, statistical methods, limitations); use the abstract when full text is absent.
+- The full text is machine-extracted from a PDF and may be noisy or truncated — read it critically.
 Rules:
-- evidenceType: "extracted" if clearly stated, "inferred" if reasoned from context, "not_available" if truly absent
+- evidenceType: "extracted" if clearly stated in the provided text, "inferred" if reasoned from context, "not_available" if truly absent
 - confidenceScore: integer 0–100
 - confidenceLevel: "high" (≥75), "medium" (45–74), "low" (15–44), "none" (<15)
 - extractionMethod: "verbatim" (direct quote), "summarised" (condensed from text), "inferred" (reasoned), "not_available"
@@ -395,6 +400,12 @@ async def autofill_literature_row(req: AutofillRowRequest):
     col_list = '\n'.join(f'- {c}' for c in req.columns)
     topic_list = '\n'.join(f'  [{t.type}] {t.title}' for t in req.topics) or '(none)'
 
+    full_text = await _get_paper_full_text(req.paper)
+    full_text_section = (
+        f"\nFULL TEXT (extracted from open-access PDF; may be truncated/noisy):\n{full_text}\n"
+        if full_text else ""
+    )
+
     user_content = f"""Extract data from this paper for each column listed below.
 
 PAPER:
@@ -402,7 +413,7 @@ Title: {req.paper.title}
 Authors: {req.paper.authors or "Unknown"}
 Year: {req.paper.year or "Unknown"}
 Abstract: {req.paper.abstract or "(no abstract available)"}
-
+{full_text_section}
 RESEARCH PROFILE:
 Domain: {req.profile.domain}
 Population: {req.profile.population}
@@ -445,7 +456,7 @@ Respond with JSON:
                 confidenceLevel=cd.get("confidenceLevel", "medium"),
                 extractionMethod=cd.get("extractionMethod", "inferred"),
             )
-        return AutofillRowResponse(cells=cells)
+        return AutofillRowResponse(cells=cells, fullTextUsed=bool(full_text))
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="AI returned invalid JSON")
     except Exception as e:
@@ -589,6 +600,140 @@ Respond ONLY with valid JSON: {"title": "...", "authors": "...", "year": 2021, "
 
 DOI_RE = re.compile(r'10\.\d{4,9}/[^\s"<>]+')
 _UA = {"User-Agent": "ResearchAI-tool (research@example.com)"}
+
+
+# ── Open-access full-text extraction ──────────────────────────────────────────
+# Matrix autofill is far richer when it can read the paper's full text (sample
+# sizes, effect estimates, methodology, limitations live in the body, not the
+# abstract). For open-access papers we resolve a PDF via OpenAlex, download it,
+# and extract text with pypdf. Everything is best-effort: any failure falls back
+# to the abstract silently.
+
+FULL_TEXT_MAX_CHARS = 24000   # keep the prompt within the model context budget
+FULL_TEXT_MAX_PAGES = 30
+FULL_TEXT_MIN_CHARS = 200     # below this, treat as a failed / empty extraction
+_OPENALEX_WORK = "https://api.openalex.org/works"
+_PMC_RE = re.compile(r'/pmc/articles/(?:PMC)?(\d+)', re.I)
+
+
+def _pdf_candidates(work: dict) -> list[str]:
+    """All distinct PDF URLs across a work's OA locations, best copy first.
+
+    A single paper is usually hosted in several places (publisher + institutional
+    repositories); publisher links frequently 403 bots while repository copies
+    download fine, so we return every candidate to try in turn.
+    """
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def add(loc: dict | None) -> None:
+        u = (loc or {}).get("pdf_url")
+        if u and u not in seen:
+            seen.add(u)
+            urls.append(u)
+
+    add(work.get("best_oa_location"))
+    add(work.get("primary_location"))
+    for loc in work.get("locations") or []:
+        add(loc)
+    return urls
+
+
+def _pmc_id(work: dict) -> str | None:
+    """First PubMed Central id found among a work's location landing pages."""
+    locs = [work.get("best_oa_location"), work.get("primary_location")] + (work.get("locations") or [])
+    for loc in locs:
+        m = _PMC_RE.search((loc or {}).get("landing_page_url") or "")
+        if m:
+            return m.group(1)
+    return None
+
+
+def _extract_pdf_bytes(raw: bytes) -> str:
+    from pypdf import PdfReader
+    reader = PdfReader(io.BytesIO(raw))
+    text = "\n".join((p.extract_text() or "") for p in reader.pages[:FULL_TEXT_MAX_PAGES])
+    return re.sub(r"[ \t]+", " ", text).strip()
+
+
+async def _fetch_openalex_work(
+    http: httpx.AsyncClient,
+    *,
+    doi: str | None,
+    title: str | None,
+    year: int | None,
+) -> dict | None:
+    """Locate a paper's OpenAlex record (DOI first, else a title search)."""
+    select = "title,publication_year,open_access,primary_location,best_oa_location,locations"
+    try:
+        if doi:
+            r = await http.get(f"{_OPENALEX_WORK}/https://doi.org/{doi}",
+                               params={"select": select}, headers=_UA)
+            if r.status_code == 200:
+                return r.json()
+        if title:
+            r = await http.get(_OPENALEX_WORK,
+                               params={"search": title, "per-page": 1, "select": select},
+                               headers=_UA)
+            if r.status_code == 200:
+                results = r.json().get("results") or []
+                if results:
+                    work = results[0]
+                    # Guard against a fuzzy title match landing a different paper.
+                    if year and work.get("publication_year") and abs(work["publication_year"] - year) > 1:
+                        return None
+                    return work
+    except Exception:
+        return None
+    return None
+
+
+async def _get_paper_full_text(paper: PaperInfo) -> str:
+    """Best-effort open-access full text for a paper; '' if none is obtainable."""
+    doi = None
+    m = DOI_RE.search(paper.url or "")
+    if m:
+        doi = m.group(0).rstrip('.,;)')
+    if not doi and not paper.title:
+        return ""
+
+    async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as http:
+        work = await _fetch_openalex_work(http, doi=doi, title=paper.title or None, year=paper.year)
+        if not work:
+            return ""
+
+        # 1) Try each OA PDF copy until one downloads and extracts.
+        for pdf_url in _pdf_candidates(work):
+            try:
+                r = await http.get(pdf_url, headers=_UA)
+                if r.status_code != 200:
+                    continue
+                ctype = r.headers.get("content-type", "").lower()
+                if "pdf" not in ctype and r.content[:5] != b"%PDF-":
+                    continue
+                text = _extract_pdf_bytes(r.content)
+                if len(text) >= FULL_TEXT_MIN_CHARS:
+                    return text[:FULL_TEXT_MAX_CHARS]
+            except Exception:
+                continue
+
+        # 2) Biomedical fallback: Europe PMC full-text XML for PMC-indexed papers.
+        pmc = _pmc_id(work)
+        if pmc:
+            try:
+                x = await http.get(
+                    f"https://www.ebi.ac.uk/europepmc/webservices/rest/PMC{pmc}/fullTextXML",
+                    headers=_UA,
+                )
+                if x.status_code == 200:
+                    body = re.sub(r"<[^>]+>", " ", x.text)
+                    body = re.sub(r"\s+", " ", body).strip()
+                    if len(body) >= FULL_TEXT_MIN_CHARS:
+                        return body[:FULL_TEXT_MAX_CHARS]
+            except Exception:
+                pass
+
+    return ""
 
 
 async def _extract_paper_metadata(text: str, hint: str = '') -> dict:

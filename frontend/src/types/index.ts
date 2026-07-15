@@ -4,7 +4,7 @@ export type MessageType = 'proactive' | 'student' | 'assistant' | 'ask_about_thi
 
 // ── Agentic chat actions ──────────────────────────────────────────────────────
 
-export type ProposedActionStatus = 'pending' | 'applied' | 'skipped'
+export type ProposedActionStatus = 'pending' | 'applied' | 'skipped' | 'failed'
 
 export interface ProposedAction {
   id: string
@@ -13,6 +13,7 @@ export interface ProposedAction {
   detail?: string                    // secondary detail (e.g. new value)
   payload: Record<string, unknown>
   status: ProposedActionStatus
+  note?: string                      // failure reason shown when status === 'failed'
 }
 export type TriggerType = 'student_action' | 'ai_proactive' | 'chat_command' | 'consistency_correction'
 
@@ -268,12 +269,6 @@ export interface SessionSnapshot {
   // Step 4
   results: ResultCard[]
   reviewList: ResultCard[]
-  // Step 2 (Matrix Schema) — schema decided up-front, applied to the Matrix step
-  systemMatrixEnabled: boolean
-  matrixColumnSuggestions: string[]
-  systemMatrixColumnSuggestions: string[]
-  columnDescriptions: Record<string, string>
-  systemColumnDescriptions: Record<string, string>
   // Step 5
   matrixColumns: string[]
   matrixRows: MatrixRow[]
@@ -418,5 +413,5 @@ export type AppAction =
   | { type: 'SET_SESSION_TITLE'; title: string }
   | { type: 'NEW_SESSION' }
   | { type: 'LOAD_SESSION'; snapshot: SessionSnapshot }
-  | { type: 'UPDATE_ACTION_STATUS'; messageId: string; actionId: string; status: ProposedActionStatus }
+  | { type: 'UPDATE_ACTION_STATUS'; messageId: string; actionId: string; status: ProposedActionStatus; note?: string }
   | { type: 'RESTORE_STATE'; state: AppState }

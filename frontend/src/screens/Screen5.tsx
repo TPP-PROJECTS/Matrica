@@ -155,7 +155,6 @@ function EvidencePopover({
 // ── Clean cell renderer (no dots, no badges) ──────────────────────────────────
 function CellContent({
   cell,
-  column: _column,
   onEvidence,
 }: {
   cell: MatrixCell | undefined
@@ -250,6 +249,20 @@ function freshSuggestions(fresh: string[], exclude: string[]): string[] {
     if (ex.has(k) || seen.has(k)) continue
     seen.add(k)
     out.push(c)
+  }
+  return out
+}
+
+function mergeColumnOptions(...groups: string[][]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const group of groups) {
+    for (const col of group) {
+      const k = col.toLowerCase().trim()
+      if (!k || seen.has(k)) continue
+      seen.add(k)
+      out.push(col)
+    }
   }
   return out
 }
@@ -633,7 +646,7 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
       if (!res.ok) throw new Error()
       const data = await res.json()
       const fresh = freshSuggestions(data.columns, dataCols)
-      dispatch({ type: 'SET_MATRIX_COLUMN_SUGGESTIONS', columns: fresh })
+      dispatch({ type: 'SET_MATRIX_COLUMN_SUGGESTIONS', columns: mergeColumnOptions(state.matrixColumnSuggestions, fresh) })
       setNewCols(fresh)
       const descs = newColumnDescriptions(data.descriptions, dataCols)
       if (Object.keys(descs).length) dispatch({ type: 'MERGE_COLUMN_DESCRIPTIONS', system: false, descriptions: descs })
@@ -669,7 +682,7 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
   useEffect(() => { if (!needsInit || generating) return; runGenerate() }, [needsInit])
 
   async function fillPapers(
-    papers: { id: string; title: string; abstract: string; authors: string; year: number }[],
+    papers: { id: string; title: string; abstract: string; authors: string; year: number; source?: string }[],
     prompt?: string | null,
   ) {
     if (filling || dataCols.length === 0 || papers.length === 0) return
@@ -683,7 +696,7 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
         const res = await apiFetch(`${API}/matrix/autofill-row`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            paper: { title: paper.title, abstract: paper.abstract, authors: paper.authors, year: paper.year || null },
+            paper: { title: paper.title, abstract: paper.abstract, authors: paper.authors, year: paper.year || null, url: paper.source ?? '' },
             columns: dataCols, profile: state.profile,
             topics: state.topics.filter(t => t.selected).map(t => ({ title: t.title, description: t.description, type: t.type })),
             custom_system_prompt: prompt ?? null,
@@ -757,7 +770,8 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
         <span className="text-[9px] text-zinc-400">{filledCount}/{totalCells} cells filled</span>
         <div className="flex-1" />
         <button onClick={() => setShowEditCols(true)}
-          className="px-3 h-6 border border-zinc-300 rounded text-[10px] text-zinc-700 hover:bg-zinc-50">✎ Edit Columns</button>
+          title="Add new matrix columns based on the papers and systems you've selected"
+          className="px-3 h-6 border border-zinc-300 rounded text-[10px] text-zinc-700 hover:bg-zinc-50">update matrix</button>
         <button onClick={() => setShowAddPapers(true)} disabled={filling}
           className="px-3 h-6 border border-zinc-300 rounded text-[10px] text-zinc-700 hover:bg-zinc-50 disabled:opacity-50">
           + Papers
@@ -787,7 +801,6 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
           />
         )}
         {filling && <button onClick={() => { abortRef.current = true }} className="px-2 h-6 border border-zinc-300 rounded text-[10px] text-zinc-500 hover:bg-zinc-100">Stop</button>}
-        <button className="px-3 h-6 border border-zinc-300 rounded text-[10px] text-zinc-700 hover:bg-zinc-50">Export CSV</button>
       </div>
 
       <div className="flex-1 overflow-auto">
@@ -837,11 +850,10 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
       {showAddPapers && <AddPapersModal onClose={() => setShowAddPapers(false)} onAdd={handleAddPapers} />}
 
       {showEditCols && (
-        <EditColumnsModal title="Edit Literature Matrix Columns" onClose={() => setShowEditCols(false)}>
+        <EditColumnsModal title="Edit literature Matrix" onClose={() => setShowEditCols(false)}>
           <SchemaBuilder
-            title="Literature matrix columns"
             accent="zinc"
-            available={state.matrixColumnSuggestions}
+            available={mergeColumnOptions(state.matrixColumnSuggestions, dataCols)}
             selected={dataCols}
             descriptions={state.columnDescriptions}
             newColumns={newCols}
@@ -899,7 +911,7 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
       if (!res.ok) throw new Error()
       const data = await res.json()
       const fresh = freshSuggestions(data.columns, dataCols)
-      dispatch({ type: 'SET_SYSTEM_MATRIX_COLUMN_SUGGESTIONS', columns: fresh })
+      dispatch({ type: 'SET_SYSTEM_MATRIX_COLUMN_SUGGESTIONS', columns: mergeColumnOptions(state.systemMatrixColumnSuggestions, fresh) })
       setNewCols(fresh)
       const descs = newColumnDescriptions(data.descriptions, dataCols)
       if (Object.keys(descs).length) dispatch({ type: 'MERGE_COLUMN_DESCRIPTIONS', system: true, descriptions: descs })
@@ -1017,7 +1029,8 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
         <span className="text-[9px] text-violet-400">{filledCount}/{totalCells} cells filled · {selectedSystems.length} systems</span>
         <div className="flex-1" />
         <button onClick={() => setShowEditCols(true)}
-          className="px-3 h-6 border border-violet-300 rounded text-[10px] text-violet-700 hover:bg-violet-100">✎ Edit Columns</button>
+          title="Add new matrix columns based on the papers and systems you've selected"
+          className="px-3 h-6 border border-violet-300 rounded text-[10px] text-violet-700 hover:bg-violet-100">update matrix</button>
         <button onClick={() => setShowAddSystem(true)} disabled={filling}
           className="px-3 h-6 border border-violet-300 rounded text-[10px] text-violet-700 hover:bg-violet-100 disabled:opacity-50">
           + System
@@ -1027,7 +1040,6 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
           {filling ? <><span className="w-2.5 h-2.5 border border-violet-300 border-t-white rounded-full animate-spin" />{fillDone}/{fillTotal} rows…</> : <><span>✦</span> Auto-fill All</>}
         </button>
         {filling && <button onClick={() => { abortRef.current = true }} className="px-2 h-6 border border-violet-300 rounded text-[10px] text-violet-600 hover:bg-violet-100">Stop</button>}
-        <button className="px-3 h-6 border border-violet-300 rounded text-[10px] text-violet-700 hover:bg-violet-100">Export CSV</button>
       </div>
 
       <div className="flex-1 overflow-auto">
@@ -1086,11 +1098,10 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
       )}
 
       {showEditCols && (
-        <EditColumnsModal title="Edit System Matrix Columns" onClose={() => setShowEditCols(false)}>
+        <EditColumnsModal title="Edit System Matrix" onClose={() => setShowEditCols(false)}>
           <SchemaBuilder
-            title="System matrix columns"
             accent="violet"
-            available={state.systemMatrixColumnSuggestions}
+            available={mergeColumnOptions(state.systemMatrixColumnSuggestions, dataCols)}
             selected={dataCols}
             descriptions={state.systemColumnDescriptions}
             newColumns={newCols}
@@ -1196,7 +1207,7 @@ export function Screen5() {
           </button>
         )}
         <div className="flex-1" />
-        <span className="text-[10px] text-zinc-400 pb-2">Step 6 · Matrix</span>
+        <span className="text-[10px] text-zinc-400 pb-2">Step 6 · Matrix Table</span>
       </div>
 
       {/* Active matrix */}

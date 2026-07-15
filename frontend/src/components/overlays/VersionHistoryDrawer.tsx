@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react'
 import { useApp } from '../../store/AppContext'
-import { listSessions, deleteSession, loadSession } from '../../lib/sessionStorage'
+import { deleteSession, fetchSessionsRemote, fetchSessionRemote } from '../../lib/sessionStorage'
 import type { SessionMeta } from '../../types'
 
 const STEP_LABELS = [
-  '', 'Chat & Define Topic', 'Matrix Schema', 'System Review', 'Explore & Search', 'Select Paper',
-  'Matrix', 'Synthesis', 'Gap & Statement', 'Final Question',
+  '', 'Chat & Define Topic', 'Matrix Initial', 'System Review', 'Explore & Search', 'Select Paper',
+  'Matrix Table', 'Synthesis', 'Gap & Statement', 'Final Question',
 ]
 
 function formatDate(iso: string): string {
@@ -127,13 +127,18 @@ export function VersionHistoryDrawer() {
   const { state, dispatch } = useApp()
   const [sessions, setSessions] = useState<SessionMeta[]>([])
 
-  // Refresh list whenever drawer opens
+  // Refresh list from the backend whenever the drawer opens (falls back to
+  // localStorage inside fetchSessionsRemote if the backend is unreachable).
   useEffect(() => {
-    setSessions(listSessions())
+    let cancelled = false
+    fetchSessionsRemote().then(list => {
+      if (!cancelled) setSessions(list)
+    })
+    return () => { cancelled = true }
   }, [state.showVersionHistory])
 
-  function handleLoad(id: string) {
-    const snap = loadSession(id)
+  async function handleLoad(id: string) {
+    const snap = await fetchSessionRemote(id)
     if (!snap) return
     dispatch({ type: 'LOAD_SESSION', snapshot: snap })
     // drawer closes via LOAD_SESSION resetting showVersionHistory in reducer
@@ -141,7 +146,7 @@ export function VersionHistoryDrawer() {
 
   function handleDelete(id: string) {
     deleteSession(id)
-    setSessions(listSessions())
+    setSessions(prev => prev.filter(m => m.id !== id))
   }
 
   function handleNew() {
@@ -199,7 +204,7 @@ export function VersionHistoryDrawer() {
         {/* Footer */}
         <div className="border-t border-zinc-100 px-4 py-2.5 shrink-0">
           <p className="text-[9px] text-zinc-400 text-center">
-            Auto-saved to browser storage · {sessions.length} session{sessions.length !== 1 ? 's' : ''}
+            Auto-saved · {sessions.length} session{sessions.length !== 1 ? 's' : ''}
           </p>
         </div>
       </div>

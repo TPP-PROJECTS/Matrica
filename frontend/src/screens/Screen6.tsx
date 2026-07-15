@@ -653,11 +653,6 @@ export function Screen6() {
             )}
           </div>
 
-          <div className="px-4 pb-4 shrink-0">
-            <button className="px-4 h-8 border border-zinc-300 rounded text-[11px] text-zinc-700 hover:bg-zinc-50">
-              Export all as Word draft →
-            </button>
-          </div>
         </div>
       </div>
 

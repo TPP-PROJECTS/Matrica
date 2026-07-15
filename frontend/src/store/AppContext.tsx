@@ -10,6 +10,7 @@ import {
 } from '../data/mockData'
 import {
   generateSessionId, saveSession, loadSession, getMostRecentSessionId,
+  migrateLocalSessionsToRemote,
 } from '../lib/sessionStorage'
 
 
@@ -557,7 +558,7 @@ function reducer(state: AppState, action: AppAction): AppState {
             ? {
                 ...m,
                 proposedActions: m.proposedActions?.map(a =>
-                  a.id === action.actionId ? { ...a, status: action.status } : a
+                  a.id === action.actionId ? { ...a, status: action.status, note: action.note } : a
                 ),
               }
             : m
@@ -688,6 +689,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [state.sessionId])
 
   useEffect(() => {
+    // One-shot: push any pre-existing localStorage sessions to the durable
+    // backend store so prior work is preserved when persistence is introduced.
+    migrateLocalSessionsToRemote()
+
     // Report session start once on mount
     trackEvent('session_start', { step: stateRef.current.currentStep })
 

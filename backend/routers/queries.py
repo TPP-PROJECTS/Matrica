@@ -14,13 +14,14 @@ client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 QUERIES_SYSTEM_PROMPT = """You are an expert academic librarian generating structured database search queries for a systematic literature review.
 
-For each research topic provided, generate 1-2 Boolean search queries suitable for academic databases (PubMed, Scopus, CINAHL).
+This tool executes every query against two free databases: PubMed (Boolean/MeSH-style syntax) and OpenAlex (relevance search — Boolean operators are stripped automatically). Write queries that work well across both.
+
+For each research topic provided, generate 1-2 Boolean search queries.
 
 Each query must have:
 - text: a well-formed Boolean query using AND/OR with parentheses and double-quoted phrases
 - qualityScore: integer 0-100 rating the query's expected precision/recall balance
 - priority: "high" for the most important query per topic, "med" for secondary
-- databases: array from ["PubMed", "Scopus", "CINAHL"] — choose the most appropriate 1-3
 - topicId: the id of the topic this query belongs to
 
 Respond ONLY with valid JSON:
@@ -30,11 +31,15 @@ Respond ONLY with valid JSON:
       "topicId": "ai-t1",
       "text": "...",
       "qualityScore": 78,
-      "priority": "high",
-      "databases": ["PubMed", "Scopus"]
+      "priority": "high"
     }
   ]
 }"""
+
+# The databases each query is actually executed against. Search always runs both
+# and ignores any per-query hint, so we label deterministically rather than let
+# the model invent databases the tool does not search (e.g. Scopus/CINAHL).
+SEARCHED_DATABASES = ["OpenAlex", "PubMed"]
 
 
 class TopicInput(BaseModel):
@@ -118,7 +123,7 @@ async def generate_queries(req: QueryGenerateRequest):
             text=q.get("text", ""),
             qualityScore=int(q.get("qualityScore", 70)),
             priority=q.get("priority", "med"),
-            databases=q.get("databases", ["PubMed"]),
+            databases=SEARCHED_DATABASES,
             resultCount=0,
             stale=False,
         ))

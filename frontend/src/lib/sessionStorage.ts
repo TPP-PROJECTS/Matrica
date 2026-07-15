@@ -1,4 +1,5 @@
 import type { AppState, SessionMeta, SessionSnapshot } from '../types'
+import { API, apiFetch } from './api'
 
 const PREFIX = 'tpp'
 const INDEX_KEY = `${PREFIX}:sessions`
@@ -70,9 +71,9 @@ function buildMeta(state: AppState, updatedAt: string): SessionMeta {
 }
 
 export function saveSession(state: AppState): void {
+  const now = new Date().toISOString()
+  const snapshot: SessionSnapshot = { ...toSnapshot(state), updatedAt: now }
   try {
-    const now = new Date().toISOString()
-    const snapshot: SessionSnapshot = { ...toSnapshot(state), updatedAt: now }
     localStorage.setItem(sessionKey(state.sessionId), JSON.stringify(snapshot))
 
     const index = listSessions()
@@ -80,8 +81,11 @@ export function saveSession(state: AppState): void {
     const updated = [meta, ...index.filter(m => m.id !== state.sessionId)]
     localStorage.setItem(INDEX_KEY, JSON.stringify(updated))
   } catch (e) {
-    console.warn('Failed to save session:', e)
+    console.warn('Failed to save session locally:', e)
   }
+  // Write through to the durable backend store (fire-and-forget; localStorage
+  // above is the offline fallback if this fails).
+  pushSessionRemote(snapshot)
 }
 
 export function loadSession(id: string): SessionSnapshot | null {
@@ -108,8 +112,9 @@ export function deleteSession(id: string): void {
     const updated = listSessions().filter(m => m.id !== id)
     localStorage.setItem(INDEX_KEY, JSON.stringify(updated))
   } catch (e) {
-    console.warn('Failed to delete session:', e)
+    console.warn('Failed to delete session locally:', e)
   }
+  apiFetch(`${API}/projects/${id}`, { method: 'DELETE' }).catch(() => {})
 }
 
 export function getMostRecentSessionId(): string | null {
@@ -122,5 +127,62 @@ export function clearAllSessions(): void {
     keys.forEach(k => localStorage.removeItem(k))
   } catch (e) {
     console.warn('Failed to clear sessions:', e)
+  }
+}
+
+// ── Backend (durable) store ───────────────────────────────────────────────────
+// The backend is the source of truth for the project list and cross-device /
+// post-cache-clear recovery. localStorage above is a synchronous offline cache.
+
+function pushSessionRemote(snapshot: SessionSnapshot): void {
+  apiFetch(`${API}/projects/${snapshot.sessionId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(snapshot),
+  }).catch(() => {})
+}
+
+/** Fetch the project list from the backend, falling back to localStorage. */
+export async function fetchSessionsRemote(): Promise<SessionMeta[]> {
+  try {
+    const res = await apiFetch(`${API}/projects`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return (await res.json()) as SessionMeta[]
+  } catch {
+    return listSessions()
+  }
+}
+
+/** Fetch a full snapshot from the backend, falling back to localStorage. */
+export async function fetchSessionRemote(id: string): Promise<SessionSnapshot | null> {
+  try {
+    const res = await apiFetch(`${API}/projects/${id}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return (await res.json()) as SessionSnapshot
+  } catch {
+    return loadSession(id)
+  }
+}
+
+/**
+ * One-shot migration: push any locally-stored sessions that the backend
+ * doesn't yet have. Runs once on app mount so pre-existing localStorage work
+ * is preserved when the backend store is first introduced.
+ */
+export async function migrateLocalSessionsToRemote(): Promise<void> {
+  const local = listSessions()
+  if (local.length === 0) return
+  try {
+    const res = await apiFetch(`${API}/projects`)
+    if (!res.ok) return
+    const remote = (await res.json()) as SessionMeta[]
+    const remoteIds = new Set(remote.map(m => m.id))
+    for (const meta of local) {
+      if (remoteIds.has(meta.id)) continue
+      const snap = loadSession(meta.id)
+      if (snap) pushSessionRemote(snap)
+    }
+  } catch {
+    // Backend unreachable — nothing to migrate; localStorage remains the cache.
   }
 }

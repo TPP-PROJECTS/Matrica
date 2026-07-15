@@ -69,6 +69,20 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
         CREATE INDEX IF NOT EXISTS idx_events_ts      ON events(ts);
         CREATE INDEX IF NOT EXISTS idx_events_step    ON events(step, event_type);
+
+        -- Durable project store: full SessionSnapshot JSON blob per project,
+        -- with a few denormalised columns for the project-list query.
+        CREATE TABLE IF NOT EXISTS projects (
+            id            TEXT PRIMARY KEY,
+            title         TEXT,
+            created_at    TEXT,
+            updated_at    TEXT,
+            current_step  INTEGER,
+            topic_preview TEXT,
+            snapshot      TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_projects_updated ON projects(updated_at DESC);
     """)
     conn.commit()
 
@@ -124,6 +138,60 @@ def upsert_session(
         """,
         (session_id, now, now, current_step or 1, current_step or 1, user_agent, domain),
     )
+    conn.commit()
+
+
+# ── Projects (durable session store) ──────────────────────────────────────────
+
+def upsert_project(
+    project_id: str,
+    title: str | None,
+    created_at: str | None,
+    updated_at: str | None,
+    current_step: int | None,
+    topic_preview: str | None,
+    snapshot: str,
+) -> None:
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO projects
+           (id, title, created_at, updated_at, current_step, topic_preview, snapshot)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+               title         = excluded.title,
+               updated_at    = excluded.updated_at,
+               current_step  = excluded.current_step,
+               topic_preview = excluded.topic_preview,
+               snapshot      = excluded.snapshot
+        """,
+        (project_id, title, created_at, updated_at, current_step, topic_preview, snapshot),
+    )
+    conn.commit()
+
+
+def list_projects() -> list[dict]:
+    """Project-list metadata, most recently updated first."""
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT id, title, created_at, updated_at, current_step, topic_preview
+           FROM projects
+           ORDER BY updated_at DESC"""
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_project(project_id: str) -> str | None:
+    """Return the raw snapshot JSON for a project, or None if not found."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT snapshot FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()
+    return row["snapshot"] if row else None
+
+
+def delete_project(project_id: str) -> None:
+    conn = get_conn()
+    conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
     conn.commit()
 
 
