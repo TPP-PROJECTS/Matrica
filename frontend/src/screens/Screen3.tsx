@@ -382,6 +382,9 @@ function QueryCardItem({ query }: { query: QueryCard }) {
         <button className="text-[10px] text-zinc-400 hover:text-zinc-700">Duplicate</button>
         <button className="text-[10px] text-red-400 hover:text-red-600">Delete</button>
         <div className="flex-1" />
+        <span className="text-[9px] text-zinc-400" title="This tool searches the OpenAlex and PubMed databases">
+          Searches OpenAlex · PubMed
+        </span>
         <button
           onClick={handleSearch}
           disabled={searching}

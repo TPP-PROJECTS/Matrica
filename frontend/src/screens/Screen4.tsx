@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useApp } from '../store/AppContext'
 import type { ResultCard } from '../types'
 import { API, apiFetch } from '../lib/api'
+import { CitationsModal } from '../components/overlays/CitationsModal'
 
 
 // ── Status badge ──────────────────────────────────────────────────────────────
@@ -88,6 +89,7 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
 }) {
   const { state } = useApp()
   const [activeTab, setActiveTab] = useState<Tab>('overview')
+  const [showCitations, setShowCitations] = useState(false)
   const [recognising, setRecognising] = useState(false)
   const [recogniseResult, setRecogniseResult] = useState<RecogniseResult | null>(null)
   const [recogniseError, setRecogniseError] = useState(false)
@@ -139,6 +141,7 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
     : 'Abstract not available — conclusion cannot be inferred.'
 
   return (
+   <>
     <div
       className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
       onClick={onClose}
@@ -161,9 +164,18 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
               ✕
             </button>
           </div>
-          <p className="text-[11px] text-zinc-500 mb-3">
-            {paper.authors} · {paper.year} · {paper.source}
-          </p>
+          <div className="flex items-center justify-between mb-3 gap-2">
+            <p className="text-[11px] text-zinc-500 min-w-0 truncate">
+              {paper.authors} · {paper.year} · {paper.source}
+            </p>
+            <button
+              onClick={() => setShowCitations(true)}
+              title="Find this paper's references and citing papers"
+              className="shrink-0 flex items-center gap-1 px-2 py-1 text-[10px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 transition-colors"
+            >
+              ⇄ Snowball citations
+            </button>
+          </div>
 
           {/* Tab bar */}
           <div className="flex border-b border-zinc-200 -mx-5 px-5">
@@ -309,9 +321,7 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
               {[
                 { label: 'Authors',         value: paper.authors },
                 { label: 'Year',            value: String(paper.year) },
-                { label: 'Source / DB',     value: paper.source },
-                { label: 'DOI',             value: `10.1234/${paper.source.toLowerCase()}.${paper.year}.${paper.id}` },
-                { label: 'Pub. type',       value: paper.source === 'PubMed' ? 'Journal article' : paper.source === 'Scopus' ? 'Peer-reviewed article' : 'Clinical journal' },
+                { label: 'Source',          value: /^https?:\/\//.test(paper.source) ? paper.source : (paper.source || '—') },
                 { label: 'Confidence',      value: paper.confidence },
                 { label: 'Relevance',       value: `${paper.relevanceScore}%` },
                 { label: 'Duplicate',       value: paper.isDuplicate ? 'Yes — overlaps with another result' : 'No' },
@@ -365,6 +375,13 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
         </div>
       </div>
     </div>
+    {showCitations && (
+      <CitationsModal
+        seed={{ title: paper.title, url: paper.source, topicId: paper.topicId }}
+        onClose={() => setShowCitations(false)}
+      />
+    )}
+   </>
   )
 }
 
@@ -713,15 +730,12 @@ export function Screen4() {
         </div>
 
         {/* Footer */}
-        <div className="h-12 border-t border-zinc-200 bg-white flex items-center px-4 justify-between shrink-0">
-          <button className="px-4 h-8 border border-zinc-300 rounded text-[11px] text-zinc-700 hover:bg-zinc-50">
-            Export List
-          </button>
+        <div className="h-12 border-t border-zinc-200 bg-white flex items-center px-4 justify-end shrink-0">
           <button
             onClick={() => dispatch({ type: 'ADVANCE_STEP' })}
             className="px-5 h-8 bg-zinc-900 text-white rounded text-[12px] font-semibold hover:bg-zinc-700 transition-colors"
           >
-            Continue to Matrix →
+            Continue to Matrix Table →
           </button>
         </div>
       </div>
