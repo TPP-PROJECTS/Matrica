@@ -47,6 +47,7 @@ export function toSnapshot(state: AppState): SessionSnapshot {
     // Step 7
     gaps: state.gaps,
     gapStatement: state.gapStatement,
+    axisGaps: state.axisGaps,
     rqOptions: state.rqOptions,
     selectedRQId: state.selectedRQId,
     // Step 8

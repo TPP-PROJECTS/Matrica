@@ -280,6 +280,10 @@ export interface SessionSnapshot {
   // Step 7
   gaps: GapDimension[]
   gapStatement: string
+  // Per-schema-axis gap analyses, keyed "lit:<column>" / "sys:<column>".
+  // Shown in the Gap step's left panel; also given to the assistant so it can
+  // act on requests that reference them.
+  axisGaps: Record<string, string>
   rqOptions: RQOption[]
   selectedRQId: string | null
   // Step 8
@@ -336,6 +340,10 @@ export interface AppState {
   // Step 7
   gaps: GapDimension[]
   gapStatement: string
+  // Per-schema-axis gap analyses, keyed "lit:<column>" / "sys:<column>".
+  // Shown in the Gap step's left panel; also given to the assistant so it can
+  // act on requests that reference them.
+  axisGaps: Record<string, string>
   rqOptions: RQOption[]
   selectedRQId: string | null
   // Step 8
@@ -383,6 +391,7 @@ export type AppAction =
   | { type: 'SELECT_RQ'; rqId: string } // @chatbot Set the active research question.
   | { type: 'SELECT_STUDY_DESIGN'; designId: string } // @chatbot Choose the study design.
   | { type: 'UPDATE_GAP_STATEMENT'; text: string } // @chatbot Rewrite the gap statement (full new text).
+  | { type: 'SET_AXIS_GAP'; key: string; text: string }
   | { type: 'UPDATE_THEME_COLUMNS'; themeId: string; columns: string[] } // @chatbot Set which literature-matrix columns a theme draws on.
   | { type: 'UPDATE_RESULT_RELEVANCE'; paperId: string; score: number; confidence: ConfidenceLevel }
   | { type: 'SET_SYSTEM_MATRIX_ENABLED'; enabled: boolean } // @chatbot Turn the system matrix on or off.

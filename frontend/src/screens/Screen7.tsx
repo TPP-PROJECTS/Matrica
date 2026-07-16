@@ -307,7 +307,9 @@ export function Screen7() {
   const [confirming, setConfirming] = useState(false)
   const [showRegenModal, setShowRegenModal] = useState(false)
   const [customRegenPrompt, setCustomRegenPrompt] = useState<string | null>(null)
-  const [axisGaps, setAxisGaps] = useState<Record<string, string>>({})
+  // Schema-axis gaps live in AppState: they persist across reloads and are sent
+  // to the assistant, so it can act on requests that reference them.
+  const axisGaps = state.axisGaps
   const [axisLoading, setAxisLoading] = useState<string | null>(null)
 
   const wordCount = state.gapStatement.split(/\s+/).filter(Boolean).length
@@ -380,7 +382,7 @@ export function Screen7() {
       })
       if (res.ok) {
         const data = await res.json()
-        if (data.statement) setAxisGaps(prev => ({ ...prev, [key]: data.statement }))
+        if (data.statement) dispatch({ type: 'SET_AXIS_GAP', key, text: data.statement })
       }
     } catch { /* silent */ }
     finally { setAxisLoading(current => current === key ? null : current) }
