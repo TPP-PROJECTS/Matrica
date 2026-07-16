@@ -148,10 +148,24 @@ STEP_LABELS = {
     7: 'Gap & Statement', 8: 'Final Question',
 }
 
-# Fallback only. The frontend action registry (lib/actionRegistry) generates the
-# real catalogue and sends it as `available_actions`; it is authoritative because
-# it is derived from the reducer's own AppAction types. Without it we must not
-# invent action names the client cannot dispatch.
+# ── The action catalogue is owned by the frontend ─────────────────────────────
+#
+# This module does NOT decide what the assistant can do, and you should not add
+# action definitions here. The client sends its catalogue on every request as
+# `available_actions`, and we paste it into the system prompt as-is.
+#
+# That catalogue is generated from the `// @chatbot` tags on the frontend's
+# AppAction union (frontend/src/types/index.ts -> scripts/genActionCatalog.ts).
+# Because it is derived from the reducer's own action types, the actions we
+# advertise cannot drift from the actions the client is able to dispatch. Adding
+# an action here instead would break that guarantee: the model would propose it,
+# and the client would reject it as unknown.
+#
+# So: to give the assistant a new ability, tag the action in the frontend types.
+# The only contract this file owns is the response format and the rules below.
+#
+# The constant below is a fallback for a client that sends no catalogue. It
+# deliberately advertises nothing rather than guessing action names.
 ACTIONS_SPEC = """
 ## AVAILABLE ACTIONS
 (none available — this client did not send an action catalogue)
