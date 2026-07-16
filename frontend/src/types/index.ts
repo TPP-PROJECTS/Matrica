@@ -346,51 +346,58 @@ export interface AppState {
   selectedFinalTopicId: string | null
 }
 
+// ── Chatbot-operable actions ──────────────────────────────────────────────────
+// A trailing `// @chatbot <description>` marks an action as invocable by the
+// research assistant. scripts/genActionCatalog.ts parses this union and emits
+// src/lib/generatedActionCatalog.ts, which drives BOTH the action list sent to
+// the assistant and the runtime validation — so tagging an action here is the
+// only step needed to make a new feature chatbot-operable.
+
 export type AppAction =
-  | { type: 'SET_STEP'; step: number }
+  | { type: 'SET_STEP'; step: number } // @chatbot Jump forward to a workflow step (1-9).
   | { type: 'ADVANCE_STEP' }
   | { type: 'BACK_NAV_CONFIRM' }
-  | { type: 'BACK_NAV_REQUEST'; step: number }
+  | { type: 'BACK_NAV_REQUEST'; step: number } // @chatbot Go back to an earlier workflow step (1-9); asks the user to confirm.
   | { type: 'BACK_NAV_CANCEL' }
-  | { type: 'UPDATE_PROFILE'; field: keyof ResearchProfile; value: string }
-  | { type: 'TOGGLE_TOPIC'; topicId: string }
-  | { type: 'UPDATE_TOPIC'; topicId: string; field: 'title' | 'description'; value: string }
+  | { type: 'UPDATE_PROFILE'; field: keyof ResearchProfile; value: string } // @chatbot Set one research profile field.
+  | { type: 'TOGGLE_TOPIC'; topicId: string } // @chatbot Select or deselect a topic (flips its current state).
+  | { type: 'UPDATE_TOPIC'; topicId: string; field: 'title' | 'description'; value: string } // @chatbot Rewrite a topic's title or description.
   | { type: 'ADD_TOPIC'; topic: TopicCard }
   | { type: 'SET_TOPICS'; topics: TopicCard[] }
   | { type: 'SET_SYSTEM_ITEMS'; items: SystemItem[] }
-  | { type: 'TOGGLE_SYSTEM_ITEM'; itemId: string }
-  | { type: 'ADD_CUSTOM_SYSTEM'; name: string }
+  | { type: 'TOGGLE_SYSTEM_ITEM'; itemId: string } // @chatbot Select or deselect a system (flips its current state).
+  | { type: 'ADD_CUSTOM_SYSTEM'; name: string } // @chatbot Add a custom system to the system review list.
   | { type: 'SET_QUERIES'; queries: QueryCard[] }
   | { type: 'ADD_SEARCH_RESULTS'; results: ResultCard[] }
   | { type: 'CLEAR_RESULTS' }
   | { type: 'TOGGLE_REVIEW'; paperId: string }
-  | { type: 'ADD_TO_REVIEW'; paperId: string; status: 'included' | 'maybe' }
-  | { type: 'REMOVE_FROM_REVIEW'; paperId: string }
-  | { type: 'UPDATE_REVIEW_STATUS'; paperId: string; status: ResultCard['status'] }
+  | { type: 'ADD_TO_REVIEW'; paperId: string; status: 'included' | 'maybe' } // @chatbot Add a search-result paper to the review list.
+  | { type: 'REMOVE_FROM_REVIEW'; paperId: string } // @chatbot Remove a paper from the review list.
+  | { type: 'UPDATE_REVIEW_STATUS'; paperId: string; status: ResultCard['status'] } // @chatbot Change a review-list paper's status.
   | { type: 'SEND_MESSAGE'; content: string }
   | { type: 'ADD_CHAT_MESSAGE'; message: ChatMessage }
   | { type: 'DISMISS_MESSAGE'; messageId: string }
   | { type: 'TOGGLE_HISTORY' }
   | { type: 'TOGGLE_TOPIC_SELECTED'; topicId: string }
-  | { type: 'TOGGLE_GAP_SELECTED'; gapId: string }
-  | { type: 'SELECT_RQ'; rqId: string }
-  | { type: 'SELECT_STUDY_DESIGN'; designId: string }
-  | { type: 'UPDATE_GAP_STATEMENT'; text: string }
-  | { type: 'UPDATE_THEME_COLUMNS'; themeId: string; columns: string[] }
+  | { type: 'TOGGLE_GAP_SELECTED'; gapId: string } // @chatbot Select or deselect a gap dimension (flips its current state).
+  | { type: 'SELECT_RQ'; rqId: string } // @chatbot Set the active research question.
+  | { type: 'SELECT_STUDY_DESIGN'; designId: string } // @chatbot Choose the study design.
+  | { type: 'UPDATE_GAP_STATEMENT'; text: string } // @chatbot Rewrite the gap statement (full new text).
+  | { type: 'UPDATE_THEME_COLUMNS'; themeId: string; columns: string[] } // @chatbot Set which literature-matrix columns a theme draws on.
   | { type: 'UPDATE_RESULT_RELEVANCE'; paperId: string; score: number; confidence: ConfidenceLevel }
-  | { type: 'SET_SYSTEM_MATRIX_ENABLED'; enabled: boolean }
+  | { type: 'SET_SYSTEM_MATRIX_ENABLED'; enabled: boolean } // @chatbot Turn the system matrix on or off.
   | { type: 'SET_MATRIX_COLUMN_SUGGESTIONS'; columns: string[] }
   | { type: 'SET_SYSTEM_MATRIX_COLUMN_SUGGESTIONS'; columns: string[] }
   | { type: 'MERGE_COLUMN_DESCRIPTIONS'; system: boolean; descriptions: Record<string, string> }
-  | { type: 'SET_MATRIX_COLUMNS'; columns: string[] }
-  | { type: 'ADD_MATRIX_COLUMN'; column: string }
-  | { type: 'RENAME_MATRIX_COLUMN'; oldName: string; newName: string }
-  | { type: 'REMOVE_MATRIX_COLUMN'; column: string }
+  | { type: 'SET_MATRIX_COLUMNS'; columns: string[] } // @chatbot Replace ALL literature matrix columns.
+  | { type: 'ADD_MATRIX_COLUMN'; column: string } // @chatbot Add one column to the literature matrix.
+  | { type: 'RENAME_MATRIX_COLUMN'; oldName: string; newName: string } // @chatbot Rename a literature matrix column (oldName must match exactly).
+  | { type: 'REMOVE_MATRIX_COLUMN'; column: string } // @chatbot Remove a literature matrix column (must match exactly).
   | { type: 'INIT_MATRIX_ROWS' }
-  | { type: 'SET_SYSTEM_MATRIX_COLUMNS'; columns: string[] }
-  | { type: 'ADD_SYSTEM_MATRIX_COLUMN'; column: string }
-  | { type: 'RENAME_SYSTEM_MATRIX_COLUMN'; oldName: string; newName: string }
-  | { type: 'REMOVE_SYSTEM_MATRIX_COLUMN'; column: string }
+  | { type: 'SET_SYSTEM_MATRIX_COLUMNS'; columns: string[] } // @chatbot Replace ALL system matrix columns.
+  | { type: 'ADD_SYSTEM_MATRIX_COLUMN'; column: string } // @chatbot Add one column to the system matrix.
+  | { type: 'RENAME_SYSTEM_MATRIX_COLUMN'; oldName: string; newName: string } // @chatbot Rename a system matrix column (oldName must match exactly).
+  | { type: 'REMOVE_SYSTEM_MATRIX_COLUMN'; column: string } // @chatbot Remove a system matrix column (must match exactly).
   | { type: 'INIT_SYSTEM_MATRIX_ROWS' }
   | { type: 'ADD_UPLOADED_PAPERS'; papers: ResultCard[] }
   | { type: 'ADD_SYSTEM_WITH_ROW'; item: SystemItem }
@@ -398,19 +405,19 @@ export type AppAction =
   | { type: 'UPDATE_SYSTEM_MATRIX_ROW_CELLS'; systemId: string; cells: Record<string, MatrixCell> }
   | { type: 'SET_THEMES'; themes: Theme[] }
   | { type: 'ADD_SYNTHESIS_BLOCK'; themeId: string; block: SynthesisBlock }
-  | { type: 'UPDATE_SYNTHESIS_BLOCK'; themeId: string; blockId: string; content: string }
-  | { type: 'UPDATE_THEME_SYSTEM_COLUMNS'; themeId: string; columns: string[] }
+  | { type: 'UPDATE_SYNTHESIS_BLOCK'; themeId: string; blockId: string; content: string } // @chatbot Rewrite a synthesis block's content (full new text).
+  | { type: 'UPDATE_THEME_SYSTEM_COLUMNS'; themeId: string; columns: string[] } // @chatbot Set which system-matrix columns a theme draws on.
   | { type: 'REMOVE_RESULTS'; paperIds: string[] }
   | { type: 'SET_RQ_OPTIONS'; options: RQOption[] }
   | { type: 'SET_STUDY_DESIGN_OPTIONS'; options: StudyDesignOption[] }
   | { type: 'SET_FINAL_TOPIC_OPTIONS'; options: FinalTopicOption[] }
   | { type: 'SET_TOPIC_FINAL_DATA'; data: TopicFinalData[] }
   | { type: 'UPDATE_PAPER_SECTIONS'; topicId: string; sections: PaperSection[] }
-  | { type: 'SELECT_FINAL_TOPIC'; topicId: string }
+  | { type: 'SELECT_FINAL_TOPIC'; topicId: string } // @chatbot Choose the final research topic.
   | { type: 'DISMISS_CONSISTENCY_ALERT' }
   | { type: 'DISMISS_BACK_NAV_MODAL' }
   | { type: 'SET_SAVE_STATUS'; status: 'saved' | 'saving' }
-  | { type: 'SET_SESSION_TITLE'; title: string }
+  | { type: 'SET_SESSION_TITLE'; title: string } // @chatbot Rename this research session.
   | { type: 'NEW_SESSION' }
   | { type: 'LOAD_SESSION'; snapshot: SessionSnapshot }
   | { type: 'UPDATE_ACTION_STATUS'; messageId: string; actionId: string; status: ProposedActionStatus; note?: string }

@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "gen:actions": "tsx scripts/genActionCatalog.ts",
+    "build": "npm run gen:actions && tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },

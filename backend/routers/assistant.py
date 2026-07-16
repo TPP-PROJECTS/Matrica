@@ -23,27 +23,33 @@ class ProfileMemory(BaseModel):
     reviewType: str = ''
 
 class ThemeBlock(BaseModel):
+    id: str = ''
     block_type: str
     title: str
     content_preview: str
 
 class ThemeMemory(BaseModel):
+    id: str = ''
     name: str
     coverage: str
     paper_count: int
     blocks: list[ThemeBlock] = []
 
 class GapMemory(BaseModel):
+    id: str = ''
     label: str
     type: str
+    selected: bool = False
 
 class PaperMemory(BaseModel):
+    id: str = ''
     title: str
     authors: str
     year: int
     status: str
 
 class SearchResultMemory(BaseModel):
+    id: str = ''
     title: str
     authors: str
     year: int
@@ -52,9 +58,27 @@ class SearchResultMemory(BaseModel):
     status: str | None = None
 
 class SystemMemory(BaseModel):
+    id: str = ''
     name: str
     selected: bool = False
     category: str = ''
+
+class TopicMemory(BaseModel):
+    id: str = ''
+    title: str
+    selected: bool = False
+
+class RQMemory(BaseModel):
+    id: str = ''
+    text: str
+
+class FinalTopicMemory(BaseModel):
+    id: str = ''
+    title: str
+
+class DesignMemory(BaseModel):
+    id: str = ''
+    name: str
 
 class ResearchContext(BaseModel):
     current_step: int = 1
@@ -62,7 +86,7 @@ class ResearchContext(BaseModel):
     all_systems: list[SystemMemory] = []
     selected_systems: list[str] = []
     selected_topics: list[str] = []
-    all_topics: list[str] = []
+    all_topics: list[TopicMemory] = []
     total_queries: int = 0
     total_results: int = 0
     search_results: list[SearchResultMemory] = []
@@ -74,11 +98,11 @@ class ResearchContext(BaseModel):
     all_gaps: list[GapMemory] = []
     gap_statement: str = ''
     selected_rq: str | None = None
-    all_rqs: list[str] = []
+    all_rqs: list[RQMemory] = []
     final_topic_title: str | None = None
-    all_final_topics: list[str] = []
+    all_final_topics: list[FinalTopicMemory] = []
     study_design: str | None = None
-    all_study_designs: list[str] = []
+    all_study_designs: list[DesignMemory] = []
     paper_structure_sections: list[str] = []
 
 
@@ -118,77 +142,14 @@ STEP_LABELS = {
     7: 'Gap & Statement', 8: 'Final Question',
 }
 
+# Fallback only. The frontend action registry (lib/actionRegistry) generates the
+# real catalogue and sends it as `available_actions`; it is authoritative because
+# it is derived from the reducer's own AppAction types. Without it we must not
+# invent action names the client cannot dispatch.
 ACTIONS_SPEC = """
 ## AVAILABLE ACTIONS
-You may include any of the following in the "actions" array when the user asks you to make changes.
-Always confirm what you will do in your reply, then include the action.
-
-### Profile & Session
-- UPDATE_PROFILE: Update one profile field
-  payload: { "field": "domain"|"population"|"focus"|"method"|"reviewType", "value": "string" }
-  label: e.g. "Update domain"  detail: e.g. "→ AI in clinical settings"
-
-- SET_SESSION_TITLE: Rename this research session
-  payload: { "title": "string" }
-
-### Navigation
-- NAVIGATE_TO_STEP: Jump to a workflow step
-  payload: { "step": 1-8 }
-  label: e.g. "Go to Step 3 · Explore & Search"
-
-### Step 2 — Systems
-- SELECT_SYSTEM: Select or deselect a system by name
-  payload: { "name": "exact system name", "selected": true|false }
-
-### Step 3 — Topics
-- SELECT_TOPIC: Select or deselect a topic by title
-  payload: { "title": "exact topic title", "selected": true|false }
-
-### Step 4 — Papers
-- ADD_PAPER_TO_REVIEW: Add a paper to the review list
-  payload: { "title": "exact paper title", "status": "included"|"maybe" }
-
-- REMOVE_PAPER_FROM_REVIEW: Remove a paper from the review list
-  payload: { "title": "exact paper title" }
-
-- UPDATE_PAPER_STATUS: Change a paper's review status
-  payload: { "title": "exact paper title", "status": "included"|"maybe"|"saved" }
-
-### Step 5 — Matrix
-- SET_LIT_MATRIX_COLUMNS: Replace all literature matrix column names
-  payload: { "columns": ["col1", "col2", ...] }
-
-- SET_SYS_MATRIX_COLUMNS: Replace all system matrix column names
-  payload: { "columns": ["col1", "col2", ...] }
-
-### Step 6 — Synthesis
-- UPDATE_SYNTHESIS_BLOCK: Rewrite a synthesis block's content
-  payload: { "theme_name": "exact theme name", "block_title": "exact block title", "content": "new full content" }
-
-### Step 7 — Gaps & RQ
-- UPDATE_GAP_STATEMENT: Rewrite the gap statement
-  payload: { "text": "new gap statement text" }
-
-- SELECT_GAP: Select or deselect a gap dimension
-  payload: { "label": "exact gap label", "selected": true|false }
-
-- SELECT_RQ: Set the active research question by its text
-  payload: { "text": "exact RQ text" }
-
-### Step 8 — Final
-- SELECT_FINAL_TOPIC: Choose a final research topic
-  payload: { "title": "exact topic title" }
-
-- SELECT_STUDY_DESIGN: Choose a study design
-  payload: { "name": "exact design name" }
-
-### Prompts
-- SET_CUSTOM_PROMPT: Override the AI prompt for a generation step
-  Valid prompt_key values: topics-generate, queries-generate, synthesis-generate,
-  synthesis-block, gaps-generate, final-topics, final-structure,
-  matrix-lit-columns, matrix-sys-columns, matrix-lit-autofill, matrix-sys-autofill
-  payload: { "prompt_key": "key", "custom_prompt": "new prompt text" }
-  label: e.g. "Override prompt: topics-generate"
+(none available — this client did not send an action catalogue)
+Answer conversationally and return an empty "actions" array.
 """
 
 def build_system_prompt(ctx: ResearchContext, trace_id: str | None = None,
@@ -211,7 +172,7 @@ def build_system_prompt(ctx: ResearchContext, trace_id: str | None = None,
         lines = [f'## Systems ({len(ctx.selected_systems)} selected of {len(ctx.all_systems)})']
         for s in ctx.all_systems:
             mark = '✓' if s.selected else '○'
-            lines.append(f'{mark} {s.name} [{s.category}]')
+            lines.append(f'{mark} [{s.id}] {s.name} [{s.category}]')
         sections.append('\n'.join(lines))
     elif ctx.selected_systems:
         sections.append('## Selected Systems\n' + '\n'.join(f'- {s}' for s in ctx.selected_systems))
@@ -219,8 +180,8 @@ def build_system_prompt(ctx: ResearchContext, trace_id: str | None = None,
     if ctx.all_topics:
         lines = [f'## Topics ({len(ctx.selected_topics)} selected of {len(ctx.all_topics)})']
         for t in ctx.all_topics:
-            mark = '✓' if t in ctx.selected_topics else '○'
-            lines.append(f'{mark} {t}')
+            mark = '✓' if t.selected else '○'
+            lines.append(f'{mark} [{t.id}] {t.title}')
         sections.append('\n'.join(lines))
 
     if ctx.total_queries > 0:
@@ -229,12 +190,12 @@ def build_system_prompt(ctx: ResearchContext, trace_id: str | None = None,
     if ctx.search_results:
         not_in_review = [r for r in ctx.search_results if not r.in_review]
         in_review     = [r for r in ctx.search_results if r.in_review]
-        lines = [f'## Search Results Pool ({len(ctx.search_results)} papers, use exact titles for ADD_PAPER_TO_REVIEW)']
+        lines = [f'## Search Results Pool ({len(ctx.search_results)} papers; use the [id] for paperId)']
         # Show papers not yet in review list first (these are the ones that can be added)
         if not_in_review:
             lines.append('### Available to add:')
             for r in not_in_review[:40]:
-                lines.append(f'  "{r.title}" — {r.authors} ({r.year}) [relevance:{r.relevance}]')
+                lines.append(f'  [{r.id}] "{r.title}" — {r.authors} ({r.year}) [relevance:{r.relevance}]')
         if in_review:
             lines.append(f'### Already in review list: {len(in_review)} papers')
         sections.append('\n'.join(lines))
@@ -244,9 +205,9 @@ def build_system_prompt(ctx: ResearchContext, trace_id: str | None = None,
         maybe    = [p for p in ctx.review_papers if p.status == 'maybe']
         lines = [f'## Review List ({len(ctx.review_papers)} papers)']
         for paper in included[:15]:
-            lines.append(f'[included] {paper.title} — {paper.authors} ({paper.year})')
+            lines.append(f'[included] [{paper.id}] {paper.title} — {paper.authors} ({paper.year})')
         for paper in maybe[:10]:
-            lines.append(f'[maybe] {paper.title} — {paper.authors} ({paper.year})')
+            lines.append(f'[maybe] [{paper.id}] {paper.title} — {paper.authors} ({paper.year})')
         sections.append('\n'.join(lines))
 
     if ctx.lit_matrix_columns or ctx.sys_matrix_columns:
@@ -260,17 +221,17 @@ def build_system_prompt(ctx: ResearchContext, trace_id: str | None = None,
     if ctx.themes:
         lines = [f'## Synthesis Themes ({len(ctx.themes)})']
         for theme in ctx.themes:
-            lines.append(f'\n### {theme.name} [{theme.coverage}, {theme.paper_count} papers]')
+            lines.append(f'\n### [{theme.id}] {theme.name} [{theme.coverage}, {theme.paper_count} papers]')
             for block in theme.blocks:
                 preview = block.content_preview[:120] + ('…' if len(block.content_preview) > 120 else '')
-                lines.append(f'  [{block.block_type}] {block.title}: {preview}')
+                lines.append(f'  [{block.id}] ({block.block_type}) {block.title}: {preview}')
         sections.append('\n'.join(lines))
 
     if ctx.all_gaps:
         lines = [f'## Gap Dimensions ({len(ctx.selected_gaps)} selected)']
         for g in ctx.all_gaps:
-            mark = '✓' if any(sg.label == g.label for sg in ctx.selected_gaps) else '○'
-            lines.append(f'{mark} {g.label} ({g.type})')
+            mark = '✓' if g.selected else '○'
+            lines.append(f'{mark} [{g.id}] {g.label} ({g.type})')
         sections.append('\n'.join(lines))
 
     if ctx.gap_statement:
@@ -279,22 +240,22 @@ def build_system_prompt(ctx: ResearchContext, trace_id: str | None = None,
     if ctx.all_rqs:
         lines = ['## Research Questions']
         for rq in ctx.all_rqs:
-            mark = '✓' if rq == ctx.selected_rq else '○'
-            lines.append(f'{mark} {rq}')
+            mark = '✓' if rq.text == ctx.selected_rq else '○'
+            lines.append(f'{mark} [{rq.id}] {rq.text}')
         sections.append('\n'.join(lines))
 
     if ctx.all_final_topics:
         lines = ['## Final Topic Options']
         for t in ctx.all_final_topics:
-            mark = '✓' if t == ctx.final_topic_title else '○'
-            lines.append(f'{mark} {t}')
+            mark = '✓' if t.title == ctx.final_topic_title else '○'
+            lines.append(f'{mark} [{t.id}] {t.title}')
         sections.append('\n'.join(lines))
 
     if ctx.all_study_designs:
         lines = ['## Study Designs']
         for d in ctx.all_study_designs:
-            mark = '✓' if d == ctx.study_design else '○'
-            lines.append(f'{mark} {d}')
+            mark = '✓' if d.name == ctx.study_design else '○'
+            lines.append(f'{mark} [{d.id}] {d.name}')
         sections.append('\n'.join(lines))
 
     if ctx.paper_structure_sections:
@@ -332,7 +293,8 @@ Always respond with valid JSON only — no markdown, no code blocks:
 Rules:
 - "actions" may be an empty array [] if no changes are needed
 - Only include actions when the user clearly requests a change
-- Use exact names/titles as they appear in RESEARCH MEMORY when referencing items
+- Reference items by the [id] shown next to them in RESEARCH MEMORY — never invent an id
+- If the item the user means is not in RESEARCH MEMORY, say so instead of guessing an id
 - Tell the user what you're doing in "reply", then let the action card handle execution
 - You can batch multiple related actions in one response
 - For long text rewrites (gap statement, synthesis blocks), include the full new text""" + (
