@@ -84,6 +84,15 @@ export function buildResearchContext(state: AppState) {
     .filter(g => g.selected)
     .map(g => ({ id: g.id, label: g.label, type: g.type }))
   const gap_statement = state.gapStatement
+  // Per-schema-axis gap analyses (left panel of the Gap step). Sent in full so
+  // the assistant can act on requests like "add the third paragraph of the
+  // schema gap to the overall gap statement".
+  const axis_gaps = Object.entries(state.axisGaps)
+    .filter(([, text]) => !!text)
+    .map(([key, text]) => {
+      const [kind, ...rest] = key.split(':')
+      return { axis: rest.join(':'), scope: kind === 'sys' ? 'systems' : 'papers', text }
+    })
   const selectedRQ = state.rqOptions.find(r => r.id === state.selectedRQId)
   const selected_rq = selectedRQ?.text ?? null
   const all_rqs = state.rqOptions.map(r => ({ id: r.id, text: r.text }))
@@ -129,6 +138,7 @@ export function buildResearchContext(state: AppState) {
     selected_gaps,
     all_gaps,
     gap_statement,
+    axis_gaps,
     selected_rq,
     all_rqs,
     final_topic_title,

@@ -48,6 +48,7 @@ function freshState(): AppState {
     activeThemeId: MOCK_THEMES[0]?.id ?? '',
     gaps: MOCK_GAPS,
     gapStatement: MOCK_GAP_STATEMENT,
+    axisGaps: {},
     rqOptions: MOCK_RQ_OPTIONS,
     selectedRQId: MOCK_RQ_OPTIONS[0]?.id ?? null,
     studyDesignOptions: MOCK_STUDY_DESIGNS,
@@ -99,6 +100,7 @@ function snapshotToState(snap: SessionSnapshot): AppState {
     activeThemeId: snap.activeThemeId ?? base.activeThemeId,
     gaps: snap.gaps ?? base.gaps,
     gapStatement: snap.gapStatement ?? base.gapStatement,
+    axisGaps: snap.axisGaps ?? base.axisGaps,
     rqOptions: snap.rqOptions ?? base.rqOptions,
     selectedRQId: snap.selectedRQId ?? base.selectedRQId,
     studyDesignOptions: snap.studyDesignOptions ?? base.studyDesignOptions,
@@ -484,6 +486,9 @@ function reducer(state: AppState, action: AppAction): AppState {
 
     case 'UPDATE_GAP_STATEMENT':
       return { ...state, gapStatement: action.text }
+
+    case 'SET_AXIS_GAP':
+      return { ...state, axisGaps: { ...state.axisGaps, [action.key]: action.text } }
 
     case 'SET_THEMES':
       return {

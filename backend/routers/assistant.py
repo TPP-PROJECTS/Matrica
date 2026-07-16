@@ -80,6 +80,11 @@ class DesignMemory(BaseModel):
     id: str = ''
     name: str
 
+class AxisGapMemory(BaseModel):
+    axis: str
+    scope: str = 'papers'   # papers | systems
+    text: str
+
 class ResearchContext(BaseModel):
     current_step: int = 1
     profile: ProfileMemory = ProfileMemory()
@@ -97,6 +102,7 @@ class ResearchContext(BaseModel):
     selected_gaps: list[GapMemory] = []
     all_gaps: list[GapMemory] = []
     gap_statement: str = ''
+    axis_gaps: list[AxisGapMemory] = []
     selected_rq: str | None = None
     all_rqs: list[RQMemory] = []
     final_topic_title: str | None = None
@@ -235,7 +241,13 @@ def build_system_prompt(ctx: ResearchContext, trace_id: str | None = None,
         sections.append('\n'.join(lines))
 
     if ctx.gap_statement:
-        sections.append(f'## Gap Statement\n{ctx.gap_statement}')
+        sections.append(f'## Overall Gap Statement\n{ctx.gap_statement}')
+
+    if ctx.axis_gaps:
+        lines = ['## Schema Gaps (per schema axis; the user calls these "schema gap")']
+        for ag in ctx.axis_gaps:
+            lines.append(f'\n### {ag.axis} (across {ag.scope})\n{ag.text}')
+        sections.append('\n'.join(lines))
 
     if ctx.all_rqs:
         lines = ['## Research Questions']
