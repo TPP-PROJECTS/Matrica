@@ -341,12 +341,23 @@ async def assistant_chat(req: AssistantRequest):
         if msg.role in ('user', 'assistant')
     ]
     input_messages.append({'role': 'user', 'content': req.new_message})
+    # text.format=json_object requires the word "json" to appear in the input
+    # messages themselves, not only in the instructions.
+    input_messages.append({
+        'role': 'system',
+        'content': 'Reply with a single valid json object in the response format given in your instructions.',
+    })
 
     try:
         response = await client.responses.create(
             model=MODEL,
             instructions=system_prompt,
             input=input_messages,
+            # Force syntactically valid JSON. Without this the model occasionally
+            # answers in prose (more likely with a large context), extract_json
+            # returns None, and the reply silently arrives with no actions — the
+            # user sees the right text and nothing is applied.
+            text={'format': {'type': 'json_object'}},
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f'OpenAI error: {str(e)}')
@@ -354,8 +365,9 @@ async def assistant_chat(req: AssistantRequest):
     raw = (response.output_text or '').strip()
     data = _extract_json(raw)
     if data is None:
-        # Model didn't return JSON — treat entire response as plain reply
-        return AssistantResponse(reply=raw, actions=[])
+        # Should be unreachable now that JSON mode is enforced; surface it rather
+        # than degrading to a text-only reply that drops the user's actions.
+        raise HTTPException(status_code=502, detail='Assistant returned malformed JSON; please retry.')
 
     reply = data.get('reply', '')
     raw_actions = data.get('actions', [])
