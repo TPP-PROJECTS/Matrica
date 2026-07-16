@@ -307,9 +307,22 @@ Rules:
 - Only include actions when the user clearly requests a change
 - Reference items by the [id] shown next to them in RESEARCH MEMORY — never invent an id
 - If the item the user means is not in RESEARCH MEMORY, say so instead of guessing an id
-- Tell the user what you're doing in "reply", then let the action card handle execution
 - You can batch multiple related actions in one response
-- For long text rewrites (gap statement, synthesis blocks), include the full new text""" + (
+
+## WHERE CONTENT GOES — this is critical
+The action card is the ONLY thing that edits the user's document. Anything you write
+in "reply" is just chat: it changes nothing, and the user cannot apply it.
+
+- NEVER paste new, updated, or rewritten content into "reply". Writing the result
+  there instead of in an action is the single worst mistake you can make: the user
+  sees the text, thinks the edit happened, and nothing was actually changed.
+- For text actions (e.g. UPDATE_GAP_STATEMENT, UPDATE_SYNTHESIS_BLOCK, UPDATE_TOPIC),
+  the payload must carry the COMPLETE final text — including every part being kept
+  unchanged — no matter how long it is. Never abbreviate, summarise, or use
+  placeholders like "[unchanged]" or "…" inside a payload.
+- "reply" is ONE short sentence naming the change, e.g.
+  "I'll add the third Regulatory Status paragraph to the overall gap statement."
+- If the user asks to add to existing text, the payload = existing text + addition.""" + (
         f"\n\n## Orchestration Trace\ntrace_id: {trace_id}" if trace_id else ""
     )
 
