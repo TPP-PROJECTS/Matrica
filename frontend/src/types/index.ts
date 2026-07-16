@@ -355,11 +355,59 @@ export interface AppState {
 }
 
 // ── Chatbot-operable actions ──────────────────────────────────────────────────
+//
 // A trailing `// @chatbot <description>` marks an action as invocable by the
 // research assistant. scripts/genActionCatalog.ts parses this union and emits
 // src/lib/generatedActionCatalog.ts, which drives BOTH the action list sent to
-// the assistant and the runtime validation — so tagging an action here is the
-// only step needed to make a new feature chatbot-operable.
+// the assistant and the runtime validation. Tagging an action here is therefore
+// the only step needed to make a new feature chatbot-operable:
+//
+//     1. write the reducer case (the feature itself)
+//     2. tag its action below
+//     3. npm run gen:actions      (the build does this for you)
+//
+// Exposure is opt-in: an untagged action is unreachable by the assistant. That
+// is what keeps NEW_SESSION, RESTORE_STATE, CLEAR_RESULTS and friends safe, so
+// only tag an action you are happy for a language model to invoke on its own.
+//
+// ── Writing the description ───────────────────────────────────────────────────
+//
+// The description is not a code comment for humans: it is pasted verbatim into
+// the assistant's prompt. All the model ever sees of an action is
+//
+//     - ADD_MATRIX_COLUMN: Add one column to the literature matrix.
+//       payload: { "column": string }
+//
+// i.e. the action name, your sentence, and the field names/types (extracted from
+// the type below — never restate them). Your sentence has one job: supply what
+// the name and the types cannot.
+//
+// Shape:  <verb> <the thing it affects> (<non-obvious semantics>)
+//
+// 1. Distinguish it from its siblings. ADD_MATRIX_COLUMN and
+//    ADD_SYSTEM_MATRIX_COLUMN are near-identical names; the words "literature"
+//    and "system" are the only thing the model can pick between them on.
+//        BAD:  Add a column.
+//        GOOD: Add one column to the literature matrix.
+//
+// 2. Spell out semantics the field names hide. These are the ones that bite:
+//      - toggles:      "(flips its current state)"  — or the model re-sends a
+//                      toggle for something already selected and undoes it
+//      - replacements: "Replace ALL ..."            — or it appends, wiping data
+//      - whole values: "(full new text)"            — the payload is the new
+//                      value, not a patch, so the model must include the parts
+//                      that stay unchanged
+//      - exact keys:   "(oldName must match exactly)"
+//
+// 3. Describe the effect on the user's document, in words the user would use —
+//    not the implementation.
+//        BAD:  Dispatch to the matrixColumns array in AppState.
+//        GOOD: Add one column to the literature matrix.
+//
+// 4. One line, ending in a period; it is rendered into a list.
+//
+// Before committing a tag, ask: can the model tell this apart from its siblings,
+// have I named every hidden semantic, and is it phrased the way a user speaks?
 
 export type AppAction =
   | { type: 'SET_STEP'; step: number } // @chatbot Jump forward to a workflow step (1-9).
