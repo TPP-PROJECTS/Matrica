@@ -1,8 +1,84 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useApp } from '../store/AppContext'
-import type { ResultCard } from '../types'
+import type { ResultCard, ScreeningCriterion } from '../types'
 import { API, apiFetch } from '../lib/api'
+import { runPool } from '../lib/runPool'
+import { screenPaper } from '../lib/screenApi'
 import { CitationsModal } from '../components/overlays/CitationsModal'
+import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
+import { journalEntry } from '../lib/decisionJournal'
+
+// How many screening requests run at once — matched to the matrix auto-fill.
+const SCREEN_CONCURRENCY = 4
+
+interface ScreenTally { include: number; exclude: number; uncertain: number; failed: number }
+interface AutoScreen {
+  running: boolean
+  done: number
+  total: number
+  summary: ScreenTally | null
+  eligibleCount: number
+  customPrompt: string | null
+  setCustomPrompt: (p: string | null) => void
+  /** Optional override used the same tick a new prompt is applied, before state commits. */
+  run: (promptOverride?: string | null) => void
+  cancel: () => void
+}
+
+/**
+ * Drive an LLM screening pass over the papers not already decided by a human.
+ *
+ * Only AI-decided and untouched papers are eligible, so re-running never
+ * overturns a human call. The run lives here (above the collapsible protocol
+ * panel) so collapsing the panel mid-pass does not abandon it.
+ */
+function useAutoScreen(): AutoScreen {
+  const { state, dispatch } = useApp()
+  const [running, setRunning] = useState(false)
+  const [done, setDone] = useState(0)
+  const [total, setTotal] = useState(0)
+  const [summary, setSummary] = useState<ScreenTally | null>(null)
+  // The user's edited screening prompt, if any. Null means the backend default.
+  // Held here so it survives collapsing the panel and applies to every re-run.
+  const [customPrompt, setCustomPrompt] = useState<string | null>(null)
+  const abortRef = useRef(false)
+
+  const eligible = state.results.filter(
+    p => !p.isDuplicate && (p.screenedBy === 'ai' || p.status === null)
+  )
+
+  async function run(promptOverride?: string | null) {
+    if (running) return
+    const papers = eligible
+    if (papers.length === 0) return
+    // An override wins for this run — setCustomPrompt in the same tick has not
+    // committed yet, so reading state here would use the previous prompt.
+    const effectivePrompt = promptOverride === undefined ? customPrompt : promptOverride
+    abortRef.current = false
+    setRunning(true); setDone(0); setTotal(papers.length); setSummary(null)
+    papers.forEach(p => dispatch({ type: 'SET_SCREEN_STATUS', paperId: p.id, status: 'pending' }))
+
+    const tally: ScreenTally = { include: 0, exclude: 0, uncertain: 0, failed: 0 }
+    await runPool(papers, SCREEN_CONCURRENCY, async paper => {
+      const outcome = await screenPaper(paper, state.criteria, state.profile, dispatch, effectivePrompt)
+      tally[outcome === 'failed' ? 'failed' : outcome]++
+    }, {
+      onProgress: n => setDone(n),
+      shouldAbort: () => abortRef.current,
+    })
+
+    setRunning(false)
+    setSummary(tally)
+  }
+
+  return {
+    running, done, total, summary,
+    eligibleCount: eligible.length,
+    customPrompt, setCustomPrompt,
+    run,
+    cancel: () => { abortRef.current = true },
+  }
+}
 
 
 // ── Status badge ──────────────────────────────────────────────────────────────
@@ -11,6 +87,7 @@ function statusBadge(status: ResultCard['status']) {
     case 'included': return 'bg-zinc-900 text-white'
     case 'maybe':    return 'bg-amber-100 text-amber-800'
     case 'saved':    return 'bg-blue-100 text-blue-800'
+    case 'excluded': return 'bg-red-100 text-red-700'
     default:         return 'bg-zinc-100 text-zinc-500'
   }
 }
@@ -24,6 +101,320 @@ function nextStatus(current: ResultCard['status']): ResultCard['status'] {
   if (current === 'included') return 'maybe'
   if (current === 'maybe')    return 'saved'
   return 'included'
+}
+
+// ── Screening protocol ────────────────────────────────────────────────────────
+// PRISMA 2020 requires reporting the eligibility criteria a review screened
+// against, and reporting excluded records *with reasons*. Both need the
+// criteria to exist as data before screening starts, not as prose afterwards.
+
+function ProtocolPanel({ onClose, auto }: { onClose: () => void; auto: AutoScreen }) {
+  const { state, dispatch } = useApp()
+  const [draft, setDraft] = useState('')
+  const [kind, setKind] = useState<ScreeningCriterion['kind']>('inclusion')
+  const [showPromptModal, setShowPromptModal] = useState(false)
+
+  function add() {
+    const label = draft.trim()
+    if (!label) return
+    dispatch({
+      type: 'ADD_CRITERION',
+      criterion: { id: `c-${kind}-${Date.now()}`, kind, label },
+    })
+    setDraft('')
+  }
+
+  const inclusion = state.criteria.filter(c => c.kind === 'inclusion')
+  const exclusion = state.criteria.filter(c => c.kind === 'exclusion')
+  const hasCriteria = state.criteria.length > 0
+  const aiDecided = state.results.filter(p => p.screenedBy === 'ai').length
+  const pct = auto.total ? Math.round((auto.done / auto.total) * 100) : 0
+
+  return (
+    <div className="border-b border-zinc-200 bg-zinc-50 px-3 py-2.5 shrink-0">
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-wide">Screening protocol</span>
+        <span className="text-[9px] text-zinc-400">
+          define eligibility, then let the AI screen every paper against it
+        </span>
+        <button onClick={onClose} className="ml-auto text-[10px] text-zinc-400 hover:text-zinc-700">
+          hide
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        {([
+          ['Include if', inclusion, 'text-green-700 border-green-200 bg-green-50'],
+          ['Exclude if', exclusion, 'text-red-700 border-red-200 bg-red-50'],
+        ] as const).map(([heading, list, tone]) => (
+          <div key={heading}>
+            <p className="text-[9px] font-semibold text-zinc-400 uppercase mb-1">{heading}</p>
+            {list.length === 0 ? (
+              <p className="text-[10px] text-zinc-400 italic">None defined yet.</p>
+            ) : (
+              <div className="flex flex-wrap gap-1">
+                {list.map(c => (
+                  <span
+                    key={c.id}
+                    className={`group inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] ${tone}`}
+                  >
+                    {c.label}
+                    <button
+                      onClick={() => dispatch({ type: 'REMOVE_CRITERION', criterionId: c.id })}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-zinc-900"
+                      title="Remove criterion"
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div className="flex items-center gap-1.5 mt-2.5">
+        <select
+          value={kind}
+          onChange={e => setKind(e.target.value as ScreeningCriterion['kind'])}
+          className="h-6 border border-zinc-300 rounded px-1 text-[10px] text-zinc-700 bg-white focus:outline-none focus:border-zinc-500"
+        >
+          <option value="inclusion">Include if</option>
+          <option value="exclusion">Exclude if</option>
+        </select>
+        <input
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') add() }}
+          placeholder={kind === 'inclusion' ? 'e.g. adults aged 18–65 with type 2 diabetes' : 'e.g. animal studies, case reports'}
+          className="flex-1 h-6 border border-zinc-300 rounded px-1.5 text-[10px] text-zinc-700 bg-white focus:outline-none focus:border-zinc-500"
+        />
+        <button
+          onClick={add}
+          disabled={!draft.trim()}
+          className="px-2 h-6 bg-zinc-900 text-white rounded text-[10px] font-semibold hover:bg-zinc-700 disabled:opacity-40"
+        >
+          Add
+        </button>
+      </div>
+
+      {/* ── Auto-screen ── */}
+      <div className="mt-2.5 pt-2.5 border-t border-zinc-200">
+        {auto.running ? (
+          <div className="flex items-center gap-2">
+            <div className="flex-1 h-1.5 bg-zinc-200 rounded overflow-hidden">
+              <div className="h-full bg-purple-600 rounded transition-[width] duration-200" style={{ width: `${pct}%` }} />
+            </div>
+            <span className="text-[10px] text-zinc-600 shrink-0">Screening {auto.done}/{auto.total}</span>
+            <button onClick={auto.cancel} className="px-2 h-6 border border-zinc-300 rounded text-[10px] text-zinc-600 hover:bg-zinc-100">
+              Stop
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex rounded overflow-hidden">
+              <button
+                onClick={() => auto.run()}
+                disabled={!hasCriteria || auto.eligibleCount === 0}
+                title={!hasCriteria ? 'Add at least one criterion first'
+                  : auto.eligibleCount === 0 ? 'No papers left to screen'
+                  : `Screen ${auto.eligibleCount} paper(s) against the protocol`}
+                className="flex items-center gap-1.5 px-3 h-6 bg-purple-600 text-white rounded-l text-[10px] font-semibold hover:bg-purple-700 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                ✦ Auto-screen {auto.eligibleCount > 0 ? `${auto.eligibleCount} paper${auto.eligibleCount === 1 ? '' : 's'}` : 'all'}
+                {auto.customPrompt && <span className="w-1 h-1 rounded-full bg-amber-300 shrink-0" title="Using a customised prompt" />}
+              </button>
+              <button
+                onClick={() => setShowPromptModal(true)}
+                disabled={!hasCriteria}
+                title="Customise the AI screening prompt"
+                className="px-1.5 h-6 bg-purple-700 text-purple-200 text-[10px] hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed border-l border-purple-500 rounded-r"
+              >
+                ⚙
+              </button>
+            </div>
+
+            {auto.summary && (
+              <span className="text-[10px] text-zinc-600">
+                <span className="text-green-700 font-semibold">{auto.summary.include} included</span> ·{' '}
+                <span className="text-red-700 font-semibold">{auto.summary.exclude} excluded</span> ·{' '}
+                <span className="text-amber-700 font-semibold">{auto.summary.uncertain} unsure</span>
+                {auto.summary.failed > 0 && <span className="text-zinc-500"> · {auto.summary.failed} failed</span>}
+              </span>
+            )}
+
+            {aiDecided > 0 && (
+              <button
+                onClick={() => dispatch({ type: 'RESET_AI_SCREENING' })}
+                className="ml-auto text-[10px] text-zinc-400 hover:text-red-600"
+                title="Undo every decision the AI made; your own decisions are kept"
+              >
+                Reset AI decisions ({aiDecided})
+              </button>
+            )}
+          </div>
+        )}
+        {!hasCriteria && (
+          <p className="text-[10px] text-zinc-400 italic mt-1.5">
+            Add inclusion / exclusion criteria above to enable AI screening.
+          </p>
+        )}
+        <p className="text-[9px] text-zinc-400 mt-1.5 leading-relaxed">
+          The AI judges from the title and abstract only, and leaves anything it can't decide as
+          <span className="text-amber-600"> unsure</span> for you. Every AI decision is marked
+          <span className="text-purple-600"> ✦ AI</span> and can be overridden — treat it as a first pass, not the final word.
+        </p>
+      </div>
+
+      {showPromptModal && (
+        <CustomizePromptModal
+          promptKey="screening-classify"
+          title="Screen Papers"
+          initialCustomPrompt={auto.customPrompt}
+          onClose={() => setShowPromptModal(false)}
+          onGenerate={(prompt) => {
+            auto.setCustomPrompt(prompt)
+            setShowPromptModal(false)
+            auto.run(prompt)   // pass explicitly; state hasn't committed yet
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+/** Drop-down of exclusion reasons — the only way to exclude a paper. */
+function ExcludeMenu({ paperId, onDone }: { paperId: string; onDone: () => void }) {
+  const { state, dispatch } = useApp()
+  const ref = useRef<HTMLDivElement>(null)
+  const reasons = state.criteria.filter(c => c.kind === 'exclusion')
+  const [otherReason, setOtherReason] = useState('')
+
+  useEffect(() => {
+    function onClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onDone()
+    }
+    document.addEventListener('mousedown', onClickOutside)
+    return () => document.removeEventListener('mousedown', onClickOutside)
+  }, [onDone])
+
+  return (
+    <div
+      ref={ref}
+      className="absolute z-40 left-0 top-full mt-1 w-60 bg-white border border-zinc-200 rounded-lg shadow-xl py-1"
+    >
+      <p className="px-2.5 py-1 text-[9px] font-bold text-zinc-400 uppercase tracking-wide">
+        Reason for exclusion
+      </p>
+      {reasons.length === 0 ? (
+        <p className="px-2.5 py-2 text-[10px] text-zinc-400 italic">
+          No exclusion criterion is defined. You can still make the decision below.
+        </p>
+      ) : reasons.map(r => (
+        <button
+          key={r.id}
+          onClick={() => {
+            dispatch({
+              type: 'EXCLUDE_PAPER',
+              paperId,
+              reasonId: r.id,
+              reason: r.label,
+              by: 'human',
+            })
+            onDone()
+          }}
+          className="w-full text-left px-2.5 py-1.5 text-[11px] text-zinc-700 hover:bg-red-50 hover:text-red-700"
+        >
+          {r.label}
+        </button>
+      ))}
+      <div className="border-t border-zinc-100 p-2">
+        <textarea
+          value={otherReason}
+          onChange={event => setOtherReason(event.target.value)}
+          rows={2}
+          placeholder="Other reason (optional)"
+          className="w-full resize-none rounded border border-zinc-200 p-1.5 text-[10px] text-zinc-700 outline-none focus:border-red-300"
+        />
+        <button
+          onClick={() => {
+            dispatch({
+              type: 'EXCLUDE_PAPER',
+              paperId,
+              reasonId: null,
+              reason: otherReason.trim() || undefined,
+              by: 'human',
+            })
+            onDone()
+          }}
+          className="mt-1.5 h-6 rounded bg-red-600 px-2.5 text-[10px] font-semibold text-white hover:bg-red-700"
+        >
+          {otherReason.trim() ? 'Exclude with reason' : 'Exclude'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/** Include a paper, optionally attaching a reason. Skipping is one click. */
+function IncludeMenu({ paperId, onDone }: { paperId: string; onDone: () => void }) {
+  const { dispatch } = useApp()
+  const ref = useRef<HTMLDivElement>(null)
+  const [reason, setReason] = useState('')
+
+  useEffect(() => {
+    function onClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onDone()
+    }
+    document.addEventListener('mousedown', onClickOutside)
+    return () => document.removeEventListener('mousedown', onClickOutside)
+  }, [onDone])
+
+  function include() {
+    dispatch({ type: 'ADD_TO_REVIEW', paperId, status: 'included', reason: reason.trim() || undefined, by: 'human' })
+    onDone()
+  }
+
+  return (
+    <div
+      ref={ref}
+      className="absolute z-40 left-0 top-full mt-1 w-64 bg-white border border-zinc-200 rounded-lg shadow-xl p-2.5"
+    >
+      <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide mb-1.5">
+        Include — reason (optional)
+      </p>
+      <textarea
+        value={reason}
+        onChange={e => setReason(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) include() }}
+        autoFocus
+        rows={2}
+        placeholder="Why does this paper qualify? Leave blank to skip."
+        className="w-full border border-zinc-200 rounded p-1.5 text-[10px] text-zinc-700 resize-none outline-none focus:border-zinc-400"
+      />
+      <div className="flex items-center gap-2 mt-1.5">
+        <button
+          onClick={include}
+          className="px-2.5 h-6 bg-zinc-900 text-white rounded text-[10px] font-semibold hover:bg-zinc-700"
+        >
+          {reason.trim() ? 'Include with reason' : 'Include'}
+        </button>
+        <span className="text-[9px] text-zinc-400">⌘↵</span>
+      </div>
+    </div>
+  )
+}
+
+/** AI screening provenance + the model's reason, shown on AI-decided papers. */
+function ScreeningReason({ paper }: { paper: ResultCard }) {
+  if (paper.screenedBy !== 'ai' || !paper.screeningReason) return null
+  return (
+    <div className="flex items-start gap-1.5 bg-purple-50 border border-purple-100 rounded px-1.5 py-1">
+      <span className="text-[8px] font-bold text-purple-600 bg-purple-100 rounded px-1 py-0.5 shrink-0 mt-px">✦ AI</span>
+      <span className="text-[10px] text-purple-800 leading-snug">{paper.screeningReason}</span>
+    </div>
+  )
 }
 
 // ── Topic · Query hover chip ──────────────────────────────────────────────────
@@ -79,6 +470,16 @@ interface RecogniseResult {
   score: number
   level: string
   reasoning: string
+  resolvedAbstract?: string | null
+  model: string
+}
+
+interface PaperInsightsResult {
+  summary: string
+  conclusion: string | null
+  conclusionAvailable: boolean
+  resolvedAbstract: string
+  model: string
 }
 
 function DetailModal({ paper, onClose, onAdd, onLater }: {
@@ -87,12 +488,15 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
   onAdd: () => void
   onLater: () => void
 }) {
-  const { state } = useApp()
+  const { state, dispatch } = useApp()
   const [activeTab, setActiveTab] = useState<Tab>('overview')
   const [showCitations, setShowCitations] = useState(false)
   const [recognising, setRecognising] = useState(false)
   const [recogniseResult, setRecogniseResult] = useState<RecogniseResult | null>(null)
-  const [recogniseError, setRecogniseError] = useState(false)
+  const [recogniseError, setRecogniseError] = useState<string | null>(null)
+  const [insights, setInsights] = useState<PaperInsightsResult | null>(null)
+  const [insightsLoading, setInsightsLoading] = useState(false)
+  const [insightsError, setInsightsError] = useState<string | null>(null)
 
   const topic = state.topics.find(t => t.id === paper.topicId)
   const query  = state.queries.find(q => q.id === paper.queryId)
@@ -101,44 +505,92 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
   useEffect(() => {
     async function runRecognise() {
       setRecognising(true)
-      setRecogniseError(false)
+      setRecogniseError(null)
       try {
         const res = await apiFetch(`${API}/recognise`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             mode: 'paper_relevance',
-            paper: { title: paper.title, abstract: paper.abstract, authors: paper.authors, year: paper.year },
+            paper: {
+              title: paper.title,
+              abstract: paper.abstract,
+              authors: paper.authors,
+              year: paper.year,
+              url: paper.source,
+            },
             profile: state.profile,
           }),
         })
-        if (!res.ok) throw new Error()
+        if (!res.ok) {
+          const body = await res.json().catch(() => null)
+          throw new Error(body?.detail || 'Assessment failed')
+        }
         const data = await res.json()
         setRecogniseResult(data)
-      } catch {
-        setRecogniseError(true)
+        if (!paper.abstract.trim() && data.resolvedAbstract?.trim()) {
+          dispatch({ type: 'UPDATE_PAPER_ABSTRACT', paperId: paper.id, abstract: data.resolvedAbstract.trim() })
+        }
+      } catch (error) {
+        setRecogniseError(error instanceof Error ? error.message : 'Assessment failed')
       } finally {
         setRecognising(false)
       }
     }
     runRecognise()
-  }, [paper.id])
+  // `dispatch` is intentionally omitted: AppProvider wraps it per render, while
+  // the paper/profile fields below are the actual request dependencies.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    paper.id, paper.title, paper.abstract, paper.authors, paper.year, paper.source,
+    state.profile.domain, state.profile.population, state.profile.focus,
+    state.profile.method, state.profile.reviewType,
+  ])
 
-  // AI-generated summary from abstract
-  const firstSentence = paper.abstract ? paper.abstract.split('.')[0] : ''
-  const aiSummary = paper.abstract
-    ? `This ${paper.year} study by ${paper.authors} investigates a question central to AI in clinical settings. ` +
-      `${firstSentence}. The evidence suggests measurable benefits when AI tools are integrated appropriately, ` +
-      `though long-term sustainability and generalisability across diverse healthcare systems remain open questions. ` +
-      `Relevance to the current review is rated ${paper.confidence} confidence (${paper.relevanceScore}%).`
-    : 'Abstract not available — AI summary cannot be generated.'
+  useEffect(() => {
+    if (!['ai-summary', 'conclusion'].includes(activeTab) || insights || insightsLoading) return
+    let cancelled = false
+    async function loadInsights() {
+      setInsightsLoading(true)
+      setInsightsError(null)
+      try {
+        const res = await apiFetch(`${API}/papers/insights`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            paper: {
+              title: paper.title,
+              abstract: paper.abstract,
+              authors: paper.authors,
+              year: paper.year,
+              url: paper.source,
+            },
+          }),
+        })
+        if (!res.ok) {
+          const body = await res.json().catch(() => null)
+          throw new Error(body?.detail || 'Could not generate source-grounded insights')
+        }
+        const data = await res.json() as PaperInsightsResult
+        if (cancelled) return
+        setInsights(data)
+        if (!paper.abstract.trim() && data.resolvedAbstract.trim()) {
+          dispatch({ type: 'UPDATE_PAPER_ABSTRACT', paperId: paper.id, abstract: data.resolvedAbstract.trim() })
+        }
+      } catch (error) {
+        if (!cancelled) setInsightsError(error instanceof Error ? error.message : 'Could not generate insights')
+      } finally {
+        if (!cancelled) setInsightsLoading(false)
+      }
+    }
+    void loadInsights()
+    return () => { cancelled = true }
+  // The insight is fetched once for this modal. A newly hydrated abstract is
+  // already returned in the same response, so adding it here would duplicate it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, paper.id, insights])
 
-  const conclusion = paper.abstract
-    ? `Based on the evidence presented, ${paper.authors} conclude that ${firstSentence.toLowerCase()}. ` +
-      `The findings carry implications for clinical practice, particularly in settings where AI-assisted decision-making ` +
-      `is being considered at scale. Future work should address the limitations identified, including ` +
-      `sample diversity, follow-up duration, and cost-effectiveness data.`
-    : 'Abstract not available — conclusion cannot be inferred.'
+  const verifiedAbstract = insights?.resolvedAbstract || recogniseResult?.resolvedAbstract || paper.abstract
 
   return (
    <>
@@ -220,7 +672,7 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
                     <span className="w-3 h-3 border border-purple-300 border-t-purple-600 rounded-full animate-spin" />
                   )}
                   {recogniseError && (
-                    <span className="text-[9px] text-red-500">Assessment failed</span>
+                    <span className="text-[9px] text-amber-600">{recogniseError}</span>
                   )}
                 </div>
 
@@ -247,7 +699,9 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
                       </span>
                     </div>
                     <p className="text-[11px] text-zinc-600 leading-relaxed">{recogniseResult.reasoning}</p>
-                    <p className="text-[9px] text-purple-400 italic">AI-assessed · gpt-5.5</p>
+                    <p className="text-[9px] text-purple-400 italic">
+                      AI-assessed from the verified title and abstract · {recogniseResult.model}
+                    </p>
                   </div>
                 ) : !recognising && !recogniseError ? null : null}
               </div>
@@ -278,7 +732,11 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
           {activeTab === 'abstract' && (
             <div>
               <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide mb-3">Full Abstract</p>
-              <p className="text-[12px] text-zinc-700 leading-relaxed">{paper.abstract}</p>
+              {verifiedAbstract
+                ? <p className="text-[12px] text-zinc-700 leading-relaxed">{verifiedAbstract}</p>
+                : <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-3">
+                    No verified abstract is available from the source databases.
+                  </p>}
             </div>
           )}
 
@@ -290,10 +748,14 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
                 <span className="px-1.5 py-0.5 bg-purple-100 text-purple-600 text-[8px] font-semibold rounded">AI</span>
               </div>
               <div className="bg-purple-50/50 border border-purple-100 rounded-lg p-4">
-                <p className="text-[12px] text-zinc-700 leading-relaxed">{aiSummary}</p>
+                {insightsLoading && <p className="text-[11px] text-purple-500">Generating from the verified abstract…</p>}
+                {insightsError && <p className="text-[11px] text-amber-700">{insightsError}</p>}
+                {insights && <p className="text-[12px] text-zinc-700 leading-relaxed">{insights.summary}</p>}
               </div>
               <p className="text-[9px] italic text-zinc-400 mt-2">
-                Generated from abstract and metadata. Verify before citing.
+                {insights
+                  ? `Generated only from the verified abstract · ${insights.model}. Verify before citing.`
+                  : 'No template or placeholder content is used.'}
               </p>
             </div>
           )}
@@ -306,10 +768,18 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
                 <span className="px-1.5 py-0.5 bg-purple-100 text-purple-600 text-[8px] font-semibold rounded">AI</span>
               </div>
               <div className="bg-zinc-50 border border-zinc-200 rounded-lg p-4">
-                <p className="text-[12px] text-zinc-700 leading-relaxed">{conclusion}</p>
+                {insightsLoading && <p className="text-[11px] text-zinc-500">Checking the verified abstract…</p>}
+                {insightsError && <p className="text-[11px] text-amber-700">{insightsError}</p>}
+                {insights?.conclusionAvailable && insights.conclusion
+                  ? <p className="text-[12px] text-zinc-700 leading-relaxed">{insights.conclusion}</p>
+                  : insights && (
+                    <p className="text-[11px] text-zinc-500">
+                      The verified abstract does not state an explicit author conclusion.
+                    </p>
+                  )}
               </div>
               <p className="text-[9px] italic text-zinc-400 mt-2">
-                AI-inferred from abstract. Check full text to confirm.
+                Only an explicitly supported conclusion is shown; otherwise this section remains unavailable.
               </p>
             </div>
           )}
@@ -341,7 +811,9 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
         <div className="flex items-center gap-2 px-5 py-3 border-t border-zinc-100 shrink-0">
           {/* Read paper link */}
           <a
-            href={`https://scholar.google.com/scholar?q=${encodeURIComponent(paper.title)}`}
+            href={/^https?:\/\//.test(paper.source)
+              ? paper.source
+              : `https://scholar.google.com/scholar?q=${encodeURIComponent(paper.title)}`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-1 px-3 h-8 border border-zinc-300 rounded text-[11px] text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900"
@@ -377,7 +849,7 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
     </div>
     {showCitations && (
       <CitationsModal
-        seed={{ title: paper.title, url: paper.source, topicId: paper.topicId }}
+        seed={{ id: paper.id, title: paper.title, year: paper.year, url: paper.source, topicId: paper.topicId }}
         onClose={() => setShowCitations(false)}
       />
     )}
@@ -386,28 +858,65 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
 }
 
 // ── Left: paper card (detailed) ───────────────────────────────────────────────
-function PaperCard({ paper, onViewDetails }: {
+function PaperCard({ paper, onViewDetails, onSnowball }: {
   paper: ResultCard
   onViewDetails: (p: ResultCard) => void
+  onSnowball: (p: ResultCard) => void
 }) {
   const { dispatch, state } = useApp()
   const inReview = state.reviewList.some(r => r.id === paper.id)
+  const [excludeOpen, setExcludeOpen] = useState(false)
+  const [addOpen, setAddOpen] = useState(false)
 
-  function add() {
-    dispatch({ type: 'ADD_TO_REVIEW', paperId: paper.id, status: 'included' })
-  }
+  const excluded = paper.status === 'excluded'
+  const uncertain = paper.screenUncertain === true
+  const screening = paper.screenStatus === 'pending'
+  const screenFailed = paper.screenStatus === 'failed'
+  const aiIncluded = inReview && paper.screenedBy === 'ai'
+
   function later() {
-    dispatch({ type: 'ADD_TO_REVIEW', paperId: paper.id, status: 'maybe' })
+    dispatch({ type: 'ADD_TO_REVIEW', paperId: paper.id, status: 'maybe', by: 'human' })
   }
 
   return (
     <div className={`rounded-lg border bg-white p-3 flex flex-col gap-1.5 ${
-      paper.isDuplicate ? 'border-l-4 border-l-orange-300 border-r border-t border-b border-zinc-200' : 'border-zinc-200'
-    }`}>
+      excluded ? 'border-l-4 border-l-red-400 border-r border-t border-b border-zinc-200'
+      : uncertain ? 'border-l-4 border-l-amber-300 border-r border-t border-b border-zinc-200'
+      : aiIncluded ? 'border-l-4 border-l-purple-300 border-r border-t border-b border-zinc-200'
+      : paper.isDuplicate ? 'border-l-4 border-l-orange-300 border-r border-t border-b border-zinc-200'
+      : 'border-zinc-200'
+      }`}>
       {/* Title */}
-      <p className="text-[12px] font-semibold text-zinc-950 leading-snug">
+      <p className="text-[12px] font-semibold leading-snug text-zinc-950">
         {paper.title}
       </p>
+
+      {screening && (
+        <div className="flex items-center gap-1.5">
+          <span className="w-2.5 h-2.5 border border-purple-300 border-t-purple-600 rounded-full animate-spin" />
+          <span className="text-[10px] text-purple-500">AI screening…</span>
+        </div>
+      )}
+
+      {screenFailed && (
+        <span className="text-[10px] text-red-500">AI screening failed — decide manually below.</span>
+      )}
+
+      {excluded && (
+        <div>
+          <span className="px-1.5 py-0.5 bg-red-100 text-red-700 text-[9px] font-bold rounded">EXCLUDED</span>
+        </div>
+      )}
+
+      {uncertain && (
+        <div className="flex items-center gap-2">
+          <span className="px-1.5 py-0.5 bg-amber-100 text-amber-700 text-[9px] font-bold rounded">✦ AI UNSURE</span>
+          <span className="text-[10px] text-zinc-500 italic">needs your decision</span>
+        </div>
+      )}
+
+      {/* AI reason (include / exclude / uncertain) */}
+      {!screening && <ScreeningReason paper={paper} />}
 
       {/* Authors · Year · Source */}
       <p className="text-[10px] text-zinc-400">
@@ -437,7 +946,11 @@ function PaperCard({ paper, onViewDetails }: {
 
       {/* Source chain */}
       <p className="text-[9px] text-zinc-400 italic">
-        via Topic {paper.topicId.replace('t', '')} · Query {paper.queryId.replace('q', '')}
+        {paper.origin === 'snowball'
+          ? 'via citation snowballing'
+          : paper.origin === 'upload'
+            ? 'via manual upload'
+            : `via Topic ${paper.topicId.replace('t', '')} · Query ${paper.queryId.replace('q', '')}`}
       </p>
 
       {/* Action row */}
@@ -448,24 +961,61 @@ function PaperCard({ paper, onViewDetails }: {
         >
           View Details
         </button>
-        {inReview ? (
-          <span className="text-[10px] text-green-600 font-medium">✓ Added</span>
-        ) : (
-          <>
+        {excluded ? (
+          <div className="relative">
             <button
-              onClick={add}
+              onClick={() => setAddOpen(v => !v)}
               className="px-2.5 h-7 bg-zinc-900 text-white rounded text-[10px] font-medium hover:bg-zinc-700"
             >
-              Add
+              Add back
             </button>
-            <button
-              onClick={later}
-              className="px-2.5 h-7 border border-zinc-300 rounded text-[10px] text-zinc-600 hover:bg-zinc-50"
-            >
-              Later
-            </button>
+            {addOpen && <IncludeMenu paperId={paper.id} onDone={() => setAddOpen(false)} />}
+          </div>
+        ) : (
+          <>
+            {inReview ? (
+              <span className="flex items-center gap-1.5">
+                <span className="text-[10px] text-green-600 font-medium">✓ Added</span>
+                {aiIncluded && <span className="px-1 py-0.5 bg-purple-100 text-purple-600 text-[8px] font-bold rounded">✦ AI</span>}
+              </span>
+            ) : (
+              <>
+                <div className="relative">
+                  <button
+                    onClick={() => setAddOpen(v => !v)}
+                    className="px-2.5 h-7 bg-zinc-900 text-white rounded text-[10px] font-medium hover:bg-zinc-700"
+                  >
+                    Add
+                  </button>
+                  {addOpen && <IncludeMenu paperId={paper.id} onDone={() => setAddOpen(false)} />}
+                </div>
+                <button
+                  onClick={later}
+                  className="px-2.5 h-7 border border-zinc-300 rounded text-[10px] text-zinc-600 hover:bg-zinc-50"
+                >
+                  Later
+                </button>
+              </>
+            )}
+            <div className="relative">
+              <button
+                onClick={() => setExcludeOpen(v => !v)}
+                title="Exclude this paper, recording which criterion it fails"
+                className="px-2.5 h-7 border border-zinc-300 rounded text-[10px] text-red-500 hover:bg-red-50 hover:border-red-300"
+              >
+                Exclude
+              </button>
+              {excludeOpen && <ExcludeMenu paperId={paper.id} onDone={() => setExcludeOpen(false)} />}
+            </div>
           </>
         )}
+        <button
+          onClick={() => onSnowball(paper)}
+          title="Find this paper's references and the papers citing it"
+          className="px-2.5 h-7 border border-blue-200 bg-blue-50 rounded text-[10px] text-blue-700 font-medium hover:bg-blue-100"
+        >
+          ⇄ Snowball
+        </button>
         {paper.isDuplicate && (
           <span className="ml-auto px-1.5 py-0.5 bg-amber-100 text-amber-700 text-[8px] font-bold rounded">
             DUP
@@ -477,10 +1027,9 @@ function PaperCard({ paper, onViewDetails }: {
 }
 
 // ── Right: review list item ───────────────────────────────────────────────────
-function ReviewListItem({ paper, index, notes, onNoteChange }: {
+function ReviewListItem({ paper, index, onNoteChange }: {
   paper: ResultCard
   index: number
-  notes: Record<string, string>
   onNoteChange: (id: string, val: string) => void
 }) {
   const { dispatch } = useApp()
@@ -525,7 +1074,7 @@ function ReviewListItem({ paper, index, notes, onNoteChange }: {
       {/* Note */}
       <div className="ml-4 mt-1.5">
         <input
-          value={notes[paper.id] ?? paper.notes}
+          value={paper.notes}
           onChange={e => onNoteChange(paper.id, e.target.value)}
           className="w-full h-6 bg-zinc-50 border border-zinc-200 rounded px-1.5 text-[10px] text-zinc-700 outline-none focus:border-zinc-400"
           placeholder="Add note..."
@@ -572,32 +1121,62 @@ function FilterChip({
 // ── Main Screen4 ──────────────────────────────────────────────────────────────
 export function Screen4() {
   const { state, dispatch } = useApp()
-  const [notes, setNotes] = useState<Record<string, string>>({})
   const [detailPaper, setDetailPaper] = useState<ResultCard | null>(null)
+  const [snowballSeed, setSnowballSeed] = useState<ResultCard | null>(null)
   const [sortKey, setSortKey] = useState<SortKey>('relevance')
   const [filterTopicId, setFilterTopicId] = useState<string | null>(null)
   const [filterQueryId, setFilterQueryId] = useState<string | null>(null)
+  const [showProtocol, setShowProtocol] = useState(false)
+  // The Auto-screen trigger lives inside the protocol panel, so a pass can only
+  // start while the panel is open — its progress bar stays reachable throughout.
+  const auto = useAutoScreen()
 
   const includedCount = state.reviewList.filter(p => p.status === 'included').length
   const maybeCount    = state.reviewList.filter(p => p.status === 'maybe').length
+  const excludedCount = state.results.filter(p => p.status === 'excluded').length
 
+  // Notes live in the store, not component state — they were previously lost
+  // the moment the user navigated away from this step.
   function handleNoteChange(id: string, val: string) {
-    setNotes(prev => ({ ...prev, [id]: val }))
+    dispatch({ type: 'UPDATE_REVIEW_NOTE', paperId: id, note: val })
+  }
+
+  function handleViewDetails(paper: ResultCard) {
+    dispatch({
+      type: 'ADD_DECISION_JOURNAL_ENTRY',
+      entry: journalEntry({
+        kind: 'ai_explanation_view',
+        step: 5,
+        action: 'Viewed paper details before screening decision',
+        entityType: 'paper',
+        entityId: paper.id,
+        entityLabel: paper.title,
+        details: paper.abstract
+          ? 'The user opened the paper metadata and abstract.'
+          : 'The user opened the paper metadata; no abstract was present in the record.',
+      }),
+    })
+    setDetailPaper(paper)
   }
 
   // Unique topics/queries that appear in results
   const resultTopicIds = [...new Set(state.results.map(r => r.topicId))]
   const resultQueryIds = [...new Set(state.results.map(r => r.queryId))]
 
-  // Filter
+  // Filter. Excluded papers always remain listed and are identified by their
+  // red status treatment: the left panel is "all papers", not just the queue.
   let displayedPapers = state.results.filter(p => {
     if (filterTopicId && p.topicId !== filterTopicId) return false
     if (filterQueryId && p.queryId !== filterQueryId) return false
     return true
   })
 
-  // Sort
+  // Sort. Excluded papers always sink to the bottom regardless of the chosen
+  // key, so the active work stays on top while the excluded set stays in view.
   displayedPapers = [...displayedPapers].sort((a, b) => {
+    const aEx = a.status === 'excluded' ? 1 : 0
+    const bEx = b.status === 'excluded' ? 1 : 0
+    if (aEx !== bEx) return aEx - bEx
     if (sortKey === 'relevance')  return b.relevanceScore - a.relevanceScore
     if (sortKey === 'year_desc')  return b.year - a.year
     if (sortKey === 'year_asc')   return a.year - b.year
@@ -623,7 +1202,28 @@ export function Screen4() {
         <div className="h-[44px] bg-zinc-900 flex items-center px-4 gap-3 shrink-0">
           <span className="text-white text-[11px] font-bold tracking-wider">ALL PAPERS</span>
           <span className="text-zinc-400 text-[10px]">{displayedPapers.length} / {state.results.length}</span>
+          {state.screening.duplicatesRemoved > 0 && (
+            <span
+              className="text-amber-300 text-[10px]"
+              title="Records matched to one already retrieved, by DOI or title, and kept only once"
+            >
+              {state.screening.duplicatesRemoved} dup removed
+            </span>
+          )}
+          {excludedCount > 0 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded text-red-300">
+              {excludedCount} excluded
+            </span>
+          )}
+          <button
+            onClick={() => setShowProtocol(v => !v)}
+            className="ml-auto text-zinc-300 text-[10px] hover:text-white"
+          >
+            {showProtocol ? '▴' : '▾'} Protocol ({state.criteria.length})
+          </button>
         </div>
+
+        {showProtocol && <ProtocolPanel onClose={() => setShowProtocol(false)} auto={auto} />}
 
         {/* Sort + Filter bar */}
         <div className="h-[34px] bg-zinc-50 border-b border-zinc-200 flex items-center px-3 gap-2 shrink-0">
@@ -685,7 +1285,8 @@ export function Screen4() {
             <PaperCard
               key={paper.id}
               paper={paper}
-              onViewDetails={setDetailPaper}
+              onViewDetails={handleViewDetails}
+              onSnowball={setSnowballSeed}
             />
           ))}
           {displayedPapers.length === 0 && (
@@ -722,7 +1323,6 @@ export function Screen4() {
                 key={paper.id}
                 paper={paper}
                 index={idx}
-                notes={notes}
                 onNoteChange={handleNoteChange}
               />
             ))
@@ -739,6 +1339,20 @@ export function Screen4() {
           </button>
         </div>
       </div>
+
+      {/* ── Citation snowballing ── */}
+      {snowballSeed && (
+        <CitationsModal
+          seed={{
+            id: snowballSeed.id,
+            title: snowballSeed.title,
+            year: snowballSeed.year,
+            url: snowballSeed.source,
+            topicId: snowballSeed.topicId,
+          }}
+          onClose={() => setSnowballSeed(null)}
+        />
+      )}
 
       {/* ── View Details Modal ── */}
       {detailPaper && (

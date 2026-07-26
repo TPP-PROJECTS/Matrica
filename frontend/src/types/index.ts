@@ -55,6 +55,18 @@ export interface QueryCard {
   stale: boolean
 }
 
+/** How a paper entered the review — a PRISMA 2020 identification pathway. */
+export type PaperOrigin = 'search' | 'snowball' | 'upload'
+
+/** Lifecycle of the background AI relevance assessment for one paper. */
+export type ScoreStatus = 'pending' | 'scored' | 'failed'
+
+/** Who made a paper's current screening decision. */
+export type ScreenedBy = 'ai' | 'human'
+
+/** Lifecycle of the LLM auto-screening pass on one paper. */
+export type ScreenStatus = 'pending' | 'done' | 'failed'
+
 export interface ResultCard {
   id: string
   title: string
@@ -67,8 +79,66 @@ export interface ResultCard {
   queryId: string
   confidence: ConfidenceLevel
   isDuplicate: boolean
-  status: 'included' | 'maybe' | 'saved' | null
+  status: 'included' | 'maybe' | 'saved' | 'excluded' | null
   notes: string
+  // Fields below are absent on papers from sessions saved before they existed;
+  // read them through the defaults in `lib/paperDefaults.ts`.
+  origin?: PaperOrigin
+  /** For origin === 'snowball': the review-list paper this was chased from. */
+  snowballFromId?: string
+  scoreStatus?: ScoreStatus
+  /** For status === 'excluded': which ScreeningCriterion justified it. */
+  exclusionReasonId?: string | null
+  // ── Screening decision provenance ──
+  /** Who decided the current status. AI decisions are shown as needing review. */
+  screenedBy?: ScreenedBy
+  /** Free-text justification for the current include/exclude/uncertain call. */
+  screeningReason?: string
+  /**
+   * Set on a paper the AI screened but could not decide from the abstract.
+   * status stays null (unscreened) — this only carries the AI's note so the UI
+   * can surface "AI unsure: …" and hand the call back to a human.
+   */
+  screenUncertain?: boolean
+  /** Live state during an auto-screen pass, for per-row spinners. */
+  screenStatus?: ScreenStatus
+}
+
+/**
+ * One line of the review protocol. Exclusions must name the criterion they rest
+ * on, because PRISMA requires reporting excluded records *with reasons*.
+ */
+export interface ScreeningCriterion {
+  id: string
+  kind: 'inclusion' | 'exclusion'
+  label: string
+}
+
+/** Database limits applied at search time, before any screening happens. */
+export interface SearchFilters {
+  yearFrom: number | null
+  yearTo: number | null
+  openAccessOnly: boolean
+  excludePreprints: boolean
+  language: string          // ISO 639-1 code, '' = any
+}
+
+/** Running counts the PRISMA flow diagram is built from. */
+export interface ScreeningCounts {
+  /**
+   * Total hits the databases reported, across all pages — not just what was
+   * retrieved — keyed by the query that produced them. Keyed rather than summed
+   * because re-running a query re-identifies the same corpus: adding the figure
+   * again would inflate "records identified" every time the user hits Search.
+   */
+  identifiedByQuery: Record<string, number>
+  /** Records dropped as duplicates of one already held. */
+  duplicatesRemoved: number
+}
+
+/** Records identified across every query — the PRISMA identification total. */
+export function totalIdentified(counts: ScreeningCounts): number {
+  return Object.values(counts.identifiedByQuery).reduce((a, b) => a + b, 0)
 }
 
 export interface SystemItem {
@@ -228,10 +298,24 @@ export interface VersionEntry {
   chatExcerpt?: string
 }
 
-export interface ConsistencyAlert {
-  claim: string
-  data: string
-  detail: string
+export type DecisionJournalKind = 'justification' | 'ai_explanation_view' | 'user_action'
+
+export interface DecisionJournalEntry {
+  id: string
+  kind: DecisionJournalKind
+  step: number
+  action: string
+  entityType:
+    | 'profile' | 'query' | 'search_filter' | 'matrix_column' | 'matrix_cell'
+    | 'system' | 'screening_protocol' | 'synthesis' | 'theme' | 'gap_statement'
+    | 'topic' | 'paper' | 'research_question' | 'study_design' | 'final_topic'
+  entityId: string
+  entityLabel: string
+  justification?: string
+  previousValue?: string
+  newValue?: string
+  details?: string
+  createdAt: string
 }
 
 // ── Session persistence ───────────────────────────────────────────────────────
@@ -269,6 +353,9 @@ export interface SessionSnapshot {
   // Step 4
   results: ResultCard[]
   reviewList: ResultCard[]
+  searchFilters: SearchFilters
+  criteria: ScreeningCriterion[]
+  screening: ScreeningCounts
   // Step 5
   matrixColumns: string[]
   matrixRows: MatrixRow[]
@@ -292,6 +379,7 @@ export interface SessionSnapshot {
   finalTopicOptions: FinalTopicOption[]
   topicFinalData: TopicFinalData[]
   selectedFinalTopicId: string | null
+  decisionJournal: DecisionJournalEntry[]
 }
 
 export interface AppState {
@@ -307,7 +395,6 @@ export interface AppState {
   showVersionHistory: boolean
   showBackNavModal: boolean
   pendingBackStep: number | null
-  consistencyAlert: ConsistencyAlert | null
   editMode: boolean
   staleSteps: number[]
   versionHistory: VersionEntry[]
@@ -329,6 +416,9 @@ export interface AppState {
   // Step 4
   results: ResultCard[]
   reviewList: ResultCard[]
+  searchFilters: SearchFilters
+  criteria: ScreeningCriterion[]
+  screening: ScreeningCounts
   // Step 5
   matrixColumns: string[]
   matrixRows: MatrixRow[]
@@ -352,6 +442,7 @@ export interface AppState {
   finalTopicOptions: FinalTopicOption[]
   topicFinalData: TopicFinalData[]
   selectedFinalTopicId: string | null
+  decisionJournal: DecisionJournalEntry[]
 }
 
 // ── Chatbot-operable actions ──────────────────────────────────────────────────
@@ -424,12 +515,24 @@ export type AppAction =
   | { type: 'TOGGLE_SYSTEM_ITEM'; itemId: string } // @chatbot Select or deselect a system (flips its current state).
   | { type: 'ADD_CUSTOM_SYSTEM'; name: string } // @chatbot Add a custom system to the system review list.
   | { type: 'SET_QUERIES'; queries: QueryCard[] }
-  | { type: 'ADD_SEARCH_RESULTS'; results: ResultCard[] }
+  | { type: 'ADD_SEARCH_RESULTS'; results: ResultCard[]; identifiedFor?: { queryId: string; count: number } }
   | { type: 'CLEAR_RESULTS' }
+  | { type: 'SET_SEARCH_FILTERS'; filters: SearchFilters } // @chatbot Set the database search limits (year range, open access, preprints, language) applied to future searches.
+  | { type: 'ADD_CRITERION'; criterion: ScreeningCriterion } // @chatbot Add one inclusion or exclusion criterion to the screening protocol.
+  | { type: 'REMOVE_CRITERION'; criterionId: string } // @chatbot Remove a screening criterion from the protocol.
+  | { type: 'EXCLUDE_PAPER'; paperId: string; reasonId: string | null; reason?: string; by?: ScreenedBy } // @chatbot Exclude a paper from the review, citing the exclusion criterion id that justifies it.
+  | { type: 'UNEXCLUDE_PAPER'; paperId: string } // @chatbot Undo a paper's exclusion, returning it to unscreened.
+  | { type: 'MARK_SCREEN_UNCERTAIN'; paperId: string; reason: string; by?: ScreenedBy }
+  | { type: 'SET_SCREEN_STATUS'; paperId: string; status: ScreenStatus }
+  | { type: 'RESET_AI_SCREENING' } // @chatbot Clear every screening decision the AI made, leaving human decisions untouched.
+  | { type: 'UPDATE_REVIEW_NOTE'; paperId: string; note: string } // @chatbot Set the note on a review-list paper (full new text).
+  | { type: 'UPDATE_PAPER_ABSTRACT'; paperId: string; abstract: string }
+  | { type: 'SET_RESULT_SCORE_STATUS'; paperId: string; status: ScoreStatus }
   | { type: 'TOGGLE_REVIEW'; paperId: string }
-  | { type: 'ADD_TO_REVIEW'; paperId: string; status: 'included' | 'maybe' } // @chatbot Add a search-result paper to the review list.
+  | { type: 'ADD_TO_REVIEW'; paperId: string; status: 'included' | 'maybe'; reason?: string; by?: ScreenedBy } // @chatbot Add a search-result paper to the review list.
   | { type: 'REMOVE_FROM_REVIEW'; paperId: string } // @chatbot Remove a paper from the review list.
   | { type: 'UPDATE_REVIEW_STATUS'; paperId: string; status: ResultCard['status'] } // @chatbot Change a review-list paper's status.
+  | { type: 'ADD_DECISION_JOURNAL_ENTRY'; entry: DecisionJournalEntry }
   | { type: 'SEND_MESSAGE'; content: string }
   | { type: 'ADD_CHAT_MESSAGE'; message: ChatMessage }
   | { type: 'DISMISS_MESSAGE'; messageId: string }
@@ -471,7 +574,6 @@ export type AppAction =
   | { type: 'SET_TOPIC_FINAL_DATA'; data: TopicFinalData[] }
   | { type: 'UPDATE_PAPER_SECTIONS'; topicId: string; sections: PaperSection[] }
   | { type: 'SELECT_FINAL_TOPIC'; topicId: string } // @chatbot Choose the final research topic.
-  | { type: 'DISMISS_CONSISTENCY_ALERT' }
   | { type: 'DISMISS_BACK_NAV_MODAL' }
   | { type: 'SET_SAVE_STATUS'; status: 'saved' | 'saving' }
   | { type: 'SET_SESSION_TITLE'; title: string } // @chatbot Rename this research session.

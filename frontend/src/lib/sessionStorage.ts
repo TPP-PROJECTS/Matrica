@@ -36,6 +36,9 @@ export function toSnapshot(state: AppState): SessionSnapshot {
     // Step 4
     results: state.results,
     reviewList: state.reviewList,
+    searchFilters: state.searchFilters,
+    criteria: state.criteria,
+    screening: state.screening,
     // Step 5
     matrixColumns: state.matrixColumns,
     matrixRows: state.matrixRows,
@@ -56,6 +59,7 @@ export function toSnapshot(state: AppState): SessionSnapshot {
     finalTopicOptions: state.finalTopicOptions,
     topicFinalData: state.topicFinalData,
     selectedFinalTopicId: state.selectedFinalTopicId,
+    decisionJournal: state.decisionJournal,
   }
 }
 
@@ -136,11 +140,24 @@ export function clearAllSessions(): void {
 // post-cache-clear recovery. localStorage above is a synchronous offline cache.
 
 function pushSessionRemote(snapshot: SessionSnapshot): void {
-  apiFetch(`${API}/projects/${snapshot.sessionId}`, {
+  void pushSessionNow(snapshot).catch(() => {})
+}
+
+/**
+ * Push a snapshot to the durable store and report whether it landed.
+ *
+ * The fire-and-forget path above is right for autosave, but some actions need
+ * the project to actually exist server-side before they can proceed — sharing
+ * it for peer review, above all, since a session the user has not yet modified
+ * has never been pushed at all.
+ */
+export async function pushSessionNow(snapshot: SessionSnapshot): Promise<void> {
+  const res = await apiFetch(`${API}/projects/${snapshot.sessionId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(snapshot),
-  }).catch(() => {})
+  })
+  if (!res.ok) throw new Error(`Could not save this project to the server (HTTP ${res.status})`)
 }
 
 /** Fetch the project list from the backend, falling back to localStorage. */

@@ -1,6 +1,6 @@
 import json
 import re as _re
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Any
 from openai import OpenAI
@@ -225,7 +225,10 @@ Select the 3 best-fitting study designs for this topic, ranked best-first."""
         if m.get("id") in CATALOG_BY_ID
     ][:3]
     if not matches:
-        matches = [{"id": "systematic_review", "reason": "Default: synthesis of existing evidence."}]
+        raise HTTPException(
+            status_code=502,
+            detail="AI did not return a valid study design from the fixed catalog",
+        )
     return {"matches": matches}
 
 
@@ -240,8 +243,8 @@ class TopicDetail(BaseModel):
 
 class StructureRequest(BaseContext):
     topic: TopicDetail
-    study_design: str = 'Systematic Review'   # display name (legacy)
-    study_design_id: str | None = None         # catalog id (preferred)
+    study_design: str = ''                    # display name for audit/display only
+    study_design_id: str                      # fixed-catalog id; no implicit default
 
 STRUCTURE_SYSTEM = """\
 You are a senior academic who has published extensively in this domain and now designs the working
@@ -309,12 +312,11 @@ Every anchor section must appear with its exact given name and in the given rela
 
 @router.post("/final-question/generate-structure")
 def generate_structure(req: StructureRequest):
-    design = CATALOG_BY_ID.get(req.study_design_id or "")
+    design = CATALOG_BY_ID.get(req.study_design_id)
     if design is None:
-        # legacy fallback: match by display name, else default to systematic review
-        design = next(
-            (d for d in STUDY_DESIGN_CATALOG if d["name"].lower() == req.study_design.lower()),
-            CATALOG_BY_ID["systematic_review"],
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown study design id: {req.study_design_id}",
         )
 
     framework_text = '\n'.join(

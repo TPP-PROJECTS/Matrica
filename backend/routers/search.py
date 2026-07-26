@@ -1,4 +1,5 @@
 import re
+import xml.etree.ElementTree as ET
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -33,9 +34,44 @@ def reconstruct_abstract(inverted_index: dict | None) -> str:
     return ' '.join(word for _, word in pairs)
 
 
+def parse_pubmed_abstracts(xml_text: str) -> dict[str, str]:
+    """Extract genuine PMID → abstract text from PubMed efetch XML."""
+    if not xml_text.strip():
+        return {}
+    root = ET.fromstring(xml_text)
+    abstracts: dict[str, str] = {}
+    for article in root.findall(".//PubmedArticle"):
+        pmid_node = article.find("./MedlineCitation/PMID")
+        pmid = "".join(pmid_node.itertext()).strip() if pmid_node is not None else ""
+        if not pmid:
+            continue
+        sections: list[str] = []
+        for node in article.findall("./MedlineCitation/Article/Abstract/AbstractText"):
+            text = " ".join("".join(node.itertext()).split())
+            if not text:
+                continue
+            label = (node.attrib.get("Label") or "").strip()
+            sections.append(f"{label}: {text}" if label else text)
+        if sections:
+            abstracts[pmid] = " ".join(sections)
+    return abstracts
+
+
+class SearchFilters(BaseModel):
+    """Narrowing applied before screening — the equivalent of a database's own
+    limit controls. Every field is optional; an unset field means "no limit"."""
+    yearFrom: int | None = None
+    yearTo: int | None = None
+    openAccessOnly: bool = False
+    excludePreprints: bool = False
+    language: str = ""          # ISO 639-1 code, "" = any language
+
+
 class SearchRequest(BaseModel):
     query: str
     limit: int = 15
+    page: int = 1                       # 1-based; drives "load more"
+    filters: SearchFilters | None = None
 
 
 class PaperResult(BaseModel):
@@ -52,6 +88,22 @@ class SearchResponse(BaseModel):
     papers: list[PaperResult]
     query_used: str
     sources_searched: list[str] = ["OpenAlex", "PubMed"]
+    source_errors: list[str] = []
+    # Total hits the databases report for this query, across all pages. This is
+    # the "records identified" figure a PRISMA flow diagram needs, so it is
+    # reported even though only `limit` papers come back in this response.
+    total_available: int = 0
+    page: int = 1
+    has_more: bool = False
+
+
+class SourceSearchError(RuntimeError):
+    """One external database failed, as distinct from returning zero matches."""
+
+    def __init__(self, source: str, detail: str):
+        self.source = source
+        self.detail = detail
+        super().__init__(f"{source}: {detail}")
 
 
 def parse_openalex_item(item: dict) -> PaperResult:
@@ -80,12 +132,67 @@ def parse_openalex_item(item: dict) -> PaperResult:
     )
 
 
-async def search_openalex(query_text: str, limit: int, client: httpx.AsyncClient) -> list[PaperResult]:
+def openalex_filter_string(f: SearchFilters | None) -> str:
+    """Translate our filters into OpenAlex's comma-separated filter syntax."""
+    if f is None:
+        return ""
+    parts: list[str] = []
+    if f.yearFrom is not None:
+        parts.append(f"from_publication_date:{f.yearFrom}-01-01")
+    if f.yearTo is not None:
+        parts.append(f"to_publication_date:{f.yearTo}-12-31")
+    if f.openAccessOnly:
+        parts.append("is_oa:true")
+    if f.excludePreprints:
+        parts.append("type:!preprint")
+    if f.language:
+        parts.append(f"language:{f.language}")
+    return ",".join(parts)
+
+
+def pubmed_term(query_text: str, f: SearchFilters | None) -> str:
+    """Append PubMed's own limit syntax to the raw query term."""
+    if f is None:
+        return query_text
+    term = query_text
+    if f.yearFrom is not None or f.yearTo is not None:
+        lo = f.yearFrom if f.yearFrom is not None else 1800
+        hi = f.yearTo if f.yearTo is not None else 3000
+        term += f' AND ("{lo}"[dp] : "{hi}"[dp])'
+    if f.openAccessOnly:
+        term += ' AND "pubmed pmc open access"[filter]'
+    if f.excludePreprints:
+        term += ' NOT preprint[pt]'
+    if f.language:
+        # PubMed wants the language name, not the ISO code.
+        name = _PUBMED_LANGUAGES.get(f.language.lower())
+        if name:
+            term += f' AND {name}[lang]'
+    return term
+
+
+# The handful of codes worth mapping; anything else is left unfiltered on PubMed
+# rather than sent as a term PubMed would silently treat as a keyword.
+_PUBMED_LANGUAGES = {
+    "en": "english", "zh": "chinese", "fr": "french", "de": "german",
+    "es": "spanish", "ja": "japanese", "pt": "portuguese", "ru": "russian",
+}
+
+
+async def search_openalex(
+    query_text: str, limit: int, client: httpx.AsyncClient,
+    page: int = 1, filters: SearchFilters | None = None,
+) -> tuple[list[PaperResult], int]:
+    """Returns (papers on this page, total hits across all pages)."""
     params = {
         "search": query_text,
         "per-page": min(limit, 25),
+        "page": max(page, 1),
         "select": OPENALEX_FIELDS,
     }
+    filter_str = openalex_filter_string(filters)
+    if filter_str:
+        params["filter"] = filter_str
     try:
         resp = await client.get(
             OPENALEX_URL,
@@ -94,22 +201,30 @@ async def search_openalex(query_text: str, limit: int, client: httpx.AsyncClient
         )
         resp.raise_for_status()
         data = resp.json()
-    except Exception:
-        return []
+    except Exception as error:
+        raise SourceSearchError("OpenAlex", str(error)) from error
 
-    return [parse_openalex_item(item) for item in data.get("results", [])]
+    total = int((data.get("meta") or {}).get("count") or 0)
+    return [parse_openalex_item(item) for item in data.get("results", [])], total
 
 
-async def search_pubmed(query_text: str, limit: int, client: httpx.AsyncClient) -> list[PaperResult]:
-    """Search PubMed via E-utilities (free, no API key required)."""
+async def search_pubmed(
+    query_text: str, limit: int, client: httpx.AsyncClient,
+    page: int = 1, filters: SearchFilters | None = None,
+) -> tuple[list[PaperResult], int]:
+    """Search PubMed via E-utilities (free, no API key required).
+
+    Returns (papers on this page, total hits across all pages)."""
+    retmax = min(limit, 20)
     try:
         # Step 1: esearch — get PMIDs
         search_resp = await client.get(
             PUBMED_SEARCH_URL,
             params={
                 "db": "pubmed",
-                "term": query_text,
-                "retmax": min(limit, 20),
+                "term": pubmed_term(query_text, filters),
+                "retmax": retmax,
+                "retstart": (max(page, 1) - 1) * retmax,
                 "retmode": "json",
                 "sort": "relevance",
             },
@@ -117,9 +232,11 @@ async def search_pubmed(query_text: str, limit: int, client: httpx.AsyncClient) 
         )
         search_resp.raise_for_status()
         search_data = search_resp.json()
-        pmids = search_data.get("esearchresult", {}).get("idlist", [])
+        esearch = search_data.get("esearchresult", {})
+        pmids = esearch.get("idlist", [])
+        total = int(esearch.get("count") or 0)
         if not pmids:
-            return []
+            return [], total
 
         # Step 2: esummary — get metadata for each PMID
         summary_resp = await client.get(
@@ -135,8 +252,28 @@ async def search_pubmed(query_text: str, limit: int, client: httpx.AsyncClient) 
         summary_data = summary_resp.json()
         result_map = summary_data.get("result", {})
 
-    except Exception:
-        return []
+        # esummary omits abstracts. Fetch the matching PubMed XML and attach
+        # only the source text returned by NCBI—nothing is generated locally.
+        abstracts_by_pmid: dict[str, str] = {}
+        try:
+            abstract_resp = await client.get(
+                PUBMED_FETCH_URL,
+                params={
+                    "db": "pubmed",
+                    "id": ",".join(pmids),
+                    "retmode": "xml",
+                },
+                headers={"User-Agent": "ResearchAI-tool (research@example.com)"},
+            )
+            abstract_resp.raise_for_status()
+            abstracts_by_pmid = parse_pubmed_abstracts(abstract_resp.text)
+        except Exception:
+            # Keep the genuine citation metadata if NCBI's separate abstract
+            # request fails; the paper remains explicitly abstract-less.
+            pass
+
+    except Exception as error:
+        raise SourceSearchError("PubMed", str(error)) from error
 
     papers = []
     for pmid in pmids:
@@ -173,10 +310,10 @@ async def search_pubmed(query_text: str, limit: int, client: httpx.AsyncClient) 
             year=year,
             url=url,
             openAccessUrl=None,
-            abstract="",  # esummary doesn't include abstract; use efetch for full abstract
+            abstract=abstracts_by_pmid.get(pmid, ""),
             source="pubmed",
         ))
-    return papers
+    return papers, total
 
 
 _DOI_IN_URL = re.compile(r'10\.\d{4,9}/[^\s"<>]+')
@@ -253,12 +390,38 @@ async def search_papers(req: SearchRequest):
     if not openalex_query:
         raise HTTPException(status_code=400, detail="Query is empty after cleaning")
 
+    page = max(req.page, 1)
+    pubmed_limit = max(req.limit // 2, 5)
+
     async with httpx.AsyncClient(timeout=15.0) as client:
         import asyncio
-        openalex_results, pubmed_results = await asyncio.gather(
-            search_openalex(openalex_query, req.limit, client),
-            search_pubmed(req.query, max(req.limit // 2, 5), client),
-            return_exceptions=False,
+        openalex_outcome, pubmed_outcome = await asyncio.gather(
+            search_openalex(openalex_query, req.limit, client, page, req.filters),
+            search_pubmed(req.query, pubmed_limit, client, page, req.filters),
+            return_exceptions=True,
+        )
+
+    source_errors: list[str] = []
+    sources_searched: list[str] = []
+
+    if isinstance(openalex_outcome, BaseException):
+        source_errors.append(str(openalex_outcome))
+        openalex_results, openalex_total = [], 0
+    else:
+        sources_searched.append("OpenAlex")
+        openalex_results, openalex_total = openalex_outcome
+
+    if isinstance(pubmed_outcome, BaseException):
+        source_errors.append(str(pubmed_outcome))
+        pubmed_results, pubmed_total = [], 0
+    else:
+        sources_searched.append("PubMed")
+        pubmed_results, pubmed_total = pubmed_outcome
+
+    if not sources_searched:
+        raise HTTPException(
+            status_code=502,
+            detail="Both literature databases failed: " + "; ".join(source_errors),
         )
 
     # OpenAlex first (it carries abstracts), then PubMed; deduplicate() merges
@@ -266,10 +429,21 @@ async def search_papers(req: SearchRequest):
     combined = list(openalex_results) + list(pubmed_results)
     combined = deduplicate(combined)[:req.limit]
 
+    # Either database still having pages left means "load more" has something
+    # to fetch. Compared per-database because their page sizes differ.
+    has_more = (
+        openalex_total > page * min(req.limit, 25)
+        or pubmed_total > page * min(pubmed_limit, 20)
+    )
+
     return SearchResponse(
         papers=combined,
         query_used=openalex_query,
-        sources_searched=["OpenAlex", "PubMed"],
+        sources_searched=sources_searched,
+        source_errors=source_errors,
+        total_available=openalex_total + pubmed_total,
+        page=page,
+        has_more=has_more,
     )
 
 
@@ -283,15 +457,32 @@ _OPENALEX_ID_RE = re.compile(r'W\d{6,}')
 
 class CitationRequest(BaseModel):
     url: str                      # a DOI, or an OpenAlex work id/url
+    title: str = ""               # strict fallback match when the locator is a PMID/publisher URL
+    year: int | None = None
     direction: str = "backward"   # "backward" = references | "forward" = cited-by
     limit: int = 15
 
 
-async def _resolve_openalex_id(http: httpx.AsyncClient, raw: str) -> str | None:
-    """Resolve a DOI or OpenAlex link/id to a bare OpenAlex work id (W…)."""
+def _citation_title_key(value: str) -> str:
+    """Normalise a title for identity checking, not fuzzy similarity."""
+    return re.sub(r"[^a-z0-9]+", " ", (value or "").casefold()).strip()
+
+
+async def _resolve_openalex_id(
+    http: httpx.AsyncClient,
+    raw: str,
+    title: str = "",
+    year: int | None = None,
+) -> str | None:
+    """Resolve a real paper locator/title to a verified OpenAlex work id.
+
+    DOI and OpenAlex IDs are authoritative. PMID and title searches are only
+    accepted when the returned title exactly matches after punctuation/case
+    normalisation, preventing a merely similar paper from entering snowballing.
+    """
     raw = (raw or "").strip()
     id_match = _OPENALEX_ID_RE.search(raw)
-    if id_match and "openalex.org" in raw:
+    if id_match:
         return id_match.group(0)
 
     doi_match = re.search(r'10\.\d{4,9}/[^\s"<>]+', raw)
@@ -303,18 +494,63 @@ async def _resolve_openalex_id(http: httpx.AsyncClient, raw: str) -> str | None:
             if r.status_code == 200:
                 return (r.json().get("id") or "").split("/")[-1] or None
         except Exception:
-            return None
+            pass
 
-    return id_match.group(0) if id_match else None
+    # PubMed-only search results often have no DOI but do have a stable PMID.
+    pmid_match = re.search(r'(?:pubmed(?:\.ncbi\.nlm\.nih\.gov)?/|pmid[:/\s])(\d+)', raw, re.I)
+    if pmid_match:
+        try:
+            r = await http.get(
+                f"{OPENALEX_URL}/pmid:{pmid_match.group(1)}",
+                params={"select": "id,title,publication_year"},
+                headers=_UA,
+            )
+            if r.status_code == 200:
+                candidates = [r.json()]
+                wanted = _citation_title_key(title)
+                for item in candidates:
+                    if (not wanted or _citation_title_key(item.get("title") or "") == wanted) and (
+                        year is None or item.get("publication_year") in {None, year}
+                    ):
+                        return (item.get("id") or "").split("/")[-1] or None
+        except Exception:
+            pass
+
+    # Publisher and legacy session URLs may contain neither DOI nor PMID.
+    # Search OpenAlex, then require an exact normalised-title match.
+    wanted = _citation_title_key(title)
+    if wanted:
+        try:
+            params: dict[str, str | int] = {
+                "search": title,
+                "select": "id,title,publication_year",
+                "per-page": 10,
+            }
+            if year and year > 0:
+                params["filter"] = f"publication_year:{year}"
+            r = await http.get(OPENALEX_URL, params=params, headers=_UA)
+            if r.status_code == 200:
+                for item in r.json().get("results") or []:
+                    if _citation_title_key(item.get("title") or "") == wanted:
+                        return (item.get("id") or "").split("/")[-1] or None
+        except Exception:
+            pass
+
+    return None
 
 
 @router.post("/search/citations", response_model=SearchResponse)
 async def search_citations(req: CitationRequest):
+    if req.direction not in {"backward", "forward"}:
+        raise HTTPException(status_code=422, detail="Direction must be backward or forward")
     per_page = min(max(req.limit, 1), 25)
     async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as http:
-        wid = await _resolve_openalex_id(http, req.url)
+        wid = await _resolve_openalex_id(http, req.url, req.title, req.year)
         if not wid:
-            raise HTTPException(status_code=422, detail="Could not locate this paper in OpenAlex")
+            raise HTTPException(
+                status_code=422,
+                detail="No verified OpenAlex record matched this paper's DOI, PMID, or exact title",
+            )
 
         items: list[dict] = []
         try:
@@ -325,12 +561,13 @@ async def search_citations(req: CitationRequest):
                     "per-page": per_page,
                     "sort": "cited_by_count:desc",
                 }, headers=_UA)
-                if r.status_code == 200:
-                    items = r.json().get("results", [])
+                r.raise_for_status()
+                items = r.json().get("results", [])
             else:
                 rw = await http.get(f"{OPENALEX_URL}/{wid}",
                                    params={"select": "referenced_works"}, headers=_UA)
-                refs = (rw.json().get("referenced_works") or []) if rw.status_code == 200 else []
+                rw.raise_for_status()
+                refs = rw.json().get("referenced_works") or []
                 ref_ids = "|".join(x.split("/")[-1] for x in refs[:per_page])
                 if ref_ids:
                     r = await http.get(OPENALEX_URL, params={
@@ -338,8 +575,8 @@ async def search_citations(req: CitationRequest):
                         "select": OPENALEX_FIELDS,
                         "per-page": per_page,
                     }, headers=_UA)
-                    if r.status_code == 200:
-                        items = r.json().get("results", [])
+                    r.raise_for_status()
+                    items = r.json().get("results", [])
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"OpenAlex citation lookup failed: {str(e)}")
 

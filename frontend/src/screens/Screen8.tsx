@@ -44,8 +44,7 @@ function FinalTopicCard({
   onSelect: () => void;
 }) {
   const [expanded, setExpanded] = useState(selected);
-
-  useEffect(() => { if (selected) setExpanded(true); }, [selected]);
+  const isExpanded = selected || expanded;
 
   return (
     <div className={`rounded-lg border mb-2 overflow-hidden transition-colors ${
@@ -94,9 +93,9 @@ function FinalTopicCard({
             <span className="text-[8px] font-bold text-zinc-400 uppercase tracking-wide flex-1 text-left">
               Research Questions ({topic.researchQuestions.length})
             </span>
-            <span className="text-[9px] text-zinc-400">{expanded ? "▲" : "▼"}</span>
+            <span className="text-[9px] text-zinc-400">{isExpanded ? "▲" : "▼"}</span>
           </button>
-          {expanded && (
+          {isExpanded && (
             <div className="px-3 pb-2.5 pt-1.5 space-y-2.5 border-t border-zinc-100">
               {topic.researchQuestions.map((rq, i) => (
                 <div key={i} className="space-y-0.5">
@@ -369,6 +368,8 @@ export function Screen8() {
   const [generatingStructure, setGeneratingStructure] = useState(false);
   const [topicError, setTopicError] = useState<string | null>(null);
   const [structureError, setStructureError] = useState<string | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [matchError, setMatchError] = useState<string | null>(null);
   const [showTopicsModal, setShowTopicsModal] = useState(false);
   const [showStructureModal, setShowStructureModal] = useState(false);
   const [showExport, setShowExport] = useState(false);
@@ -376,7 +377,9 @@ export function Screen8() {
   const [customStructurePrompt, setCustomStructurePrompt] = useState<string | null>(null);
 
   const [matchingDesign, setMatchingDesign] = useState(false);
-  const [catalogLoaded, setCatalogLoaded] = useState(false);
+  const [catalogLoaded, setCatalogLoaded] = useState(
+    () => (state.studyDesignOptions ?? []).some((d) => Boolean(d.category && d.guideline)),
+  );
 
   const finalTopicOptions = state.finalTopicOptions ?? [];
   const topicFinalData = state.topicFinalData ?? [];
@@ -439,7 +442,14 @@ export function Screen8() {
 
   // Phase 2: generate paper structure for selected topic + design
   async function generateStructure(prompt?: string | null) {
-    if (!selectedTopic) return;
+    if (!selectedTopic) {
+      setStructureError("Select a final topic before generating the structure.");
+      return;
+    }
+    if (!selectedDesign) {
+      setStructureError("Select a study design from the verified catalog before generating the structure.");
+      return;
+    }
     setGeneratingStructure(true);
     setStructureError(null);
     try {
@@ -456,8 +466,8 @@ export function Screen8() {
             rationale: selectedTopic.rationale,
             keyThemes: selectedTopic.keyThemes,
           },
-          study_design: selectedDesign?.name ?? "Systematic Review",
-          study_design_id: selectedDesign?.id ?? null,
+          study_design: selectedDesign.name,
+          study_design_id: selectedDesign.id,
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -485,27 +495,44 @@ export function Screen8() {
   // Auto-generate topics when Screen8 first loads
   useEffect(() => {
     if (finalTopicOptions.length === 0 && !generatingTopics) {
-      generateTopics(null);
+      const timer = window.setTimeout(() => { void generateTopics(null); }, 0);
+      return () => clearTimeout(timer);
     }
+  // Automatic initial generation only; explicit retries use the same function.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Load the fixed study-design catalog (replaces old mock/AI-generated lists)
-  useEffect(() => {
-    const hasCatalog = (state.studyDesignOptions ?? []).some((d) => d.category);
-    if (hasCatalog) { setCatalogLoaded(true); return; }
-    (async () => {
-      try {
-        const res = await apiFetch(`${API}/final-question/study-designs`);
-        if (!res.ok) throw new Error();
-        const data = await res.json();
-        const options: StudyDesignOption[] = (data.designs ?? []).map((d: { id: string; name: string; hint: string; category: string; guideline: string }) => ({
-          id: d.id, name: d.name, recommended: false, hint: d.hint,
-          category: d.category, guideline: d.guideline,
-        }));
-        if (options.length) dispatch({ type: "SET_STUDY_DESIGN_OPTIONS", options });
-      } catch { /* keep existing fallback list */ }
+  async function loadCatalog() {
+    setCatalogError(null);
+    try {
+      const res = await apiFetch(`${API}/final-question/study-designs`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.detail || `Could not load the study-design catalog (HTTP ${res.status})`);
+      }
+      const data = await res.json();
+      const options: StudyDesignOption[] = (data.designs ?? []).map((d: { id: string; name: string; hint: string; category: string; guideline: string }) => ({
+        id: d.id, name: d.name, recommended: false, hint: d.hint,
+        category: d.category, guideline: d.guideline,
+      }));
+      if (!options.length) throw new Error("The study-design catalog was empty.");
+      dispatch({ type: "SET_STUDY_DESIGN_OPTIONS", options });
       setCatalogLoaded(true);
-    })();
+    } catch (error) {
+      setCatalogLoaded(false);
+      setCatalogError(error instanceof Error ? error.message : "Could not load the study-design catalog.");
+    }
+  }
+
+  // Load the fixed backend-owned catalog. Failure is explicit; no design is
+  // silently substituted and the structure action remains unavailable.
+  useEffect(() => {
+    if (!catalogLoaded) {
+      const timer = window.setTimeout(() => { void loadCatalog(); }, 0);
+      return () => clearTimeout(timer);
+    }
+  // Initial catalog load only; Retry calls the same function explicitly.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Match the selected topic to catalog designs (LLM selects, never invents)
@@ -514,6 +541,7 @@ export function Screen8() {
     let cancelled = false;
     (async () => {
       setMatchingDesign(true);
+      setMatchError(null);
       try {
         const res = await apiFetch(`${API}/final-question/match-design`, {
           method: "POST",
@@ -525,7 +553,10 @@ export function Screen8() {
             topic_rationale: selectedTopic.rationale,
           }),
         });
-        if (!res.ok) throw new Error();
+        if (!res.ok) {
+          const body = await res.json().catch(() => null);
+          throw new Error(body?.detail || `Study-design matching failed (HTTP ${res.status})`);
+        }
         const data = await res.json();
         if (cancelled) return;
         const matches: { id: string; reason: string }[] = data.matches ?? [];
@@ -541,10 +572,14 @@ export function Screen8() {
           });
           dispatch({ type: "SELECT_STUDY_DESIGN", designId: matches[0].id });
         }
-      } catch { /* keep current selection */ }
+      } catch (error) {
+        if (!cancelled) setMatchError(error instanceof Error ? error.message : "Study-design matching failed.");
+      }
       if (!cancelled) setMatchingDesign(false);
     })();
     return () => { cancelled = true; };
+  // The selected topic id and catalog-ready flag are the request identities.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [catalogLoaded, state.selectedFinalTopicId]);
 
   // ── Paper-section editing ──
@@ -686,6 +721,29 @@ export function Screen8() {
             </p>
           </div>
           <div className="flex-1 overflow-y-auto px-2 py-2">
+            {catalogError ? (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-center">
+                <p className="text-[9px] text-red-700 mb-2">{catalogError}</p>
+                <button
+                  onClick={() => void loadCatalog()}
+                  className="px-3 h-7 bg-red-600 text-white rounded text-[10px] hover:bg-red-700"
+                >
+                  Retry catalog
+                </button>
+              </div>
+            ) : !catalogLoaded ? (
+              <div className="flex items-center justify-center gap-2 py-8 text-[9px] text-zinc-500">
+                <span className="w-3 h-3 border border-zinc-300 border-t-zinc-700 rounded-full animate-spin" />
+                Loading verified catalog…
+              </div>
+            ) : (
+              <>
+            {matchError && (
+              <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 mb-2">
+                <p className="text-[9px] text-amber-700">{matchError}</p>
+                <p className="text-[8px] text-amber-600 mt-0.5">Select a design manually from the catalog below.</p>
+              </div>
+            )}
             {recommendedDesign && !matchingDesign && (
               <div className="rounded-lg border border-green-200 bg-green-50 px-2.5 py-2 mb-2">
                 <p className="text-[8px] font-bold text-green-600 uppercase tracking-wide mb-0.5">✦ Best match</p>
@@ -710,6 +768,8 @@ export function Screen8() {
                 ))}
               </div>
             ))}
+              </>
+            )}
           </div>
         </div>
 
@@ -728,11 +788,11 @@ export function Screen8() {
                 {selectedDesign.guideline && <span className="ml-1 text-green-500 font-normal">· {selectedDesign.guideline}</span>}
               </span>
             )}
-            {selectedTopic && (
+            {selectedTopic && catalogLoaded && (
               <div className="flex rounded overflow-hidden">
                 <button
                   onClick={() => generateStructure(customStructurePrompt)}
-                  disabled={generatingStructure}
+                  disabled={generatingStructure || !selectedDesign}
                   className="flex items-center gap-1 px-2.5 h-6 bg-blue-600 text-white rounded-l text-[9px] font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors shrink-0"
                 >
                   {generatingStructure
@@ -780,10 +840,10 @@ export function Screen8() {
                 {selectedTopic && (
                   <button
                     onClick={() => generateStructure(customStructurePrompt)}
-                    disabled={generatingStructure}
+                    disabled={generatingStructure || !selectedDesign}
                     className="px-4 h-8 bg-blue-600 text-white rounded text-[11px] font-medium hover:bg-blue-700 disabled:opacity-50"
                   >
-                    Generate Structure
+                    {selectedDesign ? "Generate Structure" : "Select a study design first"}
                   </button>
                 )}
               </div>
@@ -830,7 +890,9 @@ export function Screen8() {
           )}
           <button
             onClick={() => setShowExport(true)}
-            className="px-5 h-8 bg-green-600 text-white rounded text-[12px] font-semibold hover:bg-green-700 transition-colors flex items-center gap-2"
+            disabled={!selectedTopic || !selectedDesign || paperSections.length === 0}
+            title={!selectedTopic || !selectedDesign || paperSections.length === 0 ? "Select a topic and design, then generate the paper structure before exporting." : undefined}
+            className="px-5 h-8 bg-green-600 text-white rounded text-[12px] font-semibold hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
           >
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
               <path d="M6 1v7M3 5.5l3 3 3-3M1 10h10" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>

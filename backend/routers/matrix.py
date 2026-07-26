@@ -594,7 +594,8 @@ Given raw text from a research paper (or a web page describing it), identify:
 - title: the full paper title
 - authors: author names as "A. Name, B. Name" — first three, then " et al." if more
 - year: publication year as an integer, or null if not determinable
-- abstract: the paper's abstract verbatim if present; otherwise a faithful 3–5 sentence summary of the paper's aim, methods and findings from the available text; empty string if impossible
+- abstract: copy the paper's explicitly labelled abstract verbatim if it is present; otherwise return an empty string
+Never write a summary into the abstract field and never infer missing bibliographic facts.
 Respond ONLY with valid JSON: {"title": "...", "authors": "...", "year": 2021, "abstract": "..."}
 """
 

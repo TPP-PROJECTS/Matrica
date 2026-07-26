@@ -77,7 +77,7 @@ export function CustomizePromptModal({ promptKey, title, onClose, onGenerate, in
       }
     }
     fetchPrompt()
-  }, [promptKey])
+  }, [promptKey, initialCustomPrompt])
 
   function handleReset() {
     const initEdits: Record<number, string> = {}

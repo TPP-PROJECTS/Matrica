@@ -53,6 +53,12 @@ export function Screen1() {
   const [showPromptModal, setShowPromptModal] = useState(false)
   const [customPrompt, setCustomPrompt] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messageSequenceRef = useRef(0)
+
+  function nextMessageId() {
+    messageSequenceRef.current += 1
+    return `msg-${state.sessionId}-${messageSequenceRef.current}`
+  }
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -81,7 +87,7 @@ export function Screen1() {
       dispatch({
         type: 'ADD_CHAT_MESSAGE',
         message: {
-          id: `msg-${Date.now()}`,
+          id: nextMessageId(),
           type: 'assistant',
           content: data.reply,
           timestamp: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
@@ -96,11 +102,11 @@ export function Screen1() {
           dispatch({ type: 'UPDATE_PROFILE', field, value })
         }
       }
-    } catch (err) {
+    } catch {
       dispatch({
         type: 'ADD_CHAT_MESSAGE',
         message: {
-          id: `msg-${Date.now()}`,
+          id: nextMessageId(),
           type: 'assistant',
           content: 'Sorry, I had trouble connecting. Please check that the backend is running.',
           timestamp: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),

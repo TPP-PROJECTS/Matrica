@@ -1,9 +1,11 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useApp } from '../store/AppContext'
 import { QuestionButton } from '../components/shared/QuestionButton'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
-import type { TopicCard, QueryCard } from '../types'
+import type { TopicCard, QueryCard, ResultCard, SearchFilters } from '../types'
 import { API, apiFetch } from '../lib/api'
+import { scorePaperRelevance } from '../lib/scorePaper'
+import { journalEntry } from '../lib/decisionJournal'
 
 
 function topicTypePill(type: TopicCard['type']) {
@@ -35,7 +37,18 @@ function TopicCardItem({ topic }: { topic: TopicCard }) {
   async function handleExplainType() {
     if (typeExplOpen) { setTypeExplOpen(false); return }
     setTypeExplOpen(true)
-    if (typeExplText) return
+    if (typeExplText) {
+      dispatch({
+        type: 'ADD_DECISION_JOURNAL_ENTRY',
+        entry: journalEntry({
+          kind: 'ai_explanation_view', step: 4,
+          action: 'Reopened AI topic-type explanation',
+          entityType: 'topic', entityId: topic.id, entityLabel: topic.title,
+          details: typeExplText,
+        }),
+      })
+      return
+    }
     setLoadingTypeExpl(true)
     try {
       const res = await apiFetch(`${API}/topics/explain-type`, {
@@ -46,6 +59,18 @@ function TopicCardItem({ topic }: { topic: TopicCard }) {
       if (!res.ok) throw new Error()
       const data = await res.json()
       setTypeExplText(data.explanation)
+      dispatch({
+        type: 'ADD_DECISION_JOURNAL_ENTRY',
+        entry: journalEntry({
+          kind: 'ai_explanation_view',
+          step: 4,
+          action: 'Viewed AI topic-type explanation',
+          entityType: 'topic',
+          entityId: topic.id,
+          entityLabel: topic.title,
+          details: data.explanation,
+        }),
+      })
     } catch {
       setTypeExplText('Could not load explanation.')
     } finally {
@@ -57,7 +82,18 @@ function TopicCardItem({ topic }: { topic: TopicCard }) {
     e.stopPropagation()
     if (reasonOpen) { setReasonOpen(false); return }
     setReasonOpen(true)
-    if (reasonText) return
+    if (reasonText) {
+      dispatch({
+        type: 'ADD_DECISION_JOURNAL_ENTRY',
+        entry: journalEntry({
+          kind: 'ai_explanation_view', step: 4,
+          action: 'Reopened “Why this topic?” reasoning',
+          entityType: 'topic', entityId: topic.id, entityLabel: topic.title,
+          details: reasonText,
+        }),
+      })
+      return
+    }
     setLoadingReason(true)
     try {
       const res = await apiFetch(`${API}/topics/reason`, {
@@ -74,6 +110,18 @@ function TopicCardItem({ topic }: { topic: TopicCard }) {
       if (!res.ok) throw new Error()
       const data = await res.json()
       setReasonText(data.reasoning)
+      dispatch({
+        type: 'ADD_DECISION_JOURNAL_ENTRY',
+        entry: journalEntry({
+          kind: 'ai_explanation_view',
+          step: 4,
+          action: 'Viewed “Why this topic?” reasoning',
+          entityType: 'topic',
+          entityId: topic.id,
+          entityLabel: topic.title,
+          details: data.reasoning,
+        }),
+      })
     } catch {
       setReasonText('Could not load reasoning.')
     } finally {
@@ -279,30 +327,97 @@ function AddTopicForm({ onClose }: { onClose: () => void }) {
 }
 
 // ── Centre: Query card ────────────────────────────────────────────────────────
+const PAGE_SIZE = 8
+
 function QueryCardItem({ query }: { query: QueryCard }) {
   const { dispatch, state } = useApp()
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [text, setText] = useState(query.text)
   const [searching, setSearching] = useState(false)
-  const [resultCount, setResultCount] = useState<number | null>(null)
-  const [searchError, setSearchError] = useState(false)
+  // Cumulative across pages, so "load more" reads as one growing search rather
+  // than a series of unrelated ones.
+  const [retrieved, setRetrieved] = useState(0)
+  const [totalAvailable, setTotalAvailable] = useState<number | null>(null)
+  const [nextPage, setNextPage] = useState(1)
+  const [hasMore, setHasMore] = useState(false)
+  const [searchError, setSearchError] = useState<string | null>(null)
+  const [sourceWarning, setSourceWarning] = useState<string | null>(null)
+  const [searchedSources, setSearchedSources] = useState<string[]>(['OpenAlex', 'PubMed'])
+  const [editJustification, setEditJustification] = useState('')
 
-  async function handleSearch(e: React.MouseEvent) {
-    e.stopPropagation()
+  function saveQueryEdit() {
+    const next = text.trim()
+    if (!next || next === query.text) return
+    dispatch({
+      type: 'SET_QUERIES',
+      queries: state.queries.map(q => q.id === query.id ? { ...q, text: next, stale: true } : q),
+    })
+    dispatch({
+      type: 'ADD_DECISION_JOURNAL_ENTRY',
+      entry: journalEntry({
+        kind: 'justification',
+        step: 4,
+        action: 'Edited search query',
+        entityType: 'query',
+        entityId: query.id,
+        entityLabel: `Query ${query.queryN}`,
+        previousValue: query.text,
+        newValue: next,
+        justification: editJustification.trim() || undefined,
+      }),
+    })
+    setEditJustification('')
+  }
+
+  function duplicateQuery() {
+    const nextNumber = Math.max(0, ...state.queries.map(item => item.queryN)) + 1
+    dispatch({
+      type: 'SET_QUERIES',
+      queries: [
+        ...state.queries,
+        {
+          ...query,
+          id: `query-manual-${state.sessionId}-${nextNumber}`,
+          queryN: nextNumber,
+          text,
+          resultCount: 0,
+          stale: false,
+        },
+      ],
+    })
+  }
+
+  function deleteQuery() {
+    dispatch({ type: 'SET_QUERIES', queries: state.queries.filter(item => item.id !== query.id) })
+  }
+
+  async function runSearch(page: number) {
     if (searching) return
     setSearching(true)
-    setSearchError(false)
+    setSearchError(null)
+    setSourceWarning(null)
     try {
       const res = await apiFetch(`${API}/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: text, limit: 8 }),
+        body: JSON.stringify({
+          query: text,
+          limit: PAGE_SIZE,
+          page,
+          filters: state.searchFilters,
+        }),
       })
-      if (!res.ok) throw new Error()
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        throw new Error(body?.detail || `Search failed (HTTP ${res.status})`)
+      }
       const data = await res.json()
+      setSearchedSources(data.sources_searched ?? [])
+      if (data.source_errors?.length) setSourceWarning(data.source_errors.join(' · '))
       const papers = data.papers as { title: string; authors: string; year: number | null; url: string; openAccessUrl: string | null; abstract: string }[]
 
       // Map to ResultCard format and accumulate into store
-      const mapped = papers.map((p, i) => ({
+      const mapped: ResultCard[] = papers.map((p, i) => ({
         id: `search-${query.id}-${Date.now()}-${i}`,
         title: p.title,
         authors: p.authors,
@@ -314,37 +429,44 @@ function QueryCardItem({ query }: { query: QueryCard }) {
         queryId: query.id,
         confidence: 'none' as const,
         isDuplicate: false,
-        status: null as null,
+        status: null,
         notes: '',
+        origin: 'search',
+        scoreStatus: 'pending',
       }))
 
-      dispatch({ type: 'ADD_SEARCH_RESULTS', results: mapped })
-      setResultCount(papers.length)
-
-      // Fire recognise for each paper in background — update relevance score as results arrive
-      mapped.forEach(paper => {
-        apiFetch(`${API}/recognise`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            mode: 'paper_relevance',
-            paper: { title: paper.title, abstract: paper.abstract, authors: paper.authors, year: paper.year },
-            profile: state.profile,
-          }),
-        })
-          .then(r => r.ok ? r.json() : null)
-          .then(data => {
-            if (!data) return
-            const confidence = data.score >= 75 ? 'high' : data.score >= 45 ? 'medium' : data.score >= 15 ? 'low' : 'none'
-            dispatch({ type: 'UPDATE_RESULT_RELEVANCE', paperId: paper.id, score: data.score, confidence })
-          })
-          .catch(() => { /* silent — card stays at 0 */ })
+      dispatch({
+        type: 'ADD_SEARCH_RESULTS',
+        results: mapped,
+        // Only the first page carries the database total; later pages report the
+        // same figure and would just overwrite it with itself.
+        identifiedFor: page === 1
+          ? { queryId: query.id, count: data.total_available ?? papers.length }
+          : undefined,
       })
-    } catch {
-      setSearchError(true)
+      setRetrieved(prev => (page === 1 ? papers.length : prev + papers.length))
+      if (page === 1) setTotalAvailable(data.total_available ?? null)
+      setHasMore(Boolean(data.has_more))
+      setNextPage(page + 1)
+
+      // Assess relevance in the background; cards update as scores arrive.
+      mapped.forEach(paper => { void scorePaperRelevance(paper, state.profile, dispatch) })
+    } catch (error) {
+      setSearchError(error instanceof Error ? error.message : 'Search failed.')
     } finally {
       setSearching(false)
     }
+  }
+
+  function handleSearch(e: React.MouseEvent) {
+    e.stopPropagation()
+    saveQueryEdit()
+    void runSearch(1)
+  }
+
+  function handleLoadMore(e: React.MouseEvent) {
+    e.stopPropagation()
+    void runSearch(nextPage)
   }
 
   return (
@@ -358,45 +480,193 @@ function QueryCardItem({ query }: { query: QueryCard }) {
         {query.stale && (
           <span className="text-[9px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded border border-amber-300">stale</span>
         )}
-        {resultCount !== null && !searchError && (
-          <span className="text-[9px] bg-teal-100 text-teal-700 px-1.5 py-0.5 rounded border border-teal-200">
-            +{resultCount} added
+        {retrieved > 0 && !searchError && (
+          <span
+            className="text-[9px] bg-teal-100 text-teal-700 px-1.5 py-0.5 rounded border border-teal-200"
+            title={totalAvailable !== null ? `${totalAvailable.toLocaleString()} records match this query across OpenAlex and PubMed` : undefined}
+          >
+            {retrieved}{totalAvailable !== null ? ` / ${totalAvailable.toLocaleString()}` : ''} retrieved
           </span>
         )}
         {searchError && (
-          <span className="text-[9px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded border border-red-200">error</span>
+          <span title={searchError} className="text-[9px] bg-red-100 text-red-600 px-1.5 py-0.5 rounded border border-red-200">error</span>
+        )}
+        {sourceWarning && !searchError && (
+          <span title={sourceWarning} className="text-[9px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded border border-amber-200">
+            partial source failure
+          </span>
         )}
       </div>
 
       {/* Query text */}
       <textarea
+        ref={textareaRef}
         value={text}
         onChange={e => setText(e.target.value)}
         rows={3}
         className="w-full bg-zinc-50 border border-zinc-300 rounded text-[10px] text-zinc-800 p-1.5 resize-none focus:outline-none focus:border-zinc-500 font-mono"
       />
+      {text.trim() !== query.text.trim() && (
+        <div className="flex items-center gap-2">
+          <input
+            value={editJustification}
+            onChange={e => setEditJustification(e.target.value)}
+            placeholder="Why did you change this query? (optional)"
+            className="flex-1 h-7 border border-blue-200 bg-blue-50/40 rounded px-2 text-[10px] text-zinc-700 outline-none focus:border-blue-400"
+          />
+          <button
+            onClick={saveQueryEdit}
+            className="px-2.5 h-7 bg-blue-600 text-white rounded text-[10px] font-semibold hover:bg-blue-700"
+          >
+            Save edit
+          </button>
+        </div>
+      )}
 
       {/* Actions row */}
       <div className="flex items-center gap-2">
-        <button className="text-[10px] text-zinc-400 hover:text-zinc-700">Edit</button>
-        <button className="text-[10px] text-zinc-400 hover:text-zinc-700">Duplicate</button>
-        <button className="text-[10px] text-red-400 hover:text-red-600">Delete</button>
+        <button
+          onClick={() => { textareaRef.current?.focus(); textareaRef.current?.select() }}
+          className="text-[10px] text-zinc-400 hover:text-zinc-700"
+        >
+          Edit
+        </button>
+        <button onClick={duplicateQuery} className="text-[10px] text-zinc-400 hover:text-zinc-700">
+          Duplicate
+        </button>
+        <button onClick={deleteQuery} className="text-[10px] text-red-400 hover:text-red-600">
+          Delete
+        </button>
         <div className="flex-1" />
-        <span className="text-[9px] text-zinc-400" title="This tool searches the OpenAlex and PubMed databases">
-          Searches OpenAlex · PubMed
+        <span className="text-[9px] text-zinc-400" title={sourceWarning || 'Literature databases searched for the latest request'}>
+          Searches {searchedSources.length ? searchedSources.join(' · ') : 'not completed'}
         </span>
+        {hasMore && !searching && (
+          <button
+            onClick={handleLoadMore}
+            title="Fetch the next page of results for this query"
+            className="px-2.5 h-[26px] border border-zinc-300 rounded text-[10px] font-semibold text-zinc-700 hover:bg-zinc-50 transition-colors"
+          >
+            Load more
+          </button>
+        )}
         <button
           onClick={handleSearch}
-          disabled={searching}
+          disabled={searching || !text.trim()}
           className="flex items-center gap-1.5 px-3 h-[26px] bg-zinc-900 text-white rounded text-[10px] font-semibold hover:bg-zinc-700 disabled:opacity-50 transition-colors"
         >
           {searching
             ? <span className="w-3 h-3 border-2 border-zinc-500 border-t-white rounded-full animate-spin" />
             : <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><circle cx="5" cy="5" r="3.5" stroke="white" strokeWidth="1.5"/><path d="M8 8l2 2" stroke="white" strokeWidth="1.5" strokeLinecap="round"/></svg>
           }
-          {searching ? 'Searching…' : 'Search'}
+          {searching ? 'Searching…' : retrieved > 0 ? 'Search again' : 'Search'}
         </button>
       </div>
+    </div>
+  )
+}
+
+// ── Search filter bar ─────────────────────────────────────────────────────────
+// Narrowing applied at the database, before anything reaches screening. Kept in
+// the store so it survives reloads and is reported alongside the search record.
+
+const LANGUAGES: { code: string; label: string }[] = [
+  { code: '',   label: 'Any language' },
+  { code: 'en', label: 'English' },
+  { code: 'zh', label: 'Chinese' },
+  { code: 'fr', label: 'French' },
+  { code: 'de', label: 'German' },
+  { code: 'es', label: 'Spanish' },
+  { code: 'ja', label: 'Japanese' },
+  { code: 'pt', label: 'Portuguese' },
+  { code: 'ru', label: 'Russian' },
+]
+
+function SearchFilterBar() {
+  const { state, dispatch } = useApp()
+  const f = state.searchFilters
+
+  function update(patch: Partial<SearchFilters>) {
+    dispatch({ type: 'SET_SEARCH_FILTERS', filters: { ...f, ...patch } })
+  }
+
+  function parseYear(raw: string): number | null {
+    const n = parseInt(raw, 10)
+    return Number.isFinite(n) && n >= 1000 && n <= 9999 ? n : null
+  }
+
+  const active =
+    f.yearFrom !== null || f.yearTo !== null ||
+    f.openAccessOnly || f.excludePreprints || f.language !== ''
+
+  return (
+    <div className="border-b border-zinc-200 bg-zinc-50 px-2 py-1.5 flex items-center gap-2 flex-wrap shrink-0">
+      <span
+        className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide"
+        title="Limits are filters applied by OpenAlex and PubMed before papers are returned."
+      >
+        Search limits
+      </span>
+
+      <div className="flex items-center gap-1">
+        <span className="text-[9px] text-zinc-500">Publication year</span>
+        <input
+          type="number"
+          value={f.yearFrom ?? ''}
+          onChange={e => update({ yearFrom: parseYear(e.target.value) })}
+          placeholder="From"
+          aria-label="Earliest publication year"
+          title="Earliest publication year to include"
+          className="w-[58px] h-5 border border-zinc-300 rounded px-1 text-[10px] text-zinc-700 bg-white focus:outline-none focus:border-zinc-500"
+        />
+        <span className="text-[10px] text-zinc-400">–</span>
+        <input
+          type="number"
+          value={f.yearTo ?? ''}
+          onChange={e => update({ yearTo: parseYear(e.target.value) })}
+          placeholder="To"
+          aria-label="Latest publication year"
+          title="Latest publication year to include"
+          className="w-[58px] h-5 border border-zinc-300 rounded px-1 text-[10px] text-zinc-700 bg-white focus:outline-none focus:border-zinc-500"
+        />
+      </div>
+
+      <select
+        value={f.language}
+        onChange={e => update({ language: e.target.value })}
+        className="h-5 border border-zinc-300 rounded px-1 text-[10px] text-zinc-700 bg-white focus:outline-none focus:border-zinc-500"
+      >
+        {LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}
+      </select>
+
+      <label className="flex items-center gap-1 text-[10px] text-zinc-600 cursor-pointer" title="Only papers with a free full-text version">
+        <input
+          type="checkbox"
+          checked={f.openAccessOnly}
+          onChange={e => update({ openAccessOnly: e.target.checked })}
+          className="w-3 h-3 accent-zinc-900"
+        />
+        Open access
+      </label>
+
+      <label className="flex items-center gap-1 text-[10px] text-zinc-600 cursor-pointer" title="Drop preprints, which have not been peer-reviewed">
+        <input
+          type="checkbox"
+          checked={f.excludePreprints}
+          onChange={e => update({ excludePreprints: e.target.checked })}
+          className="w-3 h-3 accent-zinc-900"
+        />
+        No preprints
+      </label>
+
+      {active && (
+        <button
+          onClick={() => update({ yearFrom: null, yearTo: null, openAccessOnly: false, excludePreprints: false, language: '' })}
+          className="text-[9px] text-red-400 hover:text-red-600"
+        >
+          ✕ clear
+        </button>
+      )}
     </div>
   )
 }
@@ -408,12 +678,14 @@ function ResultCardItem({
   anySelected,
   onToggle,
   onDelete,
+  onRescore,
 }: {
-  result: { id: string; title: string; authors: string; year: number; source?: string; relevanceScore?: number; confidence?: string }
+  result: ResultCard
   selected: boolean
   anySelected: boolean
   onToggle: (id: string) => void
   onDelete: (id: string) => void
+  onRescore: (paper: ResultCard) => void
 }) {
   const title = result.source
     ? <a href={result.source} target="_blank" rel="noopener noreferrer" className="hover:underline text-blue-800">{result.title}</a>
@@ -447,18 +719,30 @@ function ResultCardItem({
         <p className="text-[10px] text-zinc-400 mt-0.5">
           {result.authors}{result.year ? ` · ${result.year}` : ''}
         </p>
-        {score > 0 && (
+        {/* Relevance: the bar once assessed, otherwise the assessment's state.
+            A failed assessment says so and offers a retry — previously it was
+            indistinguishable from a paper scored 0%. */}
+        {result.scoreStatus === 'failed' ? (
+          <div className="flex items-center gap-1.5 mt-1">
+            <span className="text-[9px] text-red-500">assessment failed</span>
+            <button
+              onClick={() => onRescore(result)}
+              className="text-[9px] text-blue-500 hover:text-blue-700 underline"
+            >
+              retry
+            </button>
+          </div>
+        ) : result.scoreStatus === 'pending' ? (
+          <div className="flex items-center gap-1 mt-1">
+            <span className="w-2 h-2 border border-zinc-300 border-t-purple-500 rounded-full animate-spin" />
+            <span className="text-[9px] text-zinc-400">assessing…</span>
+          </div>
+        ) : (
           <div className="flex items-center gap-1.5 mt-1">
             <div className="flex-1 h-1 bg-zinc-100 rounded overflow-hidden">
               <div className={`h-full rounded ${barColor}`} style={{ width: `${score}%` }} />
             </div>
             <span className="text-[9px] text-zinc-400 shrink-0">{score}%</span>
-          </div>
-        )}
-        {score === 0 && conf === 'none' && (
-          <div className="flex items-center gap-1 mt-1">
-            <span className="w-2 h-2 border border-zinc-300 border-t-purple-500 rounded-full animate-spin" />
-            <span className="text-[9px] text-zinc-400">assessing…</span>
           </div>
         )}
       </div>
@@ -478,6 +762,7 @@ export function Screen3() {
   const [showConfirmModal, setShowConfirmModal] = useState(false)
   const [customRegenPrompt, setCustomRegenPrompt] = useState<string | null>(null)
   const [customConfirmPrompt, setCustomConfirmPrompt] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
 
   function toggleResult(id: string) {
     setSelectedResultIds(prev => {
@@ -494,26 +779,63 @@ export function Screen3() {
     dispatch({ type: 'REMOVE_RESULTS', paperIds: [id] })
     setSelectedResultIds(prev => { const n = new Set(prev); n.delete(id); return n })
   }
+  function rescore(paper: ResultCard) {
+    dispatch({ type: 'SET_RESULT_SCORE_STATUS', paperId: paper.id, status: 'pending' })
+    void scorePaperRelevance(paper, state.profile, dispatch)
+  }
 
   const selectedTopics = state.topics.filter(t => t.selected)
   const selectedTopicIds = selectedTopics.map(t => t.id)
   const visibleQueries = state.queries.filter(q => selectedTopicIds.includes(q.topicId))
 
+  function addManualQuery() {
+    const topic = selectedTopics[0]
+    if (!topic) {
+      setActionError('Select at least one topic before adding a query.')
+      return
+    }
+    const queryN = Math.max(0, ...state.queries.map(query => query.queryN)) + 1
+    dispatch({
+      type: 'SET_QUERIES',
+      queries: [
+        ...state.queries,
+        {
+          id: `query-manual-${state.sessionId}-${queryN}`,
+          queryN,
+          topicId: topic.id,
+          text: '',
+          qualityScore: 0,
+          priority: 'med',
+          databases: ['OpenAlex', 'PubMed'],
+          resultCount: 0,
+          stale: false,
+        },
+      ],
+    })
+    setActionError(null)
+    setQueriesGenerated(true)
+  }
+
   async function handleRegenerate(prompt?: string | null) {
     if (isRegenerating) return
     setIsRegenerating(true)
+    setActionError(null)
     try {
       const res = await apiFetch(`${API}/topics/generate-profile`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...state.profile, custom_system_prompt: prompt ?? null }),
       })
-      if (!res.ok) throw new Error()
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        throw new Error(body?.detail || `Topic generation failed (HTTP ${res.status})`)
+      }
       const data = await res.json()
+      if (!data.topics?.length) throw new Error('Topic generation returned no topics.')
       dispatch({ type: 'SET_TOPICS', topics: data.topics })
       setQueriesGenerated(false)
-    } catch {
-      // silently fail
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Topic generation failed.')
     } finally {
       setIsRegenerating(false)
     }
@@ -522,6 +844,7 @@ export function Screen3() {
   async function handleConfirm(prompt?: string | null) {
     if (isConfirming || selectedTopics.length === 0) return
     setIsConfirming(true)
+    setActionError(null)
     try {
       const res = await apiFetch(`${API}/queries/generate`, {
         method: 'POST',
@@ -532,12 +855,16 @@ export function Screen3() {
           custom_system_prompt: prompt ?? null,
         }),
       })
-      if (!res.ok) throw new Error()
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        throw new Error(body?.detail || `Query generation failed (HTTP ${res.status})`)
+      }
       const data = await res.json()
+      if (!data.queries?.length) throw new Error('Query generation returned no queries.')
       dispatch({ type: 'SET_QUERIES', queries: data.queries })
       setQueriesGenerated(true)
-    } catch {
-      // silently fail
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Query generation failed.')
     } finally {
       setIsConfirming(false)
     }
@@ -545,6 +872,12 @@ export function Screen3() {
 
   return (
     <div className="flex flex-col h-full">
+      {actionError && (
+        <div className="h-8 shrink-0 flex items-center gap-2 px-3 bg-red-50 border-b border-red-200 text-[10px] text-red-700">
+          <span className="flex-1">{actionError}</span>
+          <button onClick={() => setActionError(null)} className="text-red-500 hover:text-red-800">Dismiss</button>
+        </div>
+      )}
       <div className="flex flex-1 overflow-hidden">
 
         {/* Left — Topic Selection */}
@@ -608,9 +941,16 @@ export function Screen3() {
         <div className="flex-1 flex flex-col border-r border-zinc-200 overflow-hidden">
           <div className="h-[30px] bg-zinc-900 flex items-center px-3 gap-2 shrink-0">
             <span className="text-white text-[10px] font-bold tracking-wider flex-1">QUERIES</span>
-            <button className="text-zinc-300 text-[9px] hover:text-white">+ Add</button>
-            <button className="text-zinc-300 text-[9px] hover:text-white">↺ Regen All</button>
+            <button onClick={addManualQuery} className="text-zinc-300 text-[9px] hover:text-white">+ Add</button>
+            <button
+              onClick={() => handleConfirm(customConfirmPrompt)}
+              disabled={isConfirming || selectedTopics.length === 0}
+              className="text-zinc-300 text-[9px] hover:text-white disabled:opacity-40"
+            >
+              ↺ Regen All
+            </button>
           </div>
+          <SearchFilterBar />
           <div className="flex-1 overflow-y-auto p-2">
             {visibleQueries.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-center px-4">
@@ -633,6 +973,14 @@ export function Screen3() {
           <div className="h-[30px] bg-zinc-900 flex items-center px-3 gap-2 shrink-0">
             <span className="text-white text-[10px] font-bold flex-1">Search Results</span>
             <span className="text-zinc-300 text-[9px]">{state.results.length} found</span>
+            {state.screening.duplicatesRemoved > 0 && (
+              <span
+                className="text-amber-300 text-[9px]"
+                title="Papers already retrieved by an earlier query, matched by DOI or title and kept only once"
+              >
+                {state.screening.duplicatesRemoved} dup removed
+              </span>
+            )}
             {selectedResultIds.size > 0 && (
               <button
                 onClick={deleteSelected}
@@ -664,6 +1012,7 @@ export function Screen3() {
                   anySelected={selectedResultIds.size > 0}
                   onToggle={toggleResult}
                   onDelete={deleteSingle}
+                  onRescore={rescore}
                 />
               ))
             )}

@@ -1,5 +1,4 @@
 import os
-import json
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from openai import AsyncOpenAI
@@ -64,6 +63,17 @@ class GenerateResponse(BaseModel):
     keyword: str
 
 
+KEYWORD_TOPICS_SYSTEM_PROMPT = """You are an academic research assistant.
+Generate specific, researchable topic ideas for the supplied keyword. These are
+AI-generated research directions, not claims about published studies.
+
+Return valid JSON only:
+{"topics": [{"title": "...", "description": "...", "tags": ["...", "..."]}]}
+
+Use the requested language. Do not invent citations, paper titles, authors,
+datasets, statistics, products, or study findings."""
+
+
 class ProfileRequest(BaseModel):
     domain: str
     population: str = ""
@@ -91,16 +101,43 @@ class TopicsFromProfileResponse(BaseModel):
 
 @router.post("/topics/generate", response_model=GenerateResponse)
 async def generate_topics(req: GenerateRequest):
-    sample_topics = [
-        Topic(
-            id=i + 1,
-            title=f"{req.keyword} 相关话题 #{i + 1}",
-            description=f"这是关于 {req.keyword} 的第 {i + 1} 个话题示例描述。",
-            tags=[req.keyword, f"标签{i + 1}"],
+    keyword = req.keyword.strip()
+    if not keyword:
+        raise HTTPException(status_code=422, detail="Keyword is required")
+    count = min(max(req.count, 1), 20)
+    try:
+        response = await client.responses.create(
+            model=MODEL,
+            instructions=KEYWORD_TOPICS_SYSTEM_PROMPT,
+            input=(
+                f"Keyword: {keyword}\n"
+                f"Number of topic ideas: {count}\n"
+                f"Response language: {req.language}"
+            ),
         )
-        for i in range(req.count)
-    ]
-    return GenerateResponse(topics=sample_topics, keyword=req.keyword)
+        data = extract_json(response.output_text or "")
+        if not isinstance(data, dict):
+            raise HTTPException(status_code=502, detail="AI returned invalid topic JSON")
+        raw_topics = data.get("topics")
+        if not isinstance(raw_topics, list) or not raw_topics:
+            raise HTTPException(status_code=502, detail="AI returned no topic ideas")
+        topics = [
+            Topic(
+                id=index + 1,
+                title=str(item.get("title", "")).strip(),
+                description=str(item.get("description", "")).strip(),
+                tags=[str(tag).strip() for tag in item.get("tags", []) if str(tag).strip()],
+            )
+            for index, item in enumerate(raw_topics[:count])
+            if isinstance(item, dict) and str(item.get("title", "")).strip()
+        ]
+        if not topics:
+            raise HTTPException(status_code=502, detail="AI returned no valid topic ideas")
+        return GenerateResponse(topics=topics, keyword=keyword)
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"OpenAI error: {str(error)}")
 
 
 @router.post("/topics/generate-profile", response_model=TopicsFromProfileResponse)

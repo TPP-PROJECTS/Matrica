@@ -1,21 +1,15 @@
 import { useState } from 'react'
 import { useApp } from '../store/AppContext'
 import { AIBadge } from '../components/shared/AIBadge'
-import { QuestionButton } from '../components/shared/QuestionButton'
 import { WordCountBar } from '../components/shared/QualityBar'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
 import type { MatrixCell } from '../types'
 import { API, apiFetch } from '../lib/api'
+import { journalEntry } from '../lib/decisionJournal'
 
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const META_COLS = new Set(['#', 'Title', 'Authors', 'Year'])
-
-const EXAMPLE_PATTERNS = [
-  'The reviewed papers establish X, but they do not yet explain how Y operates for Z population/context…',
-  'Although several studies report X, the evidence does not directly compare Y against Z, leaving the practical decision point unresolved…',
-  'Current studies measure X mostly through short-term or proxy outcomes, so the longer-term implementation implications remain unclear…',
-]
 
 // ── Heatmap cell helpers ──────────────────────────────────────────────────────
 function cellBg(cell: MatrixCell | undefined) {
@@ -304,15 +298,37 @@ export function Screen7() {
   const [selectedCols, setSelectedCols] = useState<string[]>([])
   const [selectedSysCols, setSelectedSysCols] = useState<string[]>([])
   const [regenerating, setRegenerating] = useState(false)
-  const [confirming, setConfirming] = useState(false)
   const [showRegenModal, setShowRegenModal] = useState(false)
   const [customRegenPrompt, setCustomRegenPrompt] = useState<string | null>(null)
+  const [gapDraft, setGapDraft] = useState(state.gapStatement)
+  const [gapJustification, setGapJustification] = useState('')
   // Schema-axis gaps live in AppState: they persist across reloads and are sent
   // to the assistant, so it can act on requests that reference them.
   const axisGaps = state.axisGaps
   const [axisLoading, setAxisLoading] = useState<string | null>(null)
+  const [generationError, setGenerationError] = useState<string | null>(null)
 
-  const wordCount = state.gapStatement.split(/\s+/).filter(Boolean).length
+  const wordCount = gapDraft.split(/\s+/).filter(Boolean).length
+
+  function saveGapEdit() {
+    if (gapDraft === state.gapStatement) return
+    dispatch({ type: 'UPDATE_GAP_STATEMENT', text: gapDraft })
+    dispatch({
+      type: 'ADD_DECISION_JOURNAL_ENTRY',
+      entry: journalEntry({
+        kind: 'justification',
+        step: 8,
+        action: 'Manually edited gap statement',
+        entityType: 'gap_statement',
+        entityId: 'overall-gap-statement',
+        entityLabel: 'Overall Gap Statement',
+        previousValue: state.gapStatement,
+        newValue: gapDraft,
+        justification: gapJustification.trim() || undefined,
+      }),
+    })
+    setGapJustification('')
+  }
 
   function toggleCol(col: string) {
     const isSelected = selectedCols.includes(col)
@@ -324,11 +340,6 @@ export function Screen7() {
     const isSelected = selectedSysCols.includes(col)
     setSelectedSysCols(isSelected ? [] : [col])
     if (!isSelected) void handleGenerateAxisGap('sys', col)
-  }
-
-  function insertIntoStatement(text: string) {
-    const sep = state.gapStatement.trim() ? '\n\n' : ''
-    dispatch({ type: 'UPDATE_GAP_STATEMENT', text: state.gapStatement + sep + text })
   }
 
   function buildGapPayload(prompt?: string | null, focusCols: string[] = [], focusSysCols: string[] = []) {
@@ -374,62 +385,57 @@ export function Screen7() {
   async function handleGenerateAxisGap(kind: 'lit' | 'sys', col: string) {
     const key = `${kind}:${col}`
     setAxisLoading(key)
+    setGenerationError(null)
     try {
       const res = await apiFetch(`${API}/gaps/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildGapPayload(null, kind === 'lit' ? [col] : [], kind === 'sys' ? [col] : [])),
       })
-      if (res.ok) {
-        const data = await res.json()
-        if (data.statement) dispatch({ type: 'SET_AXIS_GAP', key, text: data.statement })
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        throw new Error(body?.detail || `Axis-gap generation failed (HTTP ${res.status})`)
       }
-    } catch { /* silent */ }
+      const data = await res.json()
+      if (!data.statement?.trim()) throw new Error('Axis-gap generation returned an empty statement.')
+      dispatch({ type: 'SET_AXIS_GAP', key, text: data.statement })
+    } catch (error) {
+      setGenerationError(error instanceof Error ? error.message : 'Axis-gap generation failed.')
+    }
     finally { setAxisLoading(current => current === key ? null : current) }
   }
 
   async function handleRegenerate(prompt?: string | null) {
     setRegenerating(true)
+    setGenerationError(null)
     try {
       const res = await apiFetch(`${API}/gaps/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(buildGapPayload(prompt)),
       })
-      if (res.ok) {
-        const data = await res.json()
-        if (data.statement) dispatch({ type: 'UPDATE_GAP_STATEMENT', text: data.statement })
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        throw new Error(body?.detail || `Gap regeneration failed (HTTP ${res.status})`)
       }
-    } catch { /* silent */ }
+      const data = await res.json()
+      if (!data.statement?.trim()) throw new Error('Gap regeneration returned an empty statement.')
+      dispatch({ type: 'UPDATE_GAP_STATEMENT', text: data.statement })
+      setGapDraft(data.statement)
+    } catch (error) {
+      setGenerationError(error instanceof Error ? error.message : 'Gap regeneration failed.')
+    }
     finally { setRegenerating(false) }
   }
 
-  async function handleConfirm() {
-    setConfirming(true)
-    try {
-      const res = await apiFetch(`${API}/final-question/generate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          gap_statement: state.gapStatement,
-          profile: state.profile,
-          themes: state.themes.map(t => ({
-            name: t.name,
-            coverageLabel: t.coverageLabel,
-            blocks: t.blocks.map(b => ({ blockType: b.blockType, content: b.content })),
-          })),
-        }),
-      })
-      if (res.ok) {
-        const data = await res.json()
-        if (data.rq_options?.length) dispatch({ type: 'SET_RQ_OPTIONS', options: data.rq_options })
-        if (data.study_designs?.length) dispatch({ type: 'SET_STUDY_DESIGN_OPTIONS', options: data.study_designs })
-      }
-    } catch { /* silent — advance anyway */ }
-    finally {
-      setConfirming(false)
-      dispatch({ type: 'ADVANCE_STEP' })
+  function handleConfirm() {
+    if (!gapDraft.trim()) {
+      setGenerationError('Write or generate a gap statement before continuing.')
+      return
     }
+    saveGapEdit()
+    setGenerationError(null)
+    dispatch({ type: 'ADVANCE_STEP' })
   }
 
   return (
@@ -548,18 +554,33 @@ export function Screen7() {
           <div className="flex items-center gap-2 mb-2">
             <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide flex-1">Overall Gap Statement</span>
             <AIBadge />
-            <QuestionButton />
           </div>
           <p className="text-[10px] italic text-purple-400 mb-3">
             Drafted from all papers and selected systems. Schema-specific gaps stay in the left panel.
           </p>
 
           <textarea
-            value={state.gapStatement}
-            onChange={e => dispatch({ type: 'UPDATE_GAP_STATEMENT', text: e.target.value })}
+            value={gapDraft}
+            onChange={e => setGapDraft(e.target.value)}
             className="w-full bg-zinc-50 border border-zinc-300 rounded-lg p-3 text-[11px] text-zinc-800 resize-none focus:outline-none focus:border-zinc-500 leading-relaxed mb-2"
             style={{ height: 220 }}
           />
+          {gapDraft !== state.gapStatement && (
+            <div className="flex items-center gap-2 mb-2">
+              <input
+                value={gapJustification}
+                onChange={e => setGapJustification(e.target.value)}
+                placeholder="Why did you change the gap statement? (optional)"
+                className="flex-1 h-8 border border-blue-200 bg-blue-50/40 rounded px-2.5 text-[10px] text-zinc-700 outline-none focus:border-blue-400"
+              />
+              <button
+                onClick={saveGapEdit}
+                className="px-3 h-8 bg-blue-600 text-white rounded text-[10px] font-semibold hover:bg-blue-700"
+              >
+                Save edit
+              </button>
+            </div>
+          )}
 
           <div className="mb-2">
             <WordCountBar count={wordCount} />
@@ -603,32 +624,17 @@ export function Screen7() {
             />
           )}
 
-          {/* Example patterns */}
-          <div className="mb-4">
-            <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide mb-2">Paper-level Gap Patterns</p>
-            <div className="flex flex-col gap-1.5">
-              {EXAMPLE_PATTERNS.map((p, i) => (
-                <button
-                  key={i}
-                  onClick={() => insertIntoStatement(p)}
-                  className="px-2 py-1.5 bg-zinc-100 rounded text-[9px] text-zinc-600 text-left hover:bg-zinc-200 transition-colors"
-                >
-                  {p}
-                </button>
-              ))}
-            </div>
-          </div>
-
+          {generationError && (
+            <p className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-[10px] text-red-700">
+              {generationError}
+            </p>
+          )}
           <div className="flex justify-end">
             <button
               onClick={handleConfirm}
-              disabled={confirming}
-              className="flex items-center gap-2 px-5 h-9 bg-zinc-900 text-white rounded text-[12px] font-semibold hover:bg-zinc-700 disabled:opacity-60 transition-colors"
+              className="flex items-center gap-2 px-5 h-9 bg-zinc-900 text-white rounded text-[12px] font-semibold hover:bg-zinc-700 transition-colors"
             >
-              {confirming && (
-                <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              )}
-              {confirming ? 'Generating…' : 'Confirm → Final Question'}
+              Confirm → Final Question
             </button>
           </div>
         </div>

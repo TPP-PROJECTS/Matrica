@@ -46,7 +46,9 @@ export function ChatPanel() {
 
   // Keep a ref to latest state for use inside callbacks
   const stateRef = useRef(state)
-  stateRef.current = state
+  useEffect(() => {
+    stateRef.current = state
+  }, [state])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -124,7 +126,7 @@ export function ChatPanel() {
           },
         })
       }
-    } catch (e) {
+    } catch {
       setError('Failed to reach assistant. Make sure the backend is running.')
     } finally {
       setIsThinking(false)

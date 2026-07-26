@@ -1,12 +1,15 @@
-import { useState, useRef, useEffect } from 'react'
+import { lazy, Suspense, useState, useRef, useEffect } from 'react'
 import { useApp } from '../../store/AppContext'
-import { ExportModal } from '../overlays/ExportModal'
+
+const ExportModal = lazy(() => import('../overlays/ExportModal').then(module => ({ default: module.ExportModal })))
+const PeerReviewPanel = lazy(() => import('../overlays/PeerReviewPanel').then(module => ({ default: module.PeerReviewPanel })))
 
 export function TopBar() {
   const { state, dispatch, saveStatus, canUndo, canRedo, undo, redo } = useApp()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   const [showExport, setShowExport] = useState(false)
+  const [showPeerReview, setShowPeerReview] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   function startEdit() {
@@ -119,6 +122,20 @@ export function TopBar() {
           Export
         </button>
 
+        {/* Peer review button */}
+        <button
+          onClick={() => setShowPeerReview(true)}
+          title="Invite a blind second reviewer and compare results"
+          className="px-3 py-1 border border-zinc-600 rounded text-zinc-300 text-[11px] hover:border-zinc-400 hover:text-white transition-colors flex items-center gap-1.5"
+        >
+          <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+            <circle cx="4" cy="3.5" r="2" stroke="currentColor" strokeWidth="1.3"/>
+            <path d="M1 10c0-1.7 1.3-3 3-3s3 1.3 3 3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+            <path d="M7.5 4.5l1.5 1.5 2-2.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          Peer review
+        </button>
+
         {/* History / Sessions button */}
         <button
           onClick={() => dispatch({ type: 'TOGGLE_HISTORY' })}
@@ -144,7 +161,16 @@ export function TopBar() {
         </div>
       </header>
 
-      {showExport && <ExportModal onClose={() => setShowExport(false)} />}
+      {showExport && (
+        <Suspense fallback={null}>
+          <ExportModal onClose={() => setShowExport(false)} />
+        </Suspense>
+      )}
+      {showPeerReview && (
+        <Suspense fallback={null}>
+          <PeerReviewPanel onClose={() => setShowPeerReview(false)} />
+        </Suspense>
+      )}
     </>
   )
 }

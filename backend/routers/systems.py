@@ -1,7 +1,6 @@
 from routers.json_utils import extract_json
 import os
 import re
-import json
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from openai import AsyncOpenAI
@@ -97,16 +96,11 @@ async def recommend_systems(req: SystemRecommendRequest):
             input=user_content,
             tools=[{"type": "web_search_preview"}],
         )
-    except Exception:
-        # Fall back without web search if not supported
-        try:
-            response = await client.responses.create(
-                model=MODEL,
-                instructions=SYSTEMS_PROMPT,
-                input=user_content,
-            )
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"OpenAI error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Verified web-backed system discovery failed; no unverified systems were substituted: {str(e)}",
+        )
 
     data = extract_json(response.output_text or "")
     if data is None:
@@ -173,15 +167,11 @@ async def lookup_system(req: SystemLookupRequest):
             input=context,
             tools=[{"type": "web_search_preview"}],
         )
-    except Exception:
-        try:
-            response = await client.responses.create(
-                model=MODEL,
-                instructions=SYSTEM_LOOKUP_PROMPT,
-                input=context,
-            )
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"OpenAI error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Verified web-backed system lookup failed; no unverified profile was substituted: {str(e)}",
+        )
 
     data = extract_json(response.output_text or "")
     if data is None:

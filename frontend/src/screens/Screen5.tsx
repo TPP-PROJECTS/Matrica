@@ -4,6 +4,13 @@ import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
 import { SchemaBuilder } from '../components/matrix/SchemaBuilder'
 import type { MatrixCell, ConfidenceLevel, SystemMatrixRow, ResultCard, SystemItem } from '../types'
 import { API, apiFetch } from '../lib/api'
+import { runPool } from '../lib/runPool'
+import { partitionNewPapers } from '../lib/dedupe'
+import { journalEntry } from '../lib/decisionJournal'
+
+// How many auto-fill requests are in flight at once. Enough to hide most of the
+// per-request latency without hammering the API from a single browser tab.
+const FILL_CONCURRENCY = 4
 
 
 // ── Evidence popover types ────────────────────────────────────────────────────
@@ -34,6 +41,7 @@ function EvidencePopover({
   focus: string
   onClose: () => void
 }) {
+  const { dispatch } = useApp()
   const [reasoning, setReasoning] = useState<string | null>(null)
   const [sources, setSources] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
@@ -71,6 +79,21 @@ function EvidencePopover({
         const data = await res.json()
         setReasoning(data.reasoning)
         setSources(data.sources ?? [])
+        dispatch({
+          type: 'ADD_DECISION_JOURNAL_ENTRY',
+          entry: journalEntry({
+            kind: 'ai_explanation_view',
+            step: 6,
+            action: 'Viewed matrix evidence and reasoning',
+            entityType: 'matrix_cell',
+            entityId: `${target.paperTitle || target.systemName || 'row'}:${target.column}`,
+            entityLabel: `${target.paperTitle || target.systemName || 'Matrix row'} — ${target.column}`,
+            details: [
+              data.reasoning,
+              ...(data.sources ?? []).map((source: string) => `Source: ${source}`),
+            ].filter(Boolean).join('\n'),
+          }),
+        })
       } catch {
         setError(true)
       } finally {
@@ -78,6 +101,8 @@ function EvidencePopover({
       }
     }
     fetch_()
+  // The evidence target is immutable for the lifetime of this popover.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return (
@@ -201,7 +226,15 @@ function PendingCell() {
 }
 
 // ── Editable column header (rename / delete) ─────────────────────────────────
-function ColumnHeader({ col, borderClass, description }: { col: string; borderClass: string; description?: string }) {
+function ColumnHeader({ col, borderClass, description, emptyCount, onFill, busy }: {
+  col: string
+  borderClass: string
+  description?: string
+  /** Cells still empty in this column; the fill button is pointless at 0. */
+  emptyCount?: number
+  onFill?: (col: string) => void
+  busy?: boolean
+}) {
   const ref = useRef<HTMLTableCellElement>(null)
   const [tip, setTip] = useState<{ left: number; top: number } | null>(null)
 
@@ -224,6 +257,16 @@ function ColumnHeader({ col, borderClass, description }: { col: string; borderCl
       <span className="inline-flex items-center gap-1">
         <span>{col}</span>
         {description && <span className="text-white/50 text-[8px]" aria-hidden>ⓘ</span>}
+        {onFill && (emptyCount ?? 0) > 0 && (
+          <button
+            onClick={e => { e.stopPropagation(); onFill(col) }}
+            disabled={busy}
+            title={`Fill the ${emptyCount} empty cell${emptyCount === 1 ? '' : 's'} in this column`}
+            className="ml-0.5 px-1 rounded bg-purple-600 text-white text-[8px] font-bold hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            ✦{emptyCount}
+          </button>
+        )}
       </span>
       {tip && description && (
         <div
@@ -613,7 +656,8 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
   const [filling, setFilling] = useState(false)
   const [fillDone, setFillDone] = useState(0)
   const [fillTotal, setFillTotal] = useState(0)
-  const [fillingRowId, setFillingRowId] = useState<string | null>(null)
+  const [fillingRowIds, setFillingRowIds] = useState<Set<string>>(new Set())
+  const [fillingColumn, setFillingColumn] = useState<string | null>(null)
   const abortRef = useRef(false)
   const [showAutoFillModal, setShowAutoFillModal] = useState(false)
   const [customAutoFillPrompt, setCustomAutoFillPrompt] = useState<string | null>(null)
@@ -622,6 +666,7 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
   const [editColsPrompt, setEditColsPrompt] = useState<string | null>(null)
   const [newCols, setNewCols] = useState<string[]>([])
   const [showAddPapers, setShowAddPapers] = useState(false)
+  const [columnJustification, setColumnJustification] = useState('')
 
   const dataCols = state.matrixColumns.filter(
     c => c !== '#' && c !== 'Title' && c !== 'Authors' && c !== 'Year'
@@ -679,25 +724,36 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
     } catch { setGenError(true) } finally { setGenerating(false) }
   }
 
-  useEffect(() => { if (!needsInit || generating) return; runGenerate() }, [needsInit])
+  useEffect(() => {
+    if (!needsInit || generating) return
+    const timer = window.setTimeout(() => { void runGenerate() }, 0)
+    return () => clearTimeout(timer)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needsInit])
 
+  /**
+   * Fill `columns` for each paper. Passing a single column is what the
+   * per-column header button uses — adding a column to an established matrix
+   * would otherwise mean re-running every row for every column it already has.
+   */
   async function fillPapers(
     papers: { id: string; title: string; abstract: string; authors: string; year: number; source?: string }[],
+    columns: string[] = dataCols,
     prompt?: string | null,
   ) {
-    if (filling || dataCols.length === 0 || papers.length === 0) return
+    if (filling || columns.length === 0 || papers.length === 0) return
     abortRef.current = false
     setFilling(true); setFillDone(0); setFillTotal(papers.length)
+    setFillingColumn(columns.length === 1 ? columns[0] : null)
 
-    for (const paper of papers) {
-      if (abortRef.current) break
-      setFillingRowId(paper.id)
+    await runPool(papers, FILL_CONCURRENCY, async paper => {
+      setFillingRowIds(prev => new Set(prev).add(paper.id))
       try {
         const res = await apiFetch(`${API}/matrix/autofill-row`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             paper: { title: paper.title, abstract: paper.abstract, authors: paper.authors, year: paper.year || null, url: paper.source ?? '' },
-            columns: dataCols, profile: state.profile,
+            columns, profile: state.profile,
             topics: state.topics.filter(t => t.selected).map(t => ({ title: t.title, description: t.description, type: t.type })),
             custom_system_prompt: prompt ?? null,
           }),
@@ -709,28 +765,44 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
           cells[col] = { value: cd.value, aiGenerated: true, confidenceScore: cd.confidenceScore, confidenceLevel: cd.confidenceLevel as ConfidenceLevel, evidenceType: cd.evidenceType as MatrixCell['evidenceType'], sourceRef: '', extractionMethod: cd.extractionMethod as MatrixCell['extractionMethod'], verifiedByStudent: false }
         }
         dispatch({ type: 'UPDATE_MATRIX_ROW_CELLS', paperId: paper.id, cells })
-      } catch { /* skip */ }
-      setFillDone(d => d + 1)
-    }
-    setFillingRowId(null); setFilling(false)
+      } finally {
+        setFillingRowIds(prev => { const n = new Set(prev); n.delete(paper.id); return n })
+      }
+    }, {
+      onProgress: done => setFillDone(done),
+      shouldAbort: () => abortRef.current,
+    })
+
+    setFillingRowIds(new Set()); setFillingColumn(null); setFilling(false)
+  }
+
+  function papersForRows() {
+    return state.matrixRows
+      .map(row => state.reviewList.find(p => p.id === row.paperId))
+      .filter((p): p is NonNullable<typeof p> => !!p)
   }
 
   function handleAutoFill(prompt?: string | null) {
-    const papers = state.matrixRows
-      .map(row => state.reviewList.find(p => p.id === row.paperId))
-      .filter((p): p is NonNullable<typeof p> => !!p)
-    fillPapers(papers, prompt)
+    fillPapers(papersForRows(), dataCols, prompt)
+  }
+
+  /** Fill one column across every row that is still empty in it. */
+  function handleFillColumn(col: string) {
+    const emptyRowIds = new Set(
+      state.matrixRows.filter(r => !r.cells[col]?.value).map(r => r.paperId)
+    )
+    const papers = papersForRows().filter(p => emptyRowIds.has(p.id))
+    fillPapers(papers, [col], customAutoFillPrompt)
   }
 
   function handleAddPapers(papers: ResultCard[]) {
     setShowAddPapers(false)
     if (papers.length === 0) return
-    const existing = new Set([...state.results, ...state.reviewList].map(r => r.title.toLowerCase().trim()))
-    const fresh = papers.filter(p => !existing.has(p.title.toLowerCase().trim()))
+    const { fresh } = partitionNewPapers([...state.results, ...state.reviewList], papers)
     dispatch({ type: 'ADD_UPLOADED_PAPERS', papers })
     // parse the newly added rows right away (columns must already exist;
     // otherwise the init effect will generate columns first)
-    if (dataCols.length > 0) fillPapers(fresh, customAutoFillPrompt)
+    if (dataCols.length > 0) fillPapers(fresh, dataCols, customAutoFillPrompt)
   }
 
   if (state.reviewList.length === 0) return (
@@ -768,6 +840,19 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
     <div className="flex flex-col flex-1 overflow-hidden">
       <div className="h-8 bg-zinc-50 border-b border-zinc-200 flex items-center px-4 gap-3 shrink-0">
         <span className="text-[9px] text-zinc-400">{filledCount}/{totalCells} cells filled</span>
+        {filling && (
+          <div className="flex items-center gap-1.5 min-w-[140px]">
+            <div className="flex-1 h-1.5 bg-zinc-200 rounded overflow-hidden">
+              <div
+                className="h-full bg-purple-600 rounded transition-[width] duration-200"
+                style={{ width: `${fillTotal ? Math.round((fillDone / fillTotal) * 100) : 0}%` }}
+              />
+            </div>
+            <span className="text-[9px] text-zinc-500 shrink-0">
+              {fillDone}/{fillTotal}{fillingColumn ? ` · ${fillingColumn}` : ''}
+            </span>
+          </div>
+        )}
         <div className="flex-1" />
         <button onClick={() => setShowEditCols(true)}
           title="Add new matrix columns based on the papers and systems you've selected"
@@ -810,14 +895,22 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
               <th className="sticky left-0 z-10 bg-zinc-900 border border-zinc-700 px-2 py-1.5 text-[9px] font-semibold text-white w-8">#</th>
               <th className="sticky left-8 z-10 bg-zinc-900 border border-zinc-700 px-2 py-1.5 text-[9px] font-semibold text-white w-[180px]">Title · Authors · Year</th>
               {dataCols.map(col => (
-                <ColumnHeader key={col} col={col} borderClass="border-zinc-700" description={state.columnDescriptions[col]} />
+                <ColumnHeader
+                  key={col}
+                  col={col}
+                  borderClass="border-zinc-700"
+                  description={state.columnDescriptions[col]}
+                  emptyCount={state.matrixRows.filter(r => !r.cells[col]?.value).length}
+                  onFill={handleFillColumn}
+                  busy={filling}
+                />
               ))}
             </tr>
           </thead>
           <tbody>
             {state.matrixRows.map((row, idx) => {
               const paper = state.reviewList.find(p => p.id === row.paperId)
-              const isBeingFilled = fillingRowId === row.paperId
+              const isBeingFilled = fillingRowIds.has(row.paperId)
               return (
                 <tr key={row.paperId} className={`${idx % 2 === 0 ? 'bg-zinc-50' : 'bg-white'} ${isBeingFilled ? 'ring-1 ring-inset ring-purple-300' : ''}`}>
                   <td className="sticky left-0 z-10 border border-zinc-200 px-2 py-1 text-[10px] text-zinc-400 font-medium bg-inherit">{idx + 1}</td>
@@ -827,7 +920,9 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
                     <p className="text-[9px] text-zinc-400">{row.year || '—'}</p>
                   </td>
                   {dataCols.map(col =>
-                    isBeingFilled
+                    // During a single-column fill only that column is pending —
+                    // blanking the whole row would hide values already verified.
+                    isBeingFilled && (fillingColumn === null || fillingColumn === col)
                       ? <PendingCell key={`pending-${col}`} />
                       : <CellContent
                           key={`cell-${col}`}
@@ -851,6 +946,12 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
 
       {showEditCols && (
         <EditColumnsModal title="Edit literature Matrix" onClose={() => setShowEditCols(false)}>
+          <input
+            value={columnJustification}
+            onChange={e => setColumnJustification(e.target.value)}
+            placeholder="Why are you adding or removing columns? (optional)"
+            className="w-full h-8 border border-blue-200 bg-blue-50/40 rounded px-2.5 text-[11px] text-zinc-700 outline-none focus:border-blue-400 mb-3"
+          />
           <SchemaBuilder
             accent="zinc"
             available={mergeColumnOptions(state.matrixColumnSuggestions, dataCols)}
@@ -862,7 +963,26 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
             promptKey="matrix-lit-columns"
             promptTitle="Literature Matrix Columns"
             onRegenerate={regenLitColumns}
-            onChange={cols => dispatch({ type: 'SET_MATRIX_COLUMNS', columns: cols })}
+            onChange={cols => {
+              const added = cols.filter(c => !dataCols.includes(c))
+              const removed = dataCols.filter(c => !cols.includes(c))
+              dispatch({ type: 'SET_MATRIX_COLUMNS', columns: cols })
+              dispatch({
+                type: 'ADD_DECISION_JOURNAL_ENTRY',
+                entry: journalEntry({
+                  kind: 'justification',
+                  step: 6,
+                  action: added.length ? 'Added literature matrix column' : 'Removed literature matrix column',
+                  entityType: 'matrix_column',
+                  entityId: [...added, ...removed].join('|'),
+                  entityLabel: [...added, ...removed].join(', '),
+                  previousValue: dataCols.join(', '),
+                  newValue: cols.join(', '),
+                  justification: columnJustification.trim() || undefined,
+                }),
+              })
+              setColumnJustification('')
+            }}
           />
         </EditColumnsModal>
       )}
@@ -878,13 +998,15 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
   const [filling, setFilling] = useState(false)
   const [fillDone, setFillDone] = useState(0)
   const [fillTotal, setFillTotal] = useState(0)
-  const [fillingRowId, setFillingRowId] = useState<string | null>(null)
+  const [fillingRowIds, setFillingRowIds] = useState<Set<string>>(new Set())
+  const [fillingColumn, setFillingColumn] = useState<string | null>(null)
   const abortRef = useRef(false)
   const [showEditCols, setShowEditCols] = useState(false)
   const [editColsLoading, setEditColsLoading] = useState(false)
   const [editColsPrompt, setEditColsPrompt] = useState<string | null>(null)
   const [newCols, setNewCols] = useState<string[]>([])
   const [showAddSystem, setShowAddSystem] = useState(false)
+  const [columnJustification, setColumnJustification] = useState('')
 
   const systemItems = state.systemItems ?? []
   const selectedSystems = systemItems.filter(s => s.selected)
@@ -941,22 +1063,30 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
     } catch { setGenError(true) } finally { setGenerating(false) }
   }
 
-  useEffect(() => { if (!needsInit || generating) return; runGenerate() }, [needsInit])
+  useEffect(() => {
+    if (!needsInit || generating) return
+    const timer = window.setTimeout(() => { void runGenerate() }, 0)
+    return () => clearTimeout(timer)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needsInit])
 
-  async function fillSystems(systems: { id: string; name: string; category: string; vendor: string; description: string }[]) {
-    if (filling || dataCols.length === 0 || systems.length === 0) return
+  async function fillSystems(
+    systems: { id: string; name: string; category: string; vendor: string; description: string }[],
+    columns: string[] = dataCols,
+  ) {
+    if (filling || columns.length === 0 || systems.length === 0) return
     abortRef.current = false
     setFilling(true); setFillDone(0); setFillTotal(systems.length)
+    setFillingColumn(columns.length === 1 ? columns[0] : null)
 
-    for (const sys of systems) {
-      if (abortRef.current) break
-      setFillingRowId(sys.id)
+    await runPool(systems, FILL_CONCURRENCY, async sys => {
+      setFillingRowIds(prev => new Set(prev).add(sys.id))
       try {
         const res = await apiFetch(`${API}/matrix/autofill-system-row`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             system: { name: sys.name, category: sys.category, vendor: sys.vendor, description: sys.description },
-            columns: dataCols, profile: state.profile,
+            columns, profile: state.profile,
           }),
         })
         if (!res.ok) throw new Error()
@@ -966,23 +1096,39 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
           cells[col] = { value: cd.value, aiGenerated: true, confidenceScore: cd.confidenceScore, confidenceLevel: cd.confidenceLevel as ConfidenceLevel, evidenceType: cd.evidenceType as MatrixCell['evidenceType'], sourceRef: '', extractionMethod: cd.extractionMethod as MatrixCell['extractionMethod'], verifiedByStudent: false }
         }
         dispatch({ type: 'UPDATE_SYSTEM_MATRIX_ROW_CELLS', systemId: sys.id, cells })
-      } catch { /* skip */ }
-      setFillDone(d => d + 1)
-    }
-    setFillingRowId(null); setFilling(false)
+      } finally {
+        setFillingRowIds(prev => { const n = new Set(prev); n.delete(sys.id); return n })
+      }
+    }, {
+      onProgress: done => setFillDone(done),
+      shouldAbort: () => abortRef.current,
+    })
+
+    setFillingRowIds(new Set()); setFillingColumn(null); setFilling(false)
+  }
+
+  function systemsForRows() {
+    return systemMatrixRows
+      .map(row => selectedSystems.find(s => s.id === row.systemId))
+      .filter((s): s is NonNullable<typeof s> => !!s)
   }
 
   function handleAutoFill() {
-    const systems = systemMatrixRows
-      .map(row => selectedSystems.find(s => s.id === row.systemId))
-      .filter((s): s is NonNullable<typeof s> => !!s)
-    fillSystems(systems)
+    fillSystems(systemsForRows(), dataCols)
+  }
+
+  /** Fill one column across every system row that is still empty in it. */
+  function handleFillColumn(col: string) {
+    const emptyIds = new Set(
+      systemMatrixRows.filter(r => !r.cells[col]?.value).map(r => r.systemId)
+    )
+    fillSystems(systemsForRows().filter(s => emptyIds.has(s.id)), [col])
   }
 
   function handleAddSystem(item: SystemItem) {
     dispatch({ type: 'ADD_SYSTEM_WITH_ROW', item })
     if (dataCols.length > 0) {
-      fillSystems([{ id: item.id, name: item.name, category: item.category, vendor: item.vendor, description: item.description }])
+      fillSystems([{ id: item.id, name: item.name, category: item.category, vendor: item.vendor, description: item.description }], dataCols)
     }
   }
 
@@ -1027,6 +1173,19 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
     <div className="flex flex-col flex-1 overflow-hidden">
       <div className="h-8 bg-violet-50 border-b border-violet-200 flex items-center px-4 gap-3 shrink-0">
         <span className="text-[9px] text-violet-400">{filledCount}/{totalCells} cells filled · {selectedSystems.length} systems</span>
+        {filling && (
+          <div className="flex items-center gap-1.5 min-w-[140px]">
+            <div className="flex-1 h-1.5 bg-violet-200 rounded overflow-hidden">
+              <div
+                className="h-full bg-violet-600 rounded transition-[width] duration-200"
+                style={{ width: `${fillTotal ? Math.round((fillDone / fillTotal) * 100) : 0}%` }}
+              />
+            </div>
+            <span className="text-[9px] text-violet-600 shrink-0">
+              {fillDone}/{fillTotal}{fillingColumn ? ` · ${fillingColumn}` : ''}
+            </span>
+          </div>
+        )}
         <div className="flex-1" />
         <button onClick={() => setShowEditCols(true)}
           title="Add new matrix columns based on the papers and systems you've selected"
@@ -1049,14 +1208,22 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
               <th className="sticky left-0 z-10 bg-violet-900 border border-violet-700 px-2 py-1.5 text-[9px] font-semibold text-white w-8">#</th>
               <th className="sticky left-8 z-10 bg-violet-900 border border-violet-700 px-2 py-1.5 text-[9px] font-semibold text-white w-[180px]">System · Vendor · Category</th>
               {dataCols.map(col => (
-                <ColumnHeader key={col} col={col} borderClass="border-violet-700" description={state.systemColumnDescriptions[col]} />
+                <ColumnHeader
+                  key={col}
+                  col={col}
+                  borderClass="border-violet-700"
+                  description={state.systemColumnDescriptions[col]}
+                  emptyCount={systemMatrixRows.filter(r => !r.cells[col]?.value).length}
+                  onFill={handleFillColumn}
+                  busy={filling}
+                />
               ))}
             </tr>
           </thead>
           <tbody>
             {systemMatrixRows.map((row, idx) => {
               const sys = selectedSystems.find(s => s.id === row.systemId)
-              const isBeingFilled = fillingRowId === row.systemId
+              const isBeingFilled = fillingRowIds.has(row.systemId)
               return (
                 <tr key={row.systemId} className={`${idx % 2 === 0 ? 'bg-violet-50/30' : 'bg-white'} ${isBeingFilled ? 'ring-1 ring-inset ring-violet-400' : ''}`}>
                   <td className="sticky left-0 z-10 border border-zinc-200 px-2 py-1 text-[10px] text-zinc-400 font-medium bg-inherit">{idx + 1}</td>
@@ -1068,7 +1235,7 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
                     <span className="text-[8px] px-1.5 py-0.5 bg-zinc-100 text-zinc-500 rounded mt-0.5 inline-block">{row.category}</span>
                   </td>
                   {dataCols.map(col =>
-                    isBeingFilled
+                    isBeingFilled && (fillingColumn === null || fillingColumn === col)
                       ? <PendingCell key={`pending-${col}`} />
                       : <CellContent
                           key={`cell-${col}`}
@@ -1099,6 +1266,12 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
 
       {showEditCols && (
         <EditColumnsModal title="Edit System Matrix" onClose={() => setShowEditCols(false)}>
+          <input
+            value={columnJustification}
+            onChange={e => setColumnJustification(e.target.value)}
+            placeholder="Why are you adding or removing columns? (optional)"
+            className="w-full h-8 border border-violet-200 bg-violet-50/40 rounded px-2.5 text-[11px] text-zinc-700 outline-none focus:border-violet-400 mb-3"
+          />
           <SchemaBuilder
             accent="violet"
             available={mergeColumnOptions(state.systemMatrixColumnSuggestions, dataCols)}
@@ -1110,7 +1283,26 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
             promptKey="matrix-sys-columns"
             promptTitle="System Matrix Columns"
             onRegenerate={regenSysColumns}
-            onChange={cols => dispatch({ type: 'SET_SYSTEM_MATRIX_COLUMNS', columns: cols })}
+            onChange={cols => {
+              const added = cols.filter(c => !dataCols.includes(c))
+              const removed = dataCols.filter(c => !cols.includes(c))
+              dispatch({ type: 'SET_SYSTEM_MATRIX_COLUMNS', columns: cols })
+              dispatch({
+                type: 'ADD_DECISION_JOURNAL_ENTRY',
+                entry: journalEntry({
+                  kind: 'justification',
+                  step: 6,
+                  action: added.length ? 'Added system matrix column' : 'Removed system matrix column',
+                  entityType: 'matrix_column',
+                  entityId: `system:${[...added, ...removed].join('|')}`,
+                  entityLabel: [...added, ...removed].join(', '),
+                  previousValue: dataCols.join(', '),
+                  newValue: cols.join(', '),
+                  justification: columnJustification.trim() || undefined,
+                }),
+              })
+              setColumnJustification('')
+            }}
           />
         </EditColumnsModal>
       )}
@@ -1125,13 +1317,13 @@ export function Screen5() {
   const [activeTab, setActiveTab] = useState<'literature' | 'system'>('literature')
   const [evidenceTarget, setEvidenceTarget] = useState<EvidenceTarget | null>(null)
   const [synthesising, setSynthesising] = useState(false)
-  const [synthError, setSynthError] = useState(false)
+  const [synthError, setSynthError] = useState<string | null>(null)
   const [showSynthModal, setShowSynthModal] = useState(false)
   const [customSynthPrompt, setCustomSynthPrompt] = useState<string | null>(null)
 
   async function handleContinue(prompt?: string | null) {
     setSynthesising(true)
-    setSynthError(false)
+    setSynthError(null)
     try {
       const selectedSystems = systemItems.filter(s => s.selected)
       const res = await apiFetch(`${API}/synthesis/generate`, {
@@ -1177,16 +1369,18 @@ export function Screen5() {
           })),
         }),
       })
-      if (!res.ok) throw new Error()
-      const data = await res.json()
-      if (data.themes?.length) {
-        dispatch({ type: 'SET_THEMES', themes: data.themes })
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        throw new Error(body?.detail || `Synthesis generation failed (HTTP ${res.status})`)
       }
-    } catch {
-      setSynthError(true)
+      const data = await res.json()
+      if (!data.themes?.length) throw new Error('Synthesis generation returned no themes.')
+      dispatch({ type: 'SET_THEMES', themes: data.themes })
+      dispatch({ type: 'ADVANCE_STEP' })
+    } catch (error) {
+      setSynthError(error instanceof Error ? error.message : 'Synthesis generation failed.')
     } finally {
       setSynthesising(false)
-      dispatch({ type: 'ADVANCE_STEP' })
     }
   }
 
@@ -1224,7 +1418,7 @@ export function Screen5() {
           {synthesising
             ? <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 border border-zinc-400 border-t-zinc-700 rounded-full animate-spin inline-block" /> Generating synthesis…</span>
             : synthError
-              ? <span className="text-amber-600">Synthesis used fallback data — you can regenerate from Step 6</span>
+              ? <span className="text-red-600">Synthesis failed: {synthError} Retry before continuing.</span>
               : <>Hover a cell to reveal <span className="font-bold">?</span> — click for AI evidence reasoning</>
           }
         </p>

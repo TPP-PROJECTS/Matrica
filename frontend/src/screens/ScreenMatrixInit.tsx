@@ -75,11 +75,15 @@ export function ScreenMatrixInit() {
     if (didInit.current) return
     didInit.current = true
     if (state.matrixColumnSuggestions.length === 0) {
-      // Start curation from a clean slate (drop any mock-seeded columns).
-      dispatch({ type: 'SET_MATRIX_COLUMNS', columns: [] })
-      dispatch({ type: 'SET_SYSTEM_MATRIX_COLUMNS', columns: [] })
-      genLiterature()
-      genSystem(null, true)
+      const timer = window.setTimeout(() => {
+        // Start curation from a clean slate; only source-backed/AI-proposed
+        // schema columns selected by the user are retained.
+        dispatch({ type: 'SET_MATRIX_COLUMNS', columns: [] })
+        dispatch({ type: 'SET_SYSTEM_MATRIX_COLUMNS', columns: [] })
+        void genLiterature()
+        void genSystem(null, true)
+      }, 0)
+      return () => clearTimeout(timer)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

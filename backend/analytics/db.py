@@ -7,8 +7,13 @@ Tracks session lifecycle and every instrumented API call so we can answer:
   - Which AI generation endpoints are being retried the most?
   - What is the overall funnel completion rate?
 
-Uses a single WAL-mode SQLite file. Thread-safe via check_same_thread=False
-and a double-checked init lock; writes are fire-and-forget via run_in_executor.
+Uses a WAL-mode SQLite file with one connection per thread.
+
+Per-thread rather than shared: FastAPI runs sync endpoints in a threadpool, and
+a single sqlite3.Connection driven concurrently from several of those threads
+raises "bad parameter or other API misuse" and loses writes. WAL mode lets the
+resulting connections read concurrently, and busy_timeout makes a writer wait
+its turn instead of failing outright when another holds the write lock.
 """
 from __future__ import annotations
 
@@ -21,24 +26,51 @@ from pathlib import Path
 
 DB_PATH = os.getenv("ANALYTICS_DB", str(Path(__file__).parent.parent / "analytics.db"))
 
-_conn: sqlite3.Connection | None = None
-_lock = threading.Lock()
+# How long a writer waits for another writer to finish before giving up.
+BUSY_TIMEOUT_MS = 5000
+
+_local = threading.local()
+_schema_lock = threading.Lock()
+_schema_ready = False
 
 
 # ── Connection & Schema ───────────────────────────────────────────────────────
 
 def get_conn() -> sqlite3.Connection:
-    global _conn
-    if _conn is not None:
-        return _conn
-    with _lock:
-        if _conn is None:
-            _conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-            _conn.row_factory = sqlite3.Row
-            _conn.execute("PRAGMA journal_mode=WAL")
-            _conn.execute("PRAGMA synchronous=NORMAL")
-            _init_schema(_conn)
-    return _conn
+    """The calling thread's connection, opening and initialising it on first use."""
+    global _schema_ready
+
+    conn: sqlite3.Connection | None = getattr(_local, "conn", None)
+    if conn is not None:
+        return conn
+
+    conn = sqlite3.connect(
+        DB_PATH,
+        check_same_thread=False,
+        timeout=BUSY_TIMEOUT_MS / 1000,
+    )
+    conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+
+    # Setting journal_mode takes a write lock. Doing it independently on every
+    # connection races during a burst of first requests and can fail with
+    # "database is locked" before busy_timeout has any useful effect. The first
+    # connection configures the file and schema under one process lock; later
+    # connections only apply the per-connection synchronous preference.
+    if not _schema_ready:
+        with _schema_lock:
+            if not _schema_ready:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                _init_schema(conn)
+                _schema_ready = True
+            else:
+                conn.execute("PRAGMA synchronous=NORMAL")
+    else:
+        conn.execute("PRAGMA synchronous=NORMAL")
+
+    _local.conn = conn
+    return conn
 
 
 def _init_schema(conn: sqlite3.Connection) -> None:
@@ -83,6 +115,39 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         );
 
         CREATE INDEX IF NOT EXISTS idx_projects_updated ON projects(updated_at DESC);
+
+        -- Peer review: one row per invitation. `token` is the bearer secret
+        -- embedded in the share link; it is the row's only access credential,
+        -- so it is indexed but never returned by any owner-facing list query
+        -- beyond the one that created it.
+        CREATE TABLE IF NOT EXISTS reviews (
+            id            TEXT PRIMARY KEY,
+            project_id    TEXT NOT NULL,
+            token         TEXT NOT NULL UNIQUE,
+            reviewer_name TEXT,
+            scopes        TEXT NOT NULL,   -- JSON array: screening|extraction|output
+            created_at    REAL NOT NULL,
+            opened_at     REAL,
+            submitted_at  REAL,
+            revoked       INTEGER DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_reviews_token   ON reviews(token);
+        CREATE INDEX IF NOT EXISTS idx_reviews_project ON reviews(project_id);
+
+        -- One row per judgement. `item_key` identifies what was judged:
+        --   screening   -> paper id
+        --   extraction  -> "<paperId>::<column>"
+        --   output      -> the artefact name ("gap_statement", "rq", …)
+        CREATE TABLE IF NOT EXISTS review_decisions (
+            review_id  TEXT NOT NULL,
+            scope      TEXT NOT NULL,
+            item_key   TEXT NOT NULL,
+            value      TEXT,             -- the verdict, or the extracted text
+            note       TEXT,
+            updated_at REAL NOT NULL,
+            PRIMARY KEY (review_id, scope, item_key)
+        );
     """)
     conn.commit()
 
@@ -195,12 +260,113 @@ def delete_project(project_id: str) -> None:
     conn.commit()
 
 
+# ── Peer review ───────────────────────────────────────────────────────────────
+
+def create_review(
+    review_id: str,
+    project_id: str,
+    token: str,
+    reviewer_name: str | None,
+    scopes: list[str],
+) -> None:
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO reviews (id, project_id, token, reviewer_name, scopes, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (review_id, project_id, token, reviewer_name, json.dumps(scopes), time.time()),
+    )
+    conn.commit()
+
+
+def get_review_by_token(token: str) -> dict | None:
+    """Look up an invitation by its bearer token. Revoked links resolve to None."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM reviews WHERE token = ? AND revoked = 0", (token,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_review(review_id: str) -> dict | None:
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM reviews WHERE id = ?", (review_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_reviews(project_id: str) -> list[dict]:
+    """Invitations for a project. Excludes `token` — the secret is shown once,
+    at creation, and never re-listed."""
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT id, project_id, reviewer_name, scopes, created_at,
+                  opened_at, submitted_at, revoked
+           FROM reviews WHERE project_id = ? ORDER BY created_at DESC""",
+        (project_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_review_opened(review_id: str) -> None:
+    """Record first access only; later visits must not reset the timestamp."""
+    conn = get_conn()
+    conn.execute(
+        "UPDATE reviews SET opened_at = ? WHERE id = ? AND opened_at IS NULL",
+        (time.time(), review_id),
+    )
+    conn.commit()
+
+
+def mark_review_submitted(review_id: str) -> None:
+    conn = get_conn()
+    conn.execute("UPDATE reviews SET submitted_at = ? WHERE id = ?", (time.time(), review_id))
+    conn.commit()
+
+
+def revoke_review(review_id: str) -> None:
+    conn = get_conn()
+    conn.execute("UPDATE reviews SET revoked = 1 WHERE id = ?", (review_id,))
+    conn.commit()
+
+
+def upsert_decisions(review_id: str, scope: str, decisions: list[dict]) -> None:
+    """Write a batch of judgements, replacing any previous verdict on the same item."""
+    conn = get_conn()
+    now = time.time()
+    conn.executemany(
+        """INSERT INTO review_decisions (review_id, scope, item_key, value, note, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(review_id, scope, item_key) DO UPDATE SET
+               value      = excluded.value,
+               note       = excluded.note,
+               updated_at = excluded.updated_at""",
+        [
+            (review_id, scope, d["itemKey"], d.get("value"), d.get("note"), now)
+            for d in decisions
+        ],
+    )
+    conn.commit()
+
+
+def get_decisions(review_id: str, scope: str | None = None) -> list[dict]:
+    conn = get_conn()
+    if scope:
+        rows = conn.execute(
+            "SELECT * FROM review_decisions WHERE review_id = ? AND scope = ?",
+            (review_id, scope),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM review_decisions WHERE review_id = ?", (review_id,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ── Queries ───────────────────────────────────────────────────────────────────
 
 def get_overview() -> dict:
     conn = get_conn()
     total     = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-    completed = conn.execute("SELECT COUNT(*) FROM sessions WHERE max_step = 8").fetchone()[0]
+    completed = conn.execute("SELECT COUNT(*) FROM sessions WHERE max_step = 9").fetchone()[0]
     api_calls = conn.execute("SELECT COUNT(*) FROM events WHERE event_type = 'api_call'").fetchone()[0]
     errors    = conn.execute("SELECT COUNT(*) FROM events WHERE status_code >= 400").fetchone()[0]
     avg_row   = conn.execute("SELECT AVG(max_step) FROM sessions").fetchone()
@@ -283,7 +449,7 @@ def get_stuck_sessions(idle_minutes: int = 15) -> list[dict]:
         FROM sessions s
         LEFT JOIN events e ON e.session_id = s.id
         WHERE s.last_seen_at < ?
-          AND s.max_step < 8
+          AND s.max_step < 9
           AND (? - s.started_at) > 180
         GROUP BY s.id
         ORDER BY s.last_seen_at ASC

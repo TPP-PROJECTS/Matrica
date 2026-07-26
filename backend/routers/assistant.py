@@ -143,9 +143,9 @@ class AssistantResponse(BaseModel):
 # ── System prompt ─────────────────────────────────────────────────────────────
 
 STEP_LABELS = {
-    1: 'Chat & Define Topic', 2: 'System Review', 3: 'Explore & Search',
-    4: 'Select Paper', 5: 'Matrix', 6: 'Synthesis',
-    7: 'Gap & Statement', 8: 'Final Question',
+    1: 'Chat & Define Topic', 2: 'Matrix Initial', 3: 'System Review',
+    4: 'Explore & Search', 5: 'Select Paper', 6: 'Matrix Table',
+    7: 'Synthesis', 8: 'Gap & Statement', 9: 'Final Question',
 }
 
 # ── The action catalogue is owned by the frontend ─────────────────────────────
@@ -294,7 +294,7 @@ def build_system_prompt(ctx: ResearchContext, trace_id: str | None = None,
     actions_block = actions_spec.strip() if actions_spec and actions_spec.strip() else ACTIONS_SPEC
 
     return f"""You are an intelligent Research Assistant embedded in a systematic review tool.
-The student is on Step {step} of 8: {STEP_LABELS.get(step, f'Step {step}')}.
+The student is on Step {step} of 9: {STEP_LABELS.get(step, f'Step {step}')}.
 
 ===== RESEARCH MEMORY =====
 {memory_block}

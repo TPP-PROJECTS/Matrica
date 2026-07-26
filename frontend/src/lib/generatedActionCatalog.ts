@@ -111,6 +111,97 @@ export const ACTION_CATALOG: CatalogEntry[] = [
     ]
   },
   {
+    "type": "SET_SEARCH_FILTERS",
+    "doc": "Set the database search limits (year range, open access, preprints, language) applied to future searches.",
+    "fields": [
+      {
+        "name": "filters",
+        "tsType": "SearchFilters",
+        "optional": false
+      }
+    ]
+  },
+  {
+    "type": "ADD_CRITERION",
+    "doc": "Add one inclusion or exclusion criterion to the screening protocol.",
+    "fields": [
+      {
+        "name": "criterion",
+        "tsType": "ScreeningCriterion",
+        "optional": false
+      }
+    ]
+  },
+  {
+    "type": "REMOVE_CRITERION",
+    "doc": "Remove a screening criterion from the protocol.",
+    "fields": [
+      {
+        "name": "criterionId",
+        "tsType": "string",
+        "optional": false
+      }
+    ]
+  },
+  {
+    "type": "EXCLUDE_PAPER",
+    "doc": "Exclude a paper from the review, citing the exclusion criterion id that justifies it.",
+    "fields": [
+      {
+        "name": "paperId",
+        "tsType": "string",
+        "optional": false
+      },
+      {
+        "name": "reasonId",
+        "tsType": "string | null",
+        "optional": false
+      },
+      {
+        "name": "reason",
+        "tsType": "string",
+        "optional": true
+      },
+      {
+        "name": "by",
+        "tsType": "ScreenedBy",
+        "optional": true
+      }
+    ]
+  },
+  {
+    "type": "UNEXCLUDE_PAPER",
+    "doc": "Undo a paper's exclusion, returning it to unscreened.",
+    "fields": [
+      {
+        "name": "paperId",
+        "tsType": "string",
+        "optional": false
+      }
+    ]
+  },
+  {
+    "type": "RESET_AI_SCREENING",
+    "doc": "Clear every screening decision the AI made, leaving human decisions untouched.",
+    "fields": []
+  },
+  {
+    "type": "UPDATE_REVIEW_NOTE",
+    "doc": "Set the note on a review-list paper (full new text).",
+    "fields": [
+      {
+        "name": "paperId",
+        "tsType": "string",
+        "optional": false
+      },
+      {
+        "name": "note",
+        "tsType": "string",
+        "optional": false
+      }
+    ]
+  },
+  {
     "type": "ADD_TO_REVIEW",
     "doc": "Add a search-result paper to the review list.",
     "fields": [
@@ -123,6 +214,16 @@ export const ACTION_CATALOG: CatalogEntry[] = [
         "name": "status",
         "tsType": "'included' | 'maybe'",
         "optional": false
+      },
+      {
+        "name": "reason",
+        "tsType": "string",
+        "optional": true
+      },
+      {
+        "name": "by",
+        "tsType": "ScreenedBy",
+        "optional": true
       }
     ]
   },

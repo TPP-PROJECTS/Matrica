@@ -1,7 +1,7 @@
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import topics, chat, reasoning, queries, search, recognise, matrix, systems, synthesis, gaps, final_question, prompts, assistant, bridge, projects
+from routers import topics, chat, reasoning, queries, search, recognise, matrix, systems, synthesis, gaps, final_question, prompts, assistant, bridge, projects, reviews, screening
 from reporter import OrchestrationReporter
 from analytics.middleware import AnalyticsMiddleware
 from analytics.router import router as analytics_router
@@ -16,7 +16,12 @@ _origins_env = os.getenv("CORS_ORIGINS", "")
 _origins = (
     [o.strip() for o in _origins_env.split(",") if o.strip()]
     if _origins_env
-    else ["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:5176"]
+    else [
+        "http://localhost:5173", "http://localhost:5174",
+        "http://localhost:5175", "http://localhost:5176",
+        "http://127.0.0.1:5173", "http://127.0.0.1:5174",
+        "http://127.0.0.1:5175", "http://127.0.0.1:5176",
+    ]
 )
 
 app.add_middleware(
@@ -47,6 +52,8 @@ app.include_router(prompts.router, prefix="/api")
 app.include_router(assistant.router, prefix="/api")
 app.include_router(bridge.router, prefix="/api")
 app.include_router(projects.router, prefix="/api")
+app.include_router(reviews.router, prefix="/api")
+app.include_router(screening.router, prefix="/api")
 
 
 @app.get("/api/health")

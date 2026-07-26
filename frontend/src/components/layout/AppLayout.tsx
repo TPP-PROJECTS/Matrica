@@ -7,7 +7,6 @@ import { RightPanel } from './RightPanel'
 import { VersionHistoryDrawer } from '../overlays/VersionHistoryDrawer'
 import { BackNavModal } from '../overlays/BackNavModal'
 import { StaleStepBanner } from '../overlays/StaleStepBanner'
-import { ConsistencyAlertBanner } from '../overlays/ConsistencyAlertBanner'
 import { EditModeBanner } from '../overlays/EditModeBanner'
 
 interface Props {
@@ -37,8 +36,6 @@ export function AppLayout({ children }: Props) {
 
       {/* Banners below top bar */}
       {state.editMode && <EditModeBanner />}
-      {state.consistencyAlert && <ConsistencyAlertBanner />}
-
       {/* Main body */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left nav */}

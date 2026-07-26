@@ -11,6 +11,7 @@ def _get_prompts() -> dict[str, str]:
     from routers.gaps import GAP_SYSTEM_PROMPT
     from routers.final_question import TOPICS_SYSTEM, STRUCTURE_SYSTEM
     from routers.matrix import SYSTEM_PROMPT, SYSTEM_REVIEW_PROMPT, AUTOFILL_LITERATURE_PROMPT, AUTOFILL_SYSTEM_PROMPT
+    from routers.screening import SCREENING_SYSTEM_PROMPT
 
     return {
         'topics-generate': TOPICS_SYSTEM_PROMPT,
@@ -24,6 +25,7 @@ def _get_prompts() -> dict[str, str]:
         'matrix-sys-columns': SYSTEM_REVIEW_PROMPT,
         'matrix-lit-autofill': AUTOFILL_LITERATURE_PROMPT,
         'matrix-sys-autofill': AUTOFILL_SYSTEM_PROMPT,
+        'screening-classify': SCREENING_SYSTEM_PROMPT,
     }
 
 

@@ -94,7 +94,7 @@ def get_stuck(
 ) -> list[dict[str, Any]]:
     """
     Sessions that look stuck: no activity for idle_minutes minutes,
-    haven't completed the flow (max_step < 8), and have been running
+    haven't completed the flow (max_step < 9), and have been running
     for at least 3 minutes so fresh sessions aren't included.
     """
     return db.get_stuck_sessions(idle_minutes)

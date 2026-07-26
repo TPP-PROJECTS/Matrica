@@ -48,18 +48,6 @@ export function ChatMessage({ message, onApply, onSkip }: Props) {
             </span>
           )}
           <p>{message.content}</p>
-          {message.actionButtons && (
-            <div className="flex gap-2 mt-2">
-              {message.actionButtons.map(btn => (
-                <button
-                  key={btn.action}
-                  className="px-2 py-1 text-[11px] rounded bg-blue-500 text-white hover:bg-blue-600 transition-colors"
-                >
-                  {btn.label}
-                </button>
-              ))}
-            </div>
-          )}
         </div>
       </div>
     )
@@ -69,15 +57,6 @@ export function ChatMessage({ message, onApply, onSkip }: Props) {
     return (
       <div className="bg-amber-50 border border-amber-400 rounded-xl px-3 py-2 text-[13px] text-zinc-800">
         <p>{message.content}</p>
-        {message.actionButtons && (
-          <div className="flex gap-2 mt-2">
-            {message.actionButtons.map(btn => (
-              <button key={btn.action} className="px-3 py-1 text-[11px] rounded bg-zinc-900 text-white hover:bg-zinc-700 transition-colors">
-                {btn.label}
-              </button>
-            ))}
-          </div>
-        )}
       </div>
     )
   }
@@ -114,15 +93,6 @@ export function ChatMessage({ message, onApply, onSkip }: Props) {
     return (
       <div className="bg-teal-50 border border-teal-400 rounded-xl px-3 py-2 text-[13px] text-zinc-800">
         <p>{message.content}</p>
-        {message.actionButtons && (
-          <div className="flex gap-2 mt-2">
-            {message.actionButtons.map(btn => (
-              <button key={btn.action} className="px-2 py-1 text-[11px] rounded border border-teal-500 text-teal-700 hover:bg-teal-100 transition-colors">
-                {btn.label}
-              </button>
-            ))}
-          </div>
-        )}
       </div>
     )
   }

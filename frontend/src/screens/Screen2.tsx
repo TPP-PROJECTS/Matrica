@@ -167,6 +167,8 @@ export function Screen2() {
   useEffect(() => {
     if (systemItems.length > 0) return;
     fetchRecommendations();
+  // This is an initial-load request. Manual retries call the same function.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function fetchRecommendations() {

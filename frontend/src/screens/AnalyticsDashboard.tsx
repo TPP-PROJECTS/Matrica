@@ -73,13 +73,14 @@ interface SessionEvent {
 
 const STEP_LABELS: Record<number, string> = {
   1: 'Chat & Define',
-  2: 'System Review',
-  3: 'Explore & Search',
-  4: 'Select Papers',
-  5: 'Matrix Table',
-  6: 'Synthesis',
-  7: 'Gap & Statement',
-  8: 'Final Question',
+  2: 'Matrix Initial',
+  3: 'System Review',
+  4: 'Explore & Search',
+  5: 'Select Papers',
+  6: 'Matrix Table',
+  7: 'Synthesis',
+  8: 'Gap & Statement',
+  9: 'Final Question',
 }
 
 function tsToTime(ts: number) {
@@ -232,7 +233,7 @@ export function AnalyticsDashboard() {
   const [regen, setRegen] = useState<RegenerationRow[]>([])
   const [selectedSession, setSelectedSession] = useState<Session | null>(null)
   const [loading, setLoading] = useState(true)
-  const [lastRefresh, setLastRefresh] = useState(Date.now())
+  const [lastRefresh, setLastRefresh] = useState(() => Date.now())
 
   const fetchAll = useCallback(async () => {
     try {
@@ -259,9 +260,12 @@ export function AnalyticsDashboard() {
   }, [])
 
   useEffect(() => {
-    fetchAll()
+    const initial = window.setTimeout(() => { void fetchAll() }, 0)
     const interval = setInterval(fetchAll, 30_000)
-    return () => clearInterval(interval)
+    return () => {
+      clearTimeout(initial)
+      clearInterval(interval)
+    }
   }, [fetchAll])
 
   const maxReached = funnel[0]?.sessions_reached ?? 1
@@ -506,11 +510,11 @@ export function AnalyticsDashboard() {
                         <td className="px-3 py-2 text-zinc-400">{s.domain || '—'}</td>
                         <td className="px-3 py-2">
                           <span className={`px-1.5 py-0.5 rounded text-[10px] ${
-                            s.max_step === 8 ? 'bg-green-900/40 text-green-300' :
+                            s.max_step === 9 ? 'bg-green-900/40 text-green-300' :
                             s.max_step >= 5 ? 'bg-blue-900/40 text-blue-300' :
                             'bg-zinc-700 text-zinc-400'
                           }`}>
-                            {s.max_step === 8 ? '✓ Complete' : `Step ${s.max_step}`}
+                            {s.max_step === 9 ? '✓ Complete' : `Step ${s.max_step}`}
                           </span>
                         </td>
                         <td className="px-3 py-2 text-zinc-400">{s.event_count}</td>

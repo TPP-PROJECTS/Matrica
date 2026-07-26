@@ -1,3 +1,4 @@
+import { totalIdentified } from '../types'
 import type { AppState, ResultCard } from '../types'
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
@@ -42,7 +43,7 @@ function bibKey(paper: ResultCard, used: Set<string>): string {
   const first = splitAuthors(paper.authors)[0] || 'anon'
   const surname = first.split(/\s+/).pop() || 'anon'
   const word = (paper.title.match(/[A-Za-z]{4,}/) || ['ref'])[0].toLowerCase()
-  let key = `${surname.toLowerCase().replace(/[^a-z]/g, '')}${paper.year || ''}${word}`
+  const key = `${surname.toLowerCase().replace(/[^a-z]/g, '')}${paper.year || ''}${word}`
   let candidate = key
   let n = 1
   while (used.has(candidate)) candidate = `${key}${String.fromCharCode(96 + ++n)}`
@@ -122,20 +123,53 @@ export function exportMatrixCSV(state: AppState): void {
 // Screening funnel derived from the tool's own data, in the PRISMA 2020 shape.
 
 export function exportPrismaCSV(state: AppState): void {
-  const identified = state.results.length
-  const duplicates = state.results.filter(r => r.isDuplicate).length
-  const screened = identified - duplicates
+  // PRISMA separates the two identification pathways, so database searching and
+  // citation chasing are reported as their own lines.
+  const fromSearch = state.results.filter(r => (r.origin ?? 'search') !== 'snowball').length
+  const fromSnowball = state.results.filter(r => r.origin === 'snowball').length
+  const identifiedTotal = totalIdentified(state.screening)
+  const duplicates = state.screening.duplicatesRemoved
+  const retrieved = state.results.length
+  const excludedPapers = state.results.filter(r => r.status === 'excluded')
   const inReview = state.reviewList.length
-  const excluded = Math.max(screened - inReview, 0)
   const included = state.reviewList.filter(r => r.status === 'included').length
 
   const rows: string[][] = [
-    ['Records identified through database searching', String(identified)],
-    ['Duplicate records removed', String(duplicates)],
-    ['Records screened', String(screened)],
-    ['Records excluded', String(excluded)],
-    ['Reports assessed (added to review list)', String(inReview)],
+    ['Records identified — database searching (total hits reported)', String(identifiedTotal)],
+    ['Records retrieved into the review tool — database searching', String(fromSearch)],
+    ['Records identified — citation searching (snowballing)', String(fromSnowball)],
+    ['Duplicate records removed before screening', String(duplicates)],
+    ['Records screened', String(retrieved)],
+    ['Records excluded (with reasons, itemised below)', String(excludedPapers.length)],
+    ['Reports assessed for eligibility (added to review list)', String(inReview)],
     ['Studies included in review', String(included)],
   ]
+
+  // "Excluded, with reasons" — the breakdown journals require, which the tool
+  // can only produce because every exclusion had to name a criterion.
+  const byReason = new Map<string, number>()
+  for (const p of excludedPapers) {
+    const label = p.exclusionReasonId
+      ? state.criteria.find(c => c.id === p.exclusionReasonId)?.label ?? 'Reason no longer defined'
+      : 'Did not meet inclusion criteria'
+    byReason.set(label, (byReason.get(label) ?? 0) + 1)
+  }
+  if (byReason.size > 0) {
+    rows.push(['', ''])
+    rows.push(['Excluded — reason', 'Count'])
+    for (const [label, n] of [...byReason].sort((a, b) => b[1] - a[1])) {
+      rows.push([`  ${label}`, String(n)])
+    }
+  }
+
+  // The eligibility criteria the screening was carried out against.
+  if (state.criteria.length > 0) {
+    rows.push(['', ''])
+    rows.push(['Eligibility criteria', 'Type'])
+    for (const c of state.criteria) {
+      rows.push([`  ${c.label}`, c.kind])
+    }
+  }
+
   downloadText(`${safeBase(state)}_prisma_flow.csv`, 'text/csv', toCsv(['PRISMA stage', 'Count'], rows))
 }

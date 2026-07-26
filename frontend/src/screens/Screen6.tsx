@@ -3,6 +3,7 @@ import { useApp } from '../store/AppContext'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
 import type { SynthesisBlock, Theme, MatrixCell } from '../types'
 import { API, apiFetch } from '../lib/api'
+import { journalEntry } from '../lib/decisionJournal'
 
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -263,6 +264,7 @@ function SynthesisBlockCard({
   const [draft, setDraft] = useState(block.content)
   const [showPromptModal, setShowPromptModal] = useState(false)
   const [customPrompt, setCustomPrompt] = useState<string | null>(null)
+  const [editJustification, setEditJustification] = useState('')
 
   async function handleRegenerate(prompt?: string | null) {
     setRegenerating(true)
@@ -275,6 +277,21 @@ function SynthesisBlockCard({
 
   function saveEdit() {
     dispatch({ type: 'UPDATE_SYNTHESIS_BLOCK', themeId: theme.id, blockId: block.id, content: draft })
+    dispatch({
+      type: 'ADD_DECISION_JOURNAL_ENTRY',
+      entry: journalEntry({
+        kind: 'justification',
+        step: 7,
+        action: 'Manually edited synthesis',
+        entityType: 'synthesis',
+        entityId: `${theme.id}:${block.id}`,
+        entityLabel: `${theme.name} — ${block.title}`,
+        previousValue: block.content,
+        newValue: draft,
+        justification: editJustification.trim() || undefined,
+      }),
+    })
+    setEditJustification('')
     setEditingContent(false)
   }
 
@@ -333,8 +350,14 @@ function SynthesisBlockCard({
               className="w-full border border-zinc-300 rounded px-2 py-1.5 text-[11px] text-zinc-800 resize-none focus:outline-none focus:border-zinc-500 bg-white"
               autoFocus
             />
+            <input
+              value={editJustification}
+              onChange={e => setEditJustification(e.target.value)}
+              placeholder="Why did you change this synthesis? (optional)"
+              className="w-full h-7 border border-blue-200 bg-white rounded px-2 text-[10px] text-zinc-700 outline-none focus:border-blue-400"
+            />
             <div className="flex gap-2 justify-end">
-              <button onClick={() => { setDraft(block.content); setEditingContent(false) }} className="px-2 py-0.5 text-[10px] border border-zinc-300 rounded text-zinc-600 hover:bg-zinc-50">Cancel</button>
+              <button onClick={() => { setDraft(block.content); setEditJustification(''); setEditingContent(false) }} className="px-2 py-0.5 text-[10px] border border-zinc-300 rounded text-zinc-600 hover:bg-zinc-50">Cancel</button>
               <button onClick={saveEdit} className="px-2 py-0.5 text-[10px] bg-zinc-800 text-white rounded hover:bg-zinc-700">Save</button>
             </div>
           </div>
@@ -502,9 +525,11 @@ export function Screen6() {
   const [activeThemeId, setActiveThemeId] = useState(state.activeThemeId)
   const [showAddAnalyst, setShowAddAnalyst] = useState(false)
   const [gapGenerating, setGapGenerating] = useState(false)
+  const [generationError, setGenerationError] = useState<string | null>(null)
 
   async function handleContinueToGap() {
     setGapGenerating(true)
+    setGenerationError(null)
     try {
       const selectedSystems = (state.systemItems ?? []).filter(s => s.selected)
       const res = await apiFetch(`${API}/gaps/generate`, {
@@ -539,14 +564,19 @@ export function Screen6() {
           })),
         }),
       })
-      if (res.ok) {
-        const data = await res.json()
-        if (data.statement) dispatch({ type: 'UPDATE_GAP_STATEMENT', text: data.statement })
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        throw new Error(body?.detail || `Gap generation failed (HTTP ${res.status})`)
       }
-    } catch { /* silent — advance anyway */ }
+      const data = await res.json()
+      if (!data.statement?.trim()) throw new Error('Gap generation returned an empty statement.')
+      dispatch({ type: 'UPDATE_GAP_STATEMENT', text: data.statement })
+      dispatch({ type: 'ADVANCE_STEP' })
+    } catch (error) {
+      setGenerationError(error instanceof Error ? error.message : 'Gap generation failed.')
+    }
     finally {
       setGapGenerating(false)
-      dispatch({ type: 'ADVANCE_STEP' })
     }
   }
 
@@ -554,6 +584,7 @@ export function Screen6() {
 
   async function handleRegenerate(block: SynthesisBlock, customPrompt?: string | null) {
     if (!activeTheme) return
+    setGenerationError(null)
     try {
       const res = await apiFetch(`${API}/synthesis/regenerate-block`, {
         method: 'POST',
@@ -577,10 +608,16 @@ export function Screen6() {
           custom_system_prompt: customPrompt ?? null,
         }),
       })
-      if (!res.ok) return
+      if (!res.ok) {
+        const body = await res.json().catch(() => null)
+        throw new Error(body?.detail || `Block regeneration failed (HTTP ${res.status})`)
+      }
       const data = await res.json()
+      if (!data.content?.trim()) throw new Error('Block regeneration returned empty content.')
       dispatch({ type: 'UPDATE_SYNTHESIS_BLOCK', themeId: activeTheme.id, blockId: block.id, content: data.content })
-    } catch { /* silent */ }
+    } catch (error) {
+      setGenerationError(error instanceof Error ? error.message : 'Block regeneration failed.')
+    }
   }
 
   return (
@@ -592,17 +629,6 @@ export function Screen6() {
         <div className="flex-1" />
         <span className="text-[11px] text-zinc-500">Step 6 · Synthesis</span>
       </div>
-
-      {/* Consistency alert */}
-      {state.consistencyAlert && (
-        <div className="flex items-center gap-3 px-4 border-2 border-red-400 bg-red-50" style={{ minHeight: 40 }}>
-          <span className="text-[11px] text-red-800 flex-1">
-            ⚠ SYSTEM ALERT: {state.consistencyAlert.claim} contradicts {state.consistencyAlert.data}
-          </span>
-          <button className="px-2 py-1 bg-red-500 text-white text-[10px] rounded">Review conflict</button>
-          <button onClick={() => dispatch({ type: 'DISMISS_CONSISTENCY_ALERT' })} className="text-[10px] text-zinc-600 hover:text-zinc-900">Dismiss</button>
-        </div>
-      )}
 
       {/* Main two-column */}
       <div className="flex flex-1 overflow-hidden">
@@ -658,6 +684,11 @@ export function Screen6() {
 
       {/* Footer */}
       <div className="h-12 border-t border-zinc-200 bg-white flex items-center justify-end px-4 gap-3 shrink-0">
+        {generationError && (
+          <span className="text-[10px] text-red-600 flex-1 truncate" title={generationError}>
+            {generationError}
+          </span>
+        )}
         {gapGenerating && (
           <span className="flex items-center gap-1.5 text-[10px] text-zinc-400">
             <span className="w-3 h-3 border border-zinc-300 border-t-zinc-600 rounded-full animate-spin" />
