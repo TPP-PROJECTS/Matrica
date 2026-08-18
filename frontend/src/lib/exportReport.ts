@@ -6,10 +6,23 @@ import {
   Table, TableRow, TableCell, WidthType, BorderStyle,
   AlignmentType,
 } from 'docx'
-import type { AppState } from '../types'
+import type { AppState, SearchFilters } from '../types'
 import { primaryResearchQuestion, reportResearchQuestions } from './researchQuestions'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+/** Human-readable rendering of the database limits in force for one search. */
+function describeFilters(filters: SearchFilters | undefined): string {
+  if (!filters) return 'None recorded'
+  const parts: string[] = []
+  if (filters.yearFrom !== null || filters.yearTo !== null) {
+    parts.push(`Years ${filters.yearFrom ?? 'any'}\u2013${filters.yearTo ?? 'any'}`)
+  }
+  if (filters.openAccessOnly) parts.push('Open access only')
+  if (filters.excludePreprints) parts.push('Preprints excluded')
+  if (filters.language) parts.push(`Language: ${filters.language}`)
+  return parts.length > 0 ? parts.join('; ') : 'None'
+}
 
 function h1(text: string) {
   return new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun({ text, bold: true, size: 28 })] })
@@ -129,7 +142,28 @@ export async function exportAsDocx(state: AppState): Promise<void> {
         (q.databases ?? []).join(', '),
         q.priority,
       ]),
-    ), spacer(), divider())
+    ), spacer())
+
+    // PRISMA 2020 item 7 wants the strategy as it was actually executed, per
+    // database, with its limits and date — not the query the reviewer typed.
+    const executed = state.queries.filter(q => q.lastRunAt)
+    if (executed.length > 0) {
+      sections.push(para('Search strategy as executed', { bold: true }), spacer())
+      sections.push(makeTable(
+        ['#', 'Database', 'Strategy as run', 'Limits', 'Date', 'Hits'],
+        executed.flatMap(q =>
+          (q.sourceQueries ?? []).map(sq => [
+            String(q.queryN),
+            sq.source,
+            sq.queryAsRun,
+            describeFilters(q.lastRunFilters),
+            q.lastRunAt ? new Date(q.lastRunAt).toISOString().slice(0, 10) : '—',
+            String(sq.hits),
+          ]),
+        ),
+      ), spacer())
+    }
+    sections.push(divider())
   }
 
   // ── 4. Included Papers ───────────────────────────────────────────────────

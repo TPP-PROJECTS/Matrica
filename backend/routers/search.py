@@ -84,11 +84,28 @@ class PaperResult(BaseModel):
     source: str = "openalex"
 
 
+class SourceQuery(BaseModel):
+    """Exactly what one database was asked, and what it reported back.
+
+    PRISMA 2020 item 7 requires the full search strategy for every database,
+    including any filters, so the search can be re-run and audited. The tool
+    rewrites the user's query per database — OpenAlex has no boolean syntax and
+    PubMed takes its limits as extra query terms — so reporting the string the
+    user typed would not be reproducible. This carries the string as actually
+    sent.
+    """
+    source: str
+    query_as_run: str
+    hits: int
+
+
 class SearchResponse(BaseModel):
     papers: list[PaperResult]
     query_used: str
     sources_searched: list[str] = ["OpenAlex", "PubMed"]
     source_errors: list[str] = []
+    # Per-database strategies, for the reproducible search-strategy appendix.
+    source_queries: list[SourceQuery] = []
     # Total hits the databases report for this query, across all pages. This is
     # the "records identified" figure a PRISMA flow diagram needs, so it is
     # reported even though only `limit` papers come back in this response.
@@ -414,6 +431,13 @@ async def search_papers(req: SearchRequest):
 
     source_errors: list[str] = []
     sources_searched: list[str] = []
+    source_queries: list[SourceQuery] = []
+
+    pubmed_query = pubmed_term(req.query, req.filters)
+    openalex_filters = openalex_filter_string(req.filters)
+    openalex_as_run = (
+        f"{openalex_query}  [filter: {openalex_filters}]" if openalex_filters else openalex_query
+    )
 
     if isinstance(openalex_outcome, BaseException):
         source_errors.append(str(openalex_outcome))
@@ -421,6 +445,9 @@ async def search_papers(req: SearchRequest):
     else:
         sources_searched.append("OpenAlex")
         openalex_results, openalex_total = openalex_outcome
+        source_queries.append(SourceQuery(
+            source="OpenAlex", query_as_run=openalex_as_run, hits=openalex_total,
+        ))
 
     if isinstance(pubmed_outcome, BaseException):
         source_errors.append(str(pubmed_outcome))
@@ -428,6 +455,9 @@ async def search_papers(req: SearchRequest):
     else:
         sources_searched.append("PubMed")
         pubmed_results, pubmed_total = pubmed_outcome
+        source_queries.append(SourceQuery(
+            source="PubMed", query_as_run=pubmed_query, hits=pubmed_total,
+        ))
 
     if not sources_searched:
         raise HTTPException(
@@ -459,6 +489,7 @@ async def search_papers(req: SearchRequest):
         query_used=openalex_query,
         sources_searched=sources_searched,
         source_errors=source_errors,
+        source_queries=source_queries,
         total_available=openalex_total + pubmed_total,
         page=page,
         has_more=has_more,

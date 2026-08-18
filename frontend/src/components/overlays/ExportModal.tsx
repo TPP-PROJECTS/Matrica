@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useApp } from '../../store/AppContext'
 import { exportAsDocx, exportAsPdf } from '../../lib/exportReport'
-import { exportBibTeX, exportRIS, exportMatrixCSV, exportPrismaCSV } from '../../lib/exportData'
+import { exportBibTeX, exportRIS, exportMatrixCSV, exportPrismaCSV, exportSearchStrategyCSV } from '../../lib/exportData'
 import { reportResearchQuestions } from '../../lib/researchQuestions'
 import { downloadSessionFile } from '../../lib/sessionStorage'
 
@@ -24,12 +24,14 @@ export function ExportModal({ onClose }: Props) {
   const hasStructure = !!state.selectedFinalTopicId || paperStructureCount > 0
   const citableCount = state.reviewList.filter(r => r.status === 'included' || r.status === 'maybe' || r.status === 'saved').length
   const matrixCount  = state.matrixRows.length
+  const searchedQueries = state.queries.filter(q => q.lastRunAt).length
 
   const dataExports = [
     { key: 'bib',    label: 'BibTeX (.bib)',    hint: 'Import into Zotero / Mendeley', ready: citableCount > 0, run: () => exportBibTeX(state) },
     { key: 'ris',    label: 'RIS (.ris)',       hint: 'Import into EndNote / RefWorks', ready: citableCount > 0, run: () => exportRIS(state) },
     { key: 'csv',    label: 'Matrix (.csv)',    hint: 'Open the literature matrix in Excel', ready: matrixCount > 0, run: () => exportMatrixCSV(state) },
     { key: 'prisma', label: 'PRISMA flow (.csv)', hint: 'Screening counts for a PRISMA diagram', ready: state.results.length > 0, run: () => exportPrismaCSV(state) },
+    { key: 'strategy', label: 'Search strategy (.csv)', hint: 'PRISMA appendix: full query per database, dates, hits', ready: searchedQueries > 0, run: () => exportSearchStrategyCSV(state) },
     { key: 'session', label: 'Session backup (.json)', hint: 'Complete working copy — re-importable into this tool', ready: true, run: () => downloadSessionFile(state) },
   ]
 
@@ -37,6 +39,7 @@ export function ExportModal({ onClose }: Props) {
     { label: 'Research Profile',    ready: !!state.profile.domain },
     { label: `Topics (${topicsCount})`,   ready: topicsCount > 0 },
     { label: `Queries (${state.queries.length})`, ready: state.queries.length > 0 },
+    { label: 'Search Strategy (reproducible)', ready: searchedQueries > 0 },
     { label: `Papers (${papersCount})`,  ready: papersCount > 0 },
     { label: 'Literature Matrix',   ready: state.matrixRows.length > 0 },
     { label: `Synthesis (${themesCount} themes)`, ready: themesCount > 0 },

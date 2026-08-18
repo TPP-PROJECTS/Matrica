@@ -415,6 +415,18 @@ function QueryCardItem({ query }: { query: QueryCard }) {
       }
       const data = await res.json()
       setSearchedSources(data.sources_searched ?? [])
+      // Record the strategy as executed, for the PRISMA search-strategy appendix.
+      dispatch({
+        type: 'RECORD_QUERY_RUN',
+        queryId: query.id,
+        runAt: new Date().toISOString(),
+        filters: state.searchFilters,
+        sourceQueries: (data.source_queries ?? []).map(
+          (sq: { source: string; query_as_run: string; hits: number }) => ({
+            source: sq.source, queryAsRun: sq.query_as_run, hits: sq.hits,
+          }),
+        ),
+      })
       if (data.source_errors?.length) setSourceWarning(data.source_errors.join(' · '))
       const papers = data.papers as { title: string; authors: string; year: number | null; url: string; openAccessUrl: string | null; abstract: string }[]
 

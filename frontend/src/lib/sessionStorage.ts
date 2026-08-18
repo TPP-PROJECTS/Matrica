@@ -1,4 +1,4 @@
-import type { AppState, SessionMeta, SessionSnapshot } from '../types'
+import type { AppState, SessionMeta, SessionSnapshot, VersionEntry } from '../types'
 import { API, apiFetch } from './api'
 
 const PREFIX = 'tpp'
@@ -308,4 +308,46 @@ export async function migrateLocalSessionsToRemote(): Promise<void> {
   } catch {
     // Backend unreachable — nothing to migrate; localStorage remains the cache.
   }
+}
+
+// ── Version checkpoints ───────────────────────────────────────────────────────
+//
+// Checkpoints are stored server-side. A snapshot is the same size as the whole
+// project, so keeping a history of them in localStorage would evict the working
+// session — the very failure the save path above now has to recover from.
+
+/** Take a checkpoint of the current state. Throws if the backend rejects it. */
+export async function createVersion(
+  state: AppState,
+  label: string,
+  trigger: VersionEntry['trigger'] = 'manual',
+): Promise<VersionEntry> {
+  const snapshot = toSnapshot(state)
+  // A checkpoint of a project the backend has never seen would be an orphan,
+  // so make sure the project itself is there first.
+  await pushSessionNow(snapshot)
+
+  const res = await apiFetch(`${API}/projects/${state.sessionId}/versions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label, trigger, snapshot }),
+  })
+  if (!res.ok) throw new Error(`Could not save a checkpoint (HTTP ${res.status})`)
+  return (await res.json()) as VersionEntry
+}
+
+export async function listVersions(projectId: string): Promise<VersionEntry[]> {
+  const res = await apiFetch(`${API}/projects/${projectId}/versions`)
+  if (!res.ok) throw new Error(`Could not load checkpoints (HTTP ${res.status})`)
+  return (await res.json()) as VersionEntry[]
+}
+
+export async function fetchVersion(projectId: string, versionId: string): Promise<SessionSnapshot> {
+  const res = await apiFetch(`${API}/projects/${projectId}/versions/${versionId}`)
+  if (!res.ok) throw new Error(`Could not load that checkpoint (HTTP ${res.status})`)
+  return (await res.json()) as SessionSnapshot
+}
+
+export async function deleteVersion(projectId: string, versionId: string): Promise<void> {
+  await apiFetch(`${API}/projects/${projectId}/versions/${versionId}`, { method: 'DELETE' })
 }

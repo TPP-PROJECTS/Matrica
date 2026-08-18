@@ -116,6 +116,24 @@ def _init_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_projects_updated ON projects(updated_at DESC);
 
+        -- Version checkpoints: immutable point-in-time copies of a project.
+        -- Kept server-side rather than in localStorage because a snapshot is
+        -- the same size as the project itself, and a handful of them would
+        -- exhaust the browser's storage quota for the working session.
+        CREATE TABLE IF NOT EXISTS project_versions (
+            id          TEXT PRIMARY KEY,
+            project_id  TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            step        INTEGER,
+            step_name   TEXT,
+            label       TEXT,
+            trigger     TEXT,
+            snapshot    TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_versions_project
+            ON project_versions(project_id, created_at DESC);
+
         -- Peer review: one row per invitation. `token` is the bearer secret
         -- embedded in the share link; it is the row's only access credential,
         -- so it is indexed but never returned by any owner-facing list query
@@ -257,6 +275,73 @@ def get_project(project_id: str) -> str | None:
 def delete_project(project_id: str) -> None:
     conn = get_conn()
     conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    conn.execute("DELETE FROM project_versions WHERE project_id = ?", (project_id,))
+    conn.commit()
+
+
+# ── Version checkpoints ───────────────────────────────────────────────────────
+
+# Kept per project so a long review cannot fill the database with history.
+# Oldest are dropped first; the working project itself is never affected.
+MAX_VERSIONS_PER_PROJECT = 40
+
+
+def create_version(
+    version_id: str,
+    project_id: str,
+    created_at: str,
+    step: int | None,
+    step_name: str | None,
+    label: str | None,
+    trigger: str | None,
+    snapshot: str,
+) -> None:
+    conn = get_conn()
+    conn.execute(
+        """INSERT INTO project_versions
+           (id, project_id, created_at, step, step_name, label, trigger, snapshot)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (version_id, project_id, created_at, step, step_name, label, trigger, snapshot),
+    )
+    conn.execute(
+        """DELETE FROM project_versions
+           WHERE project_id = ?
+             AND id NOT IN (
+                 SELECT id FROM project_versions
+                 WHERE project_id = ?
+                 ORDER BY created_at DESC, rowid DESC
+                 LIMIT ?
+             )""",
+        (project_id, project_id, MAX_VERSIONS_PER_PROJECT),
+    )
+    conn.commit()
+
+
+def list_versions(project_id: str) -> list[dict]:
+    """Checkpoint metadata, newest first. The snapshot blob is not included."""
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT id, project_id, created_at, step, step_name, label, trigger
+           FROM project_versions
+           WHERE project_id = ?
+           ORDER BY created_at DESC, rowid DESC""",
+        (project_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_version(version_id: str) -> str | None:
+    """Raw snapshot JSON for one checkpoint, or None if it is not there."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT snapshot FROM project_versions WHERE id = ?", (version_id,)
+    ).fetchone()
+    return row["snapshot"] if row else None
+
+
+def delete_version(version_id: str) -> None:
+    conn = get_conn()
+    conn.execute("DELETE FROM project_versions WHERE id = ?", (version_id,))
     conn.commit()
 
 

@@ -8,6 +8,8 @@ import { runPool } from '../lib/runPool'
 import { partitionNewPapers } from '../lib/dedupe'
 import { journalEntry } from '../lib/decisionJournal'
 import { newId } from '../lib/ids'
+import { SourceProvenance } from '../components/shared/SourceProvenance'
+import { locateQuote } from '../lib/provenance'
 
 // How many auto-fill requests are in flight at once. Enough to hide most of the
 // per-request latency without hammering the API from a single browser tab.
@@ -49,12 +51,12 @@ function EvidencePopover({
   const [error, setError] = useState(false)
 
   // Position the popover to the right of the button, flip left if near right edge
-  const POPOVER_W = 320
+  const POPOVER_W = 380
   const vw = window.innerWidth
   const left = target.rect.right + 10 + POPOVER_W > vw
     ? target.rect.left - POPOVER_W - 10
     : target.rect.right + 10
-  const top = Math.min(target.rect.top, window.innerHeight - 280)
+  const top = Math.min(target.rect.top, Math.max(8, window.innerHeight - 470))
 
   useEffect(() => {
     async function fetch_() {
@@ -114,7 +116,7 @@ function EvidencePopover({
       {/* Popover card */}
       <div
         className="fixed z-50 bg-white border border-zinc-200 rounded-xl shadow-2xl flex flex-col"
-        style={{ left, top, width: POPOVER_W, maxHeight: 340 }}
+        style={{ left, top, width: POPOVER_W, maxHeight: 460 }}
       >
         {/* Header */}
         <div className="flex items-center gap-2 px-3 py-2.5 border-b border-zinc-100 shrink-0">
@@ -133,6 +135,16 @@ function EvidencePopover({
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-3 py-2.5 space-y-3">
+          {/* Grounded provenance renders immediately — it needs no round trip,
+              and it is the part a reviewer can actually check. The AI reasoning
+              below is commentary on top of it. */}
+          {target.paperTitle && (
+            <SourceProvenance
+              sourceText={target.paperAbstract ?? ''}
+              quote={target.cell.sourceRef}
+            />
+          )}
+
           {loading && (
             <div className="flex items-center gap-2 py-4 justify-center">
               <span className="w-4 h-4 border-2 border-violet-200 border-t-violet-600 rounded-full animate-spin" />
@@ -147,7 +159,7 @@ function EvidencePopover({
           {!loading && !error && reasoning && (
             <>
               <div>
-                <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1.5">Evidence & Reasoning</p>
+                <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1.5">AI Reasoning</p>
                 <p className="text-[11px] text-zinc-700 leading-relaxed">{reasoning}</p>
               </div>
 
@@ -181,12 +193,22 @@ function EvidencePopover({
 // ── Clean cell renderer (no dots, no badges) ──────────────────────────────────
 function CellContent({
   cell,
+  sourceText,
   onEvidence,
 }: {
   cell: MatrixCell | undefined
   column: string
+  /** The text the cell claims to be extracted from, for checking its quote. */
+  sourceText?: string
   onEvidence?: (rect: DOMRect) => void
 }) {
+  // A cell claiming a quote that is not in the source is the one case worth
+  // surfacing on the grid itself. Making the reviewer open every cell to find
+  // those defeats the purpose — this is the audit they are here to do.
+  const quoteMissing = Boolean(
+    sourceText && cell?.sourceRef && !locateQuote(sourceText, cell.sourceRef),
+  )
+
   if (!cell || cell.evidenceType === 'not_available') {
     return (
       <td className="border border-zinc-200 bg-zinc-50 px-2 py-1 min-w-[140px]">
@@ -196,8 +218,20 @@ function CellContent({
   }
 
   return (
-    <td className="relative border border-zinc-200 bg-white px-2 py-1.5 min-w-[140px] group">
+    <td
+      className={`relative border px-2 py-1.5 min-w-[140px] group ${
+        quoteMissing ? 'border-red-200 bg-red-50/40' : 'border-zinc-200 bg-white'
+      }`}
+    >
       <p className="text-[10px] text-zinc-800 leading-snug pr-5">{cell.value}</p>
+      {quoteMissing && (
+        <p
+          className="text-[8px] font-bold text-red-600 mt-0.5"
+          title="The supporting quote for this value is not present in the abstract"
+        >
+          ✕ quote not in source
+        </p>
+      )}
       {onEvidence && (
         <button
           onClick={e => {
@@ -772,8 +806,8 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
         if (!res.ok) throw new Error()
         const data = await res.json()
         const cells: Record<string, MatrixCell> = {}
-        for (const [col, cd] of Object.entries(data.cells as Record<string, { value: string; evidenceType: string; confidenceScore: number; confidenceLevel: string; extractionMethod: string }>)) {
-          cells[col] = { value: cd.value, aiGenerated: true, confidenceScore: cd.confidenceScore, confidenceLevel: cd.confidenceLevel as ConfidenceLevel, evidenceType: cd.evidenceType as MatrixCell['evidenceType'], sourceRef: '', extractionMethod: cd.extractionMethod as MatrixCell['extractionMethod'], verifiedByStudent: false }
+        for (const [col, cd] of Object.entries(data.cells as Record<string, { value: string; evidenceType: string; confidenceScore: number; confidenceLevel: string; extractionMethod: string; sourceQuote?: string }>)) {
+          cells[col] = { value: cd.value, aiGenerated: true, confidenceScore: cd.confidenceScore, confidenceLevel: cd.confidenceLevel as ConfidenceLevel, evidenceType: cd.evidenceType as MatrixCell['evidenceType'], sourceRef: cd.sourceQuote ?? '', extractionMethod: cd.extractionMethod as MatrixCell['extractionMethod'], verifiedByStudent: false }
         }
         dispatch({ type: 'UPDATE_MATRIX_ROW_CELLS', paperId: paper.id, cells })
       } finally {
@@ -939,6 +973,7 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
                           key={`cell-${col}`}
                           cell={row.cells[col]}
                           column={col}
+                          sourceText={paper?.abstract}
                           onEvidence={row.cells[col]?.value ? rect => onEvidence({
                             rect, cell: row.cells[col], column: col,
                             paperTitle: paper?.title, paperAbstract: paper?.abstract,
@@ -1107,8 +1142,8 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
         if (!res.ok) throw new Error()
         const data = await res.json()
         const cells: Record<string, MatrixCell> = {}
-        for (const [col, cd] of Object.entries(data.cells as Record<string, { value: string; evidenceType: string; confidenceScore: number; confidenceLevel: string; extractionMethod: string }>)) {
-          cells[col] = { value: cd.value, aiGenerated: true, confidenceScore: cd.confidenceScore, confidenceLevel: cd.confidenceLevel as ConfidenceLevel, evidenceType: cd.evidenceType as MatrixCell['evidenceType'], sourceRef: '', extractionMethod: cd.extractionMethod as MatrixCell['extractionMethod'], verifiedByStudent: false }
+        for (const [col, cd] of Object.entries(data.cells as Record<string, { value: string; evidenceType: string; confidenceScore: number; confidenceLevel: string; extractionMethod: string; sourceQuote?: string }>)) {
+          cells[col] = { value: cd.value, aiGenerated: true, confidenceScore: cd.confidenceScore, confidenceLevel: cd.confidenceLevel as ConfidenceLevel, evidenceType: cd.evidenceType as MatrixCell['evidenceType'], sourceRef: cd.sourceQuote ?? '', extractionMethod: cd.extractionMethod as MatrixCell['extractionMethod'], verifiedByStudent: false }
         }
         dispatch({ type: 'UPDATE_SYSTEM_MATRIX_ROW_CELLS', systemId: sys.id, cells })
       } finally {
@@ -1434,7 +1469,7 @@ export function Screen5() {
             ? <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 border border-zinc-400 border-t-zinc-700 rounded-full animate-spin inline-block" /> Generating synthesis…</span>
             : synthError
               ? <span className="text-red-600">Synthesis failed: {synthError} Retry before continuing.</span>
-              : <>Hover a cell to reveal <span className="font-bold">?</span> — click for AI evidence reasoning</>
+              : <>Hover a cell to reveal <span className="font-bold">?</span> — click to see the supporting quote in the abstract</>
           }
         </p>
         <div className="flex rounded overflow-hidden">

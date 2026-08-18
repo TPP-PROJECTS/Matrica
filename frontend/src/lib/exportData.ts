@@ -1,5 +1,5 @@
 import { totalIdentified, duplicatesRemoved} from '../types'
-import type { AppState, ResultCard } from '../types'
+import type { AppState, ResultCard, SearchFilters } from '../types'
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -175,4 +175,71 @@ export function exportPrismaCSV(state: AppState): void {
   }
 
   downloadText(`${safeBase(state)}_prisma_flow.csv`, 'text/csv', toCsv(['PRISMA stage', 'Count'], rows))
+}
+
+// ── Search strategy appendix ──────────────────────────────────────────────────
+//
+// PRISMA 2020 item 7: "Present the full search strategies for all databases,
+// registers and websites, including any filters and limits used." Journals
+// expect this as an appendix, and a review that cannot produce it is not
+// reproducible — a reader has no way to tell whether a different result set
+// would have been retrieved.
+//
+// Everything here is recorded at search time rather than reconstructed, because
+// the query the user typed is not the query that ran: OpenAlex has no boolean
+// syntax, and PubMed carries the date/language/access limits as query terms.
+
+/** Human-readable rendering of the limits in force for one run. */
+function describeFilters(filters: SearchFilters | undefined): string {
+  if (!filters) return 'None recorded'
+  const parts: string[] = []
+  if (filters.yearFrom !== null || filters.yearTo !== null) {
+    parts.push(`Years ${filters.yearFrom ?? 'any'}–${filters.yearTo ?? 'any'}`)
+  }
+  if (filters.openAccessOnly) parts.push('Open access only')
+  if (filters.excludePreprints) parts.push('Preprints excluded')
+  if (filters.language) parts.push(`Language: ${filters.language}`)
+  return parts.length > 0 ? parts.join('; ') : 'None'
+}
+
+export function exportSearchStrategyCSV(state: AppState): void {
+  const rows: string[][] = []
+
+  // Only queries that were actually executed can be reported; an unrun draft
+  // has no strategy, no date and no hit count to give.
+  const executed = state.queries.filter(q => q.lastRunAt)
+
+  for (const query of executed) {
+    const topic = state.topics.find(t => t.id === query.topicId)
+    rows.push([`Query ${query.queryN}`, topic?.title ?? '—', '', '', ''])
+    rows.push(['  As entered by the reviewer', query.text, '', '', ''])
+    rows.push(['  Limits applied', describeFilters(query.lastRunFilters), '', '', ''])
+    rows.push([
+      '  Date last run',
+      query.lastRunAt ? new Date(query.lastRunAt).toISOString().slice(0, 10) : '—',
+      '', '', '',
+    ])
+
+    for (const sq of query.sourceQueries ?? []) {
+      rows.push(['  Database', sq.source, 'Strategy as run', sq.queryAsRun, `${sq.hits} hits`])
+    }
+
+    const retrieved = state.screening.retrievedByQuery?.[query.id]
+    if (retrieved !== undefined) {
+      rows.push(['  Records retrieved into the review', String(retrieved), '', '', ''])
+    }
+    rows.push(['', '', '', '', ''])
+  }
+
+  if (rows.length === 0) {
+    rows.push(['No searches have been run yet.', '', '', '', ''])
+  } else {
+    rows.push(['Total records identified across all queries', String(totalIdentified(state.screening)), '', '', ''])
+  }
+
+  downloadText(
+    `${safeBase(state)}_search_strategy.csv`,
+    'text/csv',
+    toCsv(['Item', 'Value', 'Field', 'Detail', 'Count'], rows),
+  )
 }

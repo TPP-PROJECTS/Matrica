@@ -15,7 +15,6 @@ export interface ProposedAction {
   status: ProposedActionStatus
   note?: string                      // failure reason shown when status === 'failed'
 }
-export type TriggerType = 'student_action' | 'ai_proactive' | 'chat_command' | 'consistency_correction'
 
 export interface Step {
   id: number
@@ -43,6 +42,21 @@ export interface TopicCard {
   confidence: ConfidenceLevel
 }
 
+/**
+ * One database's search strategy exactly as it was executed.
+ *
+ * PRISMA 2020 item 7 asks for the full strategy for every database, filters
+ * included, so a reader can re-run it. The query the user types is not that
+ * string: OpenAlex has no boolean syntax so the operators are stripped, and
+ * PubMed takes date/language/access limits as extra query terms. Only the
+ * per-database rewrite is reproducible, so that is what is recorded.
+ */
+export interface SourceQuery {
+  source: string
+  queryAsRun: string
+  hits: number
+}
+
 export interface QueryCard {
   id: string
   queryN: number
@@ -53,6 +67,13 @@ export interface QueryCard {
   databases: string[]
   resultCount: number
   stale: boolean
+  // ── Reproducibility record, written each time the query is run ──
+  /** ISO timestamp of the most recent run — PRISMA requires the search date. */
+  lastRunAt?: string
+  /** The limits in force for that run, which are part of the strategy. */
+  lastRunFilters?: SearchFilters
+  /** What each database was actually asked, and how many hits it reported. */
+  sourceQueries?: SourceQuery[]
 }
 
 /** How a paper entered the review — a PRISMA 2020 identification pathway. */
@@ -314,18 +335,29 @@ export interface ChatMessage {
   proposedActions?: ProposedAction[]   // for type === 'action_confirm'
 }
 
+/**
+ * A checkpoint: this project as it stood at one moment, kept so the user can
+ * come back to it.
+ *
+ * Not the same thing as the project list (which shows *different* reviews) and
+ * not the same thing as undo (which covers the last few actions of the current
+ * session). This is the case neither covers — wanting the matrix back the way
+ * it was before yesterday's re-extraction.
+ *
+ * The snapshot itself lives on the backend: it is as large as the project, and
+ * a handful of them in localStorage would exhaust the quota the working session
+ * needs.
+ */
 export interface VersionEntry {
   id: string
+  projectId: string
+  createdAt: string
   step: number
   stepName: string
-  timestamp: string
-  changeSummary: string
-  triggerType: TriggerType
-  isCurrent: boolean
-  decisionJournal?: string
-  avgConfidence?: number
-  dismissedContradiction?: boolean
-  chatExcerpt?: string
+  /** What the user (or the workflow) called this point. */
+  label: string
+  /** 'manual' when the user asked for it, 'step_complete' when automatic. */
+  trigger: 'manual' | 'step_complete'
 }
 
 export type DecisionJournalKind = 'justification' | 'ai_explanation_view' | 'user_action'
@@ -427,7 +459,6 @@ export interface AppState {
   pendingBackStep: number | null
   editMode: boolean
   staleSteps: number[]
-  versionHistory: VersionEntry[]
   paperSections: PaperSection[]
   // Step 1
   profile: ResearchProfile
@@ -545,6 +576,7 @@ export type AppAction =
   | { type: 'TOGGLE_SYSTEM_ITEM'; itemId: string } // @chatbot Select or deselect a system (flips its current state).
   | { type: 'ADD_CUSTOM_SYSTEM'; name: string } // @chatbot Add a custom system to the system review list.
   | { type: 'SET_QUERIES'; queries: QueryCard[] }
+  | { type: 'RECORD_QUERY_RUN'; queryId: string; runAt: string; filters: SearchFilters; sourceQueries: SourceQuery[] }
   | { type: 'ADD_SEARCH_RESULTS'; results: ResultCard[]; identifiedFor?: { queryId: string; count: number }; retrievedFor?: { queryId: string; page: number; count: number } }
   | { type: 'CLEAR_RESULTS' }
   | { type: 'SET_SEARCH_FILTERS'; filters: SearchFilters } // @chatbot Set the database search limits (year range, open access, preprints, language) applied to future searches.

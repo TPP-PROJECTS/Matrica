@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useApp } from '../../store/AppContext'
 import { deleteSession, fetchSessionsRemote, fetchSessionRemote } from '../../lib/sessionStorage'
 import type { SessionMeta } from '../../types'
+import { CheckpointList } from './CheckpointList'
 
 const STEP_LABELS = [
   '', 'Chat & Define Topic', 'Matrix Initial', 'System Review', 'Explore & Search', 'Select Paper',
@@ -126,6 +127,9 @@ function SessionCard({
 export function VersionHistoryDrawer() {
   const { state, dispatch } = useApp()
   const [sessions, setSessions] = useState<SessionMeta[]>([])
+  // Two different kinds of history, previously conflated under one
+  // "Version History" label: other reviews, and earlier states of this one.
+  const [tab, setTab] = useState<'sessions' | 'checkpoints'>('sessions')
 
   // Refresh list from the backend whenever the drawer opens (falls back to
   // localStorage inside fetchSessionsRemote if the backend is unreachable).
@@ -166,13 +170,15 @@ export function VersionHistoryDrawer() {
       <div className="fixed right-0 top-12 h-[calc(100%-3rem)] w-[320px] bg-white border-l-2 border-zinc-200 shadow-xl z-40 flex flex-col">
         {/* Header */}
         <div className="h-12 border-b border-zinc-200 flex items-center px-4 gap-3 shrink-0">
-          <span className="text-[14px] font-bold text-zinc-900 flex-1">Sessions</span>
-          <button
-            onClick={handleNew}
-            className="px-2.5 py-1 bg-blue-600 text-white text-[10px] font-medium rounded hover:bg-blue-700 transition-colors"
-          >
-            + New Session
-          </button>
+          <span className="text-[14px] font-bold text-zinc-900 flex-1">History</span>
+          {tab === 'sessions' && (
+            <button
+              onClick={handleNew}
+              className="px-2.5 py-1 bg-blue-600 text-white text-[10px] font-medium rounded hover:bg-blue-700 transition-colors"
+            >
+              + New Session
+            </button>
+          )}
           <button
             onClick={() => dispatch({ type: 'TOGGLE_HISTORY' })}
             className="text-[11px] text-zinc-400 hover:text-zinc-700"
@@ -181,7 +187,31 @@ export function VersionHistoryDrawer() {
           </button>
         </div>
 
+        {/* Tabs */}
+        <div className="flex border-b border-zinc-200 shrink-0">
+          {([
+            ['sessions', 'All sessions', 'Other reviews you have worked on'],
+            ['checkpoints', 'This session', 'Earlier states of the current review'],
+          ] as const).map(([key, label, hint]) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              title={hint}
+              className={`flex-1 py-2 text-[11px] font-medium border-b-2 transition-colors ${
+                tab === key
+                  ? 'border-blue-600 text-blue-700'
+                  : 'border-transparent text-zinc-400 hover:text-zinc-600'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'checkpoints' && <CheckpointList />}
+
         {/* Session list */}
+        {tab === 'sessions' && (
         <div className="flex-1 overflow-y-auto px-3 py-3">
           {sessions.length === 0 ? (
             <div className="text-center py-10">
@@ -200,13 +230,16 @@ export function VersionHistoryDrawer() {
             ))
           )}
         </div>
+        )}
 
         {/* Footer */}
-        <div className="border-t border-zinc-100 px-4 py-2.5 shrink-0">
-          <p className="text-[9px] text-zinc-400 text-center">
-            Auto-saved · {sessions.length} session{sessions.length !== 1 ? 's' : ''}
-          </p>
-        </div>
+        {tab === 'sessions' && (
+          <div className="border-t border-zinc-100 px-4 py-2.5 shrink-0">
+            <p className="text-[9px] text-zinc-400 text-center">
+              Auto-saved · {sessions.length} session{sessions.length !== 1 ? 's' : ''}
+            </p>
+          </div>
+        )}
       </div>
     </>
   )

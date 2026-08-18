@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { exportBibTeX, exportRIS, exportPrismaCSV } from './exportData'
+import { exportBibTeX, exportRIS, exportPrismaCSV, exportSearchStrategyCSV} from './exportData'
 import type { AppState, ResultCard, ScreeningCriterion } from '../types'
 
 // The export functions build a Blob and click a synthetic <a> to download it.
@@ -49,7 +49,9 @@ function appState(over: Partial<AppState>): AppState {
     results: [],
     reviewList: [],
     criteria: [],
-    screening: { identifiedByQuery: {}, duplicatesRemoved: 0 },
+    screening: { identifiedByQuery: {}, retrievedByQuery: {} },
+    queries: [],
+    topics: [],
     matrixColumns: [],
     matrixRows: [],
     ...over,
@@ -174,5 +176,50 @@ describe('exportPrismaCSV', () => {
     const out = contentOf()
     expect(out).toContain('Adults only,inclusion')
     expect(out).toContain('Wrong population,exclusion')
+  })
+})
+
+
+describe('exportSearchStrategyCSV', () => {
+  const ranQuery = {
+    id: 'q1', queryN: 1, topicId: 't1', text: 'diabetes AND (insulin OR metformin)',
+    qualityScore: 80, priority: 'high' as const, databases: ['OpenAlex', 'PubMed'],
+    resultCount: 12, stale: false,
+    lastRunAt: '2026-03-04T09:30:00.000Z',
+    lastRunFilters: { yearFrom: 2015, yearTo: null, openAccessOnly: true, excludePreprints: false, language: 'en' },
+    sourceQueries: [
+      { source: 'OpenAlex', queryAsRun: 'diabetes insulin metformin  [filter: is_oa:true]', hits: 4000 },
+      { source: 'PubMed', queryAsRun: 'diabetes AND (insulin OR metformin) AND english[lang]', hits: 213 },
+    ],
+  }
+
+  it('reports the strategy each database actually ran, not the query as typed', () => {
+    exportSearchStrategyCSV(appState({
+      queries: [ranQuery],
+      topics: [{ id: 't1', title: 'Glycaemic control' }],
+      screening: { identifiedByQuery: { q1: 4213 }, retrievedByQuery: { q1: 22 } },
+    } as unknown as Partial<AppState>))
+    const out = contentOf()
+    expect(out).toContain('diabetes insulin metformin')      // OpenAlex rewrite
+    expect(out).toContain('english[lang]')                    // PubMed rewrite
+    expect(out).toContain('diabetes AND (insulin OR metformin)') // as entered
+    expect(out).toContain('4000')
+    expect(out).toContain('213')
+  })
+
+  it('records the search date and the limits in force', () => {
+    exportSearchStrategyCSV(appState({ queries: [ranQuery], topics: [] } as unknown as Partial<AppState>))
+    const out = contentOf()
+    expect(out).toContain('2026-03-04')
+    expect(out).toContain('Years 2015')
+    expect(out).toContain('Open access only')
+  })
+
+  it('omits queries that were never run, since they have no strategy to report', () => {
+    exportSearchStrategyCSV(appState({
+      queries: [{ ...ranQuery, id: 'q2', queryN: 2, lastRunAt: undefined, sourceQueries: undefined }],
+      topics: [],
+    } as unknown as Partial<AppState>))
+    expect(contentOf()).toContain('No searches have been run yet')
   })
 })

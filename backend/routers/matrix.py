@@ -260,6 +260,12 @@ class CellData(BaseModel):
     confidenceScore: float
     confidenceLevel: str
     extractionMethod: str
+    # The exact span of source text the value rests on, captured at extraction
+    # time. Asking the model to justify a value afterwards lets it rationalise
+    # anything it has already written; a quote taken as the value is produced
+    # can be checked against the source, which is what turns "AI generated" into
+    # "verifiable". Empty when the value was reasoned rather than read.
+    sourceQuote: str = ""
 
 
 class AutofillRowRequest(BaseModel):
@@ -293,6 +299,13 @@ Rules:
 - confidenceLevel: "high" (≥75), "medium" (45–74), "low" (15–44), "none" (<15)
 - extractionMethod: "verbatim" (direct quote), "summarised" (condensed from text), "inferred" (reasoned), "not_available"
 - value: concise, max 2–3 sentences; write "—" if not_available
+- sourceQuote: copy the sentence (or at most two consecutive sentences) from the
+  supplied abstract or full text that the value rests on. Copy it CHARACTER FOR
+  CHARACTER — do not paraphrase, tidy, shorten or join separated passages, since
+  this quote is checked against the source text and a rewritten one will fail
+  that check. Use "" when evidenceType is "inferred" or "not_available", i.e.
+  when no single passage states it. An empty quote is a correct answer and is
+  always better than an approximated one.
 Respond with valid JSON only — no markdown, no extra text.
 """
 
@@ -304,6 +317,9 @@ Rules:
 - confidenceLevel: "high" (≥75), "medium" (45–74), "low" (15–44), "none" (<15)
 - extractionMethod: "verbatim", "summarised", "inferred", or "not_available"
 - value: concise, max 2–3 sentences; write "—" if not_available
+- sourceQuote: always "" here. System rows are filled from background knowledge
+  rather than from a supplied document, so there is no source text to quote and
+  nothing a reader could check a quote against.
 Respond with valid JSON only — no markdown, no extra text.
 """
 
@@ -433,7 +449,8 @@ Respond with JSON:
       "evidenceType": "extracted",
       "confidenceScore": 80,
       "confidenceLevel": "high",
-      "extractionMethod": "summarised"
+      "extractionMethod": "summarised",
+      "sourceQuote": "exact sentence copied from the supplied text, or \"\""
     }}
   }}
 }}
@@ -455,6 +472,7 @@ Respond with JSON:
                 confidenceScore=int(cd.get("confidenceScore", 50)),
                 confidenceLevel=cd.get("confidenceLevel", "medium"),
                 extractionMethod=cd.get("extractionMethod", "inferred"),
+                sourceQuote=str(cd.get("sourceQuote", "") or ""),
             )
         return AutofillRowResponse(cells=cells, fullTextUsed=bool(full_text))
     except json.JSONDecodeError:
@@ -513,6 +531,7 @@ Respond with JSON:
                 confidenceScore=int(cd.get("confidenceScore", 50)),
                 confidenceLevel=cd.get("confidenceLevel", "medium"),
                 extractionMethod=cd.get("extractionMethod", "inferred"),
+                sourceQuote=str(cd.get("sourceQuote", "") or ""),
             )
         return AutofillRowResponse(cells=cells)
     except json.JSONDecodeError:

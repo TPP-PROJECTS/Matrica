@@ -11,7 +11,7 @@ import type {
 import { BASE_MATRIX_COLUMNS, WELCOME_MESSAGES } from '../data/initialData'
 import {
   generateSessionId, saveSession, loadSession, getMostRecentSessionId,
-  migrateLocalSessionsToRemote, flushSessionLocal, type SaveOutcome,
+  migrateLocalSessionsToRemote, flushSessionLocal, createVersion, type SaveOutcome,
 } from '../lib/sessionStorage'
 
 /** Save state as the UI shows it: an in-flight save plus every save outcome. */
@@ -90,7 +90,6 @@ function freshState(): AppState {
     selectedFinalTopicId: null,
     decisionJournal: [],
     chatMessages: WELCOME_MESSAGES,
-    versionHistory: [],
     saveStatus: 'saved',
     showVersionHistory: false,
     showBackNavModal: false,
@@ -292,6 +291,20 @@ export function reducer(state: AppState, action: AppAction): AppState {
 
     case 'SET_QUERIES':
       return { ...state, queries: action.queries }
+
+    case 'RECORD_QUERY_RUN':
+      // The reproducibility record for the search-strategy appendix. Overwritten
+      // on each run rather than appended: what a reader needs to re-run is the
+      // strategy as it finally stood, not every draft of it. The decision
+      // journal already keeps the history of filter changes.
+      return {
+        ...state,
+        queries: state.queries.map(q =>
+          q.id === action.queryId
+            ? { ...q, lastRunAt: action.runAt, lastRunFilters: action.filters, sourceQueries: action.sourceQueries }
+            : q
+        ),
+      }
 
     case 'CLEAR_RESULTS':
       return { ...state, results: [], screening: { identifiedByQuery: {}, retrievedByQuery: {} } }
@@ -1048,6 +1061,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
         domain: cur.profile.domain || undefined,
       })
       stepEntryTimeRef.current = now
+    }
+
+    // Completing a step is the natural checkpoint: it is where a researcher
+    // draws a line under a decision, and where they later say "put it back to
+    // how it was before I moved on". Fire-and-forget — a checkpoint failing
+    // must never block the user from advancing.
+    if (action.type === 'ADVANCE_STEP' && stateRef.current.currentStep < LAST_STEP) {
+      const completed = stateRef.current.currentStep
+      void createVersion(stateRef.current, `Completed step ${completed}`, 'step_complete').catch(() => {})
     }
 
     if (!UI_ONLY_ACTIONS.has(action.type) && !NO_HISTORY_ACTIONS.has(action.type)) {
