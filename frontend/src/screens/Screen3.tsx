@@ -3,9 +3,11 @@ import { useApp } from '../store/AppContext'
 import { QuestionButton } from '../components/shared/QuestionButton'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
 import type { TopicCard, QueryCard, ResultCard, SearchFilters } from '../types'
+import { duplicatesRemoved } from '../types'
 import { API, apiFetch } from '../lib/api'
 import { scorePaperRelevance } from '../lib/scorePaper'
 import { journalEntry } from '../lib/decisionJournal'
+import { newId } from '../lib/ids'
 
 
 function topicTypePill(type: TopicCard['type']) {
@@ -269,7 +271,7 @@ function AddTopicForm({ onClose }: { onClose: () => void }) {
     dispatch({
       type: 'ADD_TOPIC',
       topic: {
-        id: `t-manual-${Date.now()}`,
+        id: newId('t-manual'),
         type,
         title: title.trim(),
         description: description.trim(),
@@ -417,8 +419,8 @@ function QueryCardItem({ query }: { query: QueryCard }) {
       const papers = data.papers as { title: string; authors: string; year: number | null; url: string; openAccessUrl: string | null; abstract: string }[]
 
       // Map to ResultCard format and accumulate into store
-      const mapped: ResultCard[] = papers.map((p, i) => ({
-        id: `search-${query.id}-${Date.now()}-${i}`,
+      const mapped: ResultCard[] = papers.map(p => ({
+        id: newId(`search-${query.id}`),
         title: p.title,
         authors: p.authors,
         year: p.year ?? 0,
@@ -443,6 +445,9 @@ function QueryCardItem({ query }: { query: QueryCard }) {
         identifiedFor: page === 1
           ? { queryId: query.id, count: data.total_available ?? papers.length }
           : undefined,
+        // Every page reports what it pulled in; the PRISMA duplicate figure is
+        // derived from this against the unique papers actually held.
+        retrievedFor: { queryId: query.id, page, count: papers.length },
       })
       setRetrieved(prev => (page === 1 ? papers.length : prev + papers.length))
       if (page === 1) setTotalAvailable(data.total_available ?? null)
@@ -787,6 +792,8 @@ export function Screen3() {
   const selectedTopics = state.topics.filter(t => t.selected)
   const selectedTopicIds = selectedTopics.map(t => t.id)
   const visibleQueries = state.queries.filter(q => selectedTopicIds.includes(q.topicId))
+  // Derived rather than counted, so re-running a search cannot inflate it.
+  const dupCount = duplicatesRemoved(state.screening, state.results.filter(r => (r.origin ?? 'search') === 'search').length)
 
   function addManualQuery() {
     const topic = selectedTopics[0]
@@ -973,12 +980,12 @@ export function Screen3() {
           <div className="h-[30px] bg-zinc-900 flex items-center px-3 gap-2 shrink-0">
             <span className="text-white text-[10px] font-bold flex-1">Search Results</span>
             <span className="text-zinc-300 text-[9px]">{state.results.length} found</span>
-            {state.screening.duplicatesRemoved > 0 && (
+            {dupCount > 0 && (
               <span
                 className="text-amber-300 text-[9px]"
                 title="Papers already retrieved by an earlier query, matched by DOI or title and kept only once"
               >
-                {state.screening.duplicatesRemoved} dup removed
+                {dupCount} dup removed
               </span>
             )}
             {selectedResultIds.size > 0 && (

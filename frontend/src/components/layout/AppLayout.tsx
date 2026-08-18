@@ -8,6 +8,7 @@ import { VersionHistoryDrawer } from '../overlays/VersionHistoryDrawer'
 import { BackNavModal } from '../overlays/BackNavModal'
 import { StaleStepBanner } from '../overlays/StaleStepBanner'
 import { EditModeBanner } from '../overlays/EditModeBanner'
+import { SaveTroubleBanner } from '../overlays/SaveTroubleBanner'
 
 interface Props {
   children: ReactNode
@@ -35,6 +36,7 @@ export function AppLayout({ children }: Props) {
       <TopBar />
 
       {/* Banners below top bar */}
+      <SaveTroubleBanner />
       {state.editMode && <EditModeBanner />}
       {/* Main body */}
       <div className="flex flex-1 overflow-hidden">

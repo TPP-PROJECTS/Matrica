@@ -75,22 +75,86 @@ function buildMeta(state: AppState, updatedAt: string): SessionMeta {
   }
 }
 
-export function saveSession(state: AppState): void {
-  const now = new Date().toISOString()
-  const snapshot: SessionSnapshot = { ...toSnapshot(state), updatedAt: now }
-  try {
-    localStorage.setItem(sessionKey(state.sessionId), JSON.stringify(snapshot))
+/**
+ * What actually happened to a save.
+ *
+ *   'saved'      — the work is durable (backend has it, local cache in step)
+ *   'local-only' — backend unreachable; the browser copy is the only one, so
+ *                  the work survives a reload but not a cleared cache
+ *   'error'      — neither store accepted it; the work exists only in memory
+ *
+ * This used to be unconditional success: the local write was wrapped in a
+ * try/catch that swallowed quota errors into a console warning, the backend
+ * write was fire-and-forget, and the UI printed a green "Saved" either way. A
+ * researcher could lose a full day's work with the indicator showing saved the
+ * whole time.
+ */
+export type SaveOutcome = 'saved' | 'local-only' | 'error'
 
+/** Persist to the local cache, evicting other sessions if we are out of room. */
+function writeLocal(state: AppState, snapshot: SessionSnapshot, now: string): boolean {
+  const attempt = (): void => {
+    localStorage.setItem(sessionKey(state.sessionId), JSON.stringify(snapshot))
     const index = listSessions()
     const meta = buildMeta(state, now)
-    const updated = [meta, ...index.filter(m => m.id !== state.sessionId)]
-    localStorage.setItem(INDEX_KEY, JSON.stringify(updated))
-  } catch (e) {
-    console.warn('Failed to save session locally:', e)
+    localStorage.setItem(INDEX_KEY, JSON.stringify([meta, ...index.filter(m => m.id !== state.sessionId)]))
   }
-  // Write through to the durable backend store (fire-and-forget; localStorage
-  // above is the offline fallback if this fails).
-  pushSessionRemote(snapshot)
+
+  try {
+    attempt()
+    return true
+  } catch {
+    // Almost always the 5MB quota, and almost always because *other* sessions
+    // are filling it. They are on the backend, so evicting the least recently
+    // updated ones from the cache is lossless — and buys room for the session
+    // the user is actually working in.
+    const others = listSessions()
+      .filter(m => m.id !== state.sessionId)
+      .sort((a, b) => (a.updatedAt || '').localeCompare(b.updatedAt || ''))
+
+    for (const stale of others) {
+      try {
+        localStorage.removeItem(sessionKey(stale.id))
+        attempt()
+        return true
+      } catch {
+        continue
+      }
+    }
+    return false
+  }
+}
+
+/**
+ * Synchronous local-only write, for the last moment before the tab goes away.
+ *
+ * The normal save path is debounced and async, so closing the tab inside that
+ * window would drop the most recent edits. `beforeunload` has no time for a
+ * network round trip, but localStorage is synchronous and is enough to make the
+ * work survive until the next load pushes it to the backend.
+ */
+export function flushSessionLocal(state: AppState): void {
+  const now = new Date().toISOString()
+  writeLocal(state, { ...toSnapshot(state), updatedAt: now }, now)
+}
+
+export async function saveSession(state: AppState): Promise<SaveOutcome> {
+  const now = new Date().toISOString()
+  const snapshot: SessionSnapshot = { ...toSnapshot(state), updatedAt: now }
+
+  const localOk = writeLocal(state, snapshot, now)
+
+  let remoteOk = true
+  try {
+    await pushSessionNow(snapshot)
+  } catch {
+    remoteOk = false
+  }
+
+  if (localOk) return remoteOk ? 'saved' : 'local-only'
+  // Without a local copy a reload reads a stale snapshot, so even a successful
+  // backend write does not make the browser tab safe to refresh.
+  return 'error'
 }
 
 export function loadSession(id: string): SessionSnapshot | null {
@@ -141,6 +205,47 @@ export function clearAllSessions(): void {
 
 function pushSessionRemote(snapshot: SessionSnapshot): void {
   void pushSessionNow(snapshot).catch(() => {})
+}
+
+// ── Escape hatch ──────────────────────────────────────────────────────────────
+
+/**
+ * Hand the whole session to the user as a file.
+ *
+ * This is the recovery path when persistence has failed: whatever is wrong with
+ * the quota or the backend, the work is still in memory and the user must be
+ * able to get it out. It doubles as a plain "keep a copy" export.
+ */
+export function downloadSessionFile(state: AppState): void {
+  const snapshot = toSnapshot(state)
+  const safeTitle = (state.sessionTitle || 'session').replace(/[^a-z0-9]+/gi, '-').toLowerCase()
+  const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${safeTitle}-${snapshot.sessionId}.json`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+/** Parse a file produced by downloadSessionFile back into a snapshot. */
+export async function readSessionFile(file: File): Promise<SessionSnapshot> {
+  const text = await file.text()
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    throw new Error('That file is not valid JSON.')
+  }
+  const snap = parsed as Partial<SessionSnapshot>
+  // Enough of a shape check to reject an unrelated JSON file with a clear
+  // message, rather than loading it and failing somewhere deep in a screen.
+  if (!snap || typeof snap.sessionId !== 'string' || typeof snap.profile !== 'object') {
+    throw new Error('That file is not a session export from this tool.')
+  }
+  return snap as SessionSnapshot
 }
 
 /**

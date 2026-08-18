@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useApp } from "../store/AppContext";
 import type { SystemItem } from "../types";
 import { API, apiFetch } from "../lib/api";
+import { newId } from '../lib/ids'
 
 const CATEGORY_LABELS: Record<string, string> = {
   clinical_system: "Clinical System",
@@ -254,9 +255,9 @@ export function Screen2() {
         }[]
       )
         .filter((s) => !keptNames.has(s.name.toLowerCase().trim()))
-        .map((s, i) => ({
+        .map(s => ({
           ...s,
-          id: `sys-more-${Date.now()}-${i}`,
+          id: newId('sys-more'),
           aiGenerated: true,
           selected: false,
         }));

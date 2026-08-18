@@ -54,6 +54,78 @@ function isIdField(name: string, tsType: string): boolean {
   return /Id$/.test(name) && tsType.replace(/\s/g, '') === 'string'
 }
 
+// ── Payload type checking ─────────────────────────────────────────────────────
+//
+// The catalog records each field's TypeScript type as source text. That is
+// enough to check the shapes a language model actually gets wrong: a number
+// arrived as a string, an array arrived as a single value, a literal union
+// answered with a word that is not one of the options.
+//
+// This matters because a validated action is dispatched *verbatim* into the
+// reducer. Without it, `{ type: 'SET_TOPICS', topics: "diabetes" }` reaches the
+// store and the next `state.topics.map(...)` takes the whole app down — a
+// malformed model response should be a message in the chat, not a white screen.
+//
+// Checking is deliberately permissive: a type this cannot interpret is allowed
+// through, so adding a new action never silently breaks the assistant.
+
+/** Parse `'a' | 'b' | null` into its members, or null if it is not that shape. */
+function literalUnionMembers(tsType: string): (string | null)[] | null {
+  const parts = tsType.split('|').map(p => p.trim())
+  if (parts.length < 2) return null
+  const members: (string | null)[] = []
+  for (const part of parts) {
+    if (part === 'null' || part === 'undefined') { members.push(null); continue }
+    const quoted = /^'(.*)'$/.exec(part) ?? /^"(.*)"$/.exec(part)
+    if (!quoted) return null
+    members.push(quoted[1])
+  }
+  return members
+}
+
+/** Human-readable reason `value` does not fit `tsType`, or null if it does. */
+function typeError(fieldName: string, tsType: string, value: unknown): string | null {
+  const t = tsType.trim()
+
+  const members = literalUnionMembers(t)
+  if (members) {
+    const ok = value === null ? members.includes(null) : members.includes(value as string)
+    return ok
+      ? null
+      : `"${fieldName}" must be one of ${members.map(m => m === null ? 'null' : `"${m}"`).join(', ')}, got ${JSON.stringify(value)}.`
+  }
+
+  switch (t) {
+    case 'string':
+      return typeof value === 'string' ? null : `"${fieldName}" must be a string, got ${typeof value}.`
+    case 'number':
+      return typeof value === 'number' && Number.isFinite(value)
+        ? null
+        : `"${fieldName}" must be a number, got ${JSON.stringify(value)}.`
+    case 'boolean':
+      return typeof value === 'boolean' ? null : `"${fieldName}" must be true or false, got ${typeof value}.`
+    case 'string[]':
+      return Array.isArray(value) && value.every(v => typeof v === 'string')
+        ? null
+        : `"${fieldName}" must be an array of strings.`
+    case 'number[]':
+      return Array.isArray(value) && value.every(v => typeof v === 'number')
+        ? null
+        : `"${fieldName}" must be an array of numbers.`
+    default:
+      break
+  }
+
+  // Named array types (TopicCard[], SystemItem[] …): check the container only.
+  if (t.endsWith('[]')) {
+    return Array.isArray(value) ? null : `"${fieldName}" must be an array.`
+  }
+
+  // Anything else — a named interface, an indexed access type, a mapped type.
+  // Not interpretable here, so only reject values that could not be any of them.
+  return null
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export interface ResolvedAction {
@@ -79,6 +151,11 @@ export function resolveAction(action: ProposedAction, state: AppState): Resolved
       return { actions: [], error: `Missing "${field.name}" for ${entry.type}.` }
     }
 
+    const badType = typeError(field.name, field.tsType, value)
+    if (badType) {
+      return { actions: [], error: `${entry.type}: ${badType}` }
+    }
+
     if (isIdField(field.name, field.tsType) && !ids.has(String(value))) {
       return {
         actions: [],
@@ -87,9 +164,17 @@ export function resolveAction(action: ProposedAction, state: AppState): Resolved
     }
   }
 
+  // Keys the catalog does not know about are dropped rather than passed on, so
+  // a hallucinated extra field cannot end up spread into the store.
+  const known = new Set(entry.fields.map(f => f.name))
+  const clean: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(payload)) {
+    if (known.has(key)) clean[key] = value
+  }
+
   // Validated: the payload matches the reducer's own action shape, so it can be
   // dispatched verbatim.
-  return { actions: [{ type: entry.type, ...payload } as unknown as AppAction] }
+  return { actions: [{ type: entry.type, ...clean } as unknown as AppAction] }
 }
 
 /** Build the "## AVAILABLE ACTIONS" block sent to the assistant backend. */

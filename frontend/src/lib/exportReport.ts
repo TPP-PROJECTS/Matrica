@@ -7,6 +7,7 @@ import {
   AlignmentType,
 } from 'docx'
 import type { AppState } from '../types'
+import { primaryResearchQuestion, reportResearchQuestions } from './researchQuestions'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -188,10 +189,11 @@ export async function exportAsDocx(state: AppState): Promise<void> {
   }
 
   // ── 8. Research Questions ────────────────────────────────────────────────
-  if (state.rqOptions.length > 0) {
+  const researchQuestions = reportResearchQuestions(state)
+  if (researchQuestions.length > 0) {
     sections.push(h1('8. Research Questions'), spacer())
-    for (const rq of state.rqOptions) {
-      const selected = rq.id === state.selectedRQId
+    for (const rq of researchQuestions) {
+      const selected = rq.selected
       sections.push(
         para(`[${rq.format.toUpperCase()}] ${rq.label}${selected ? '  ✓ Selected' : ''}`, { bold: selected }),
         para(rq.text, { italic: true, color: '333333' }),
@@ -266,7 +268,7 @@ export function exportAsPdf(state: AppState): void {
   const selectedTopics = state.topics.filter(t => t.selected)
   const included = state.reviewList.filter(r => r.status === 'included' || r.status === 'maybe')
   const selectedGaps = state.gaps.filter(g => g.selected)
-  const selectedRQ = state.rqOptions.find(r => r.id === state.selectedRQId)
+  const selectedRQ = primaryResearchQuestion(state)
   const selectedDesign = state.studyDesignOptions.find(d => d.id === state.selectedStudyDesignId)
   const finalTopic = state.finalTopicOptions.find(t => t.id === state.selectedFinalTopicId)
   const paperSections = (state.topicFinalData.find(d => d.topicId === state.selectedFinalTopicId)?.paperSections) ?? []

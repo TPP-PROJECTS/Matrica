@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useApp } from '../../store/AppContext'
 import { exportAsDocx, exportAsPdf } from '../../lib/exportReport'
 import { exportBibTeX, exportRIS, exportMatrixCSV, exportPrismaCSV } from '../../lib/exportData'
+import { reportResearchQuestions } from '../../lib/researchQuestions'
+import { downloadSessionFile } from '../../lib/sessionStorage'
 
 interface Props {
   onClose: () => void
@@ -16,7 +18,7 @@ export function ExportModal({ onClose }: Props) {
   const papersCount  = state.reviewList.filter(r => r.status === 'included' || r.status === 'maybe').length
   const themesCount  = state.themes.length
   const gapsCount    = state.gaps.filter(g => g.selected).length
-  const hasRQ        = !!state.selectedRQId
+  const hasRQ        = reportResearchQuestions(state).length > 0
   const hasDesign    = !!state.selectedStudyDesignId
   const paperStructureCount = state.topicFinalData.find(d => d.topicId === state.selectedFinalTopicId)?.paperSections.length ?? 0
   const hasStructure = !!state.selectedFinalTopicId || paperStructureCount > 0
@@ -28,6 +30,7 @@ export function ExportModal({ onClose }: Props) {
     { key: 'ris',    label: 'RIS (.ris)',       hint: 'Import into EndNote / RefWorks', ready: citableCount > 0, run: () => exportRIS(state) },
     { key: 'csv',    label: 'Matrix (.csv)',    hint: 'Open the literature matrix in Excel', ready: matrixCount > 0, run: () => exportMatrixCSV(state) },
     { key: 'prisma', label: 'PRISMA flow (.csv)', hint: 'Screening counts for a PRISMA diagram', ready: state.results.length > 0, run: () => exportPrismaCSV(state) },
+    { key: 'session', label: 'Session backup (.json)', hint: 'Complete working copy — re-importable into this tool', ready: true, run: () => downloadSessionFile(state) },
   ]
 
   const sections = [

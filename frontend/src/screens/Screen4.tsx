@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef } from 'react'
 import { useApp } from '../store/AppContext'
 import type { ResultCard, ScreeningCriterion } from '../types'
+import { duplicatesRemoved } from '../types'
 import { API, apiFetch } from '../lib/api'
 import { runPool } from '../lib/runPool'
 import { screenPaper } from '../lib/screenApi'
 import { CitationsModal } from '../components/overlays/CitationsModal'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
 import { journalEntry } from '../lib/decisionJournal'
+import { newId } from '../lib/ids'
 
 // How many screening requests run at once — matched to the matrix auto-fill.
 const SCREEN_CONCURRENCY = 4
@@ -119,7 +121,7 @@ function ProtocolPanel({ onClose, auto }: { onClose: () => void; auto: AutoScree
     if (!label) return
     dispatch({
       type: 'ADD_CRITERION',
-      criterion: { id: `c-${kind}-${Date.now()}`, kind, label },
+      criterion: { id: newId(`c-${kind}`), kind, label },
     })
     setDraft('')
   }
@@ -1134,6 +1136,8 @@ export function Screen4() {
   const includedCount = state.reviewList.filter(p => p.status === 'included').length
   const maybeCount    = state.reviewList.filter(p => p.status === 'maybe').length
   const excludedCount = state.results.filter(p => p.status === 'excluded').length
+  // Derived rather than counted, so re-running a search cannot inflate it.
+  const dupCount = duplicatesRemoved(state.screening, state.results.filter(r => (r.origin ?? 'search') === 'search').length)
 
   // Notes live in the store, not component state — they were previously lost
   // the moment the user navigated away from this step.
@@ -1202,12 +1206,12 @@ export function Screen4() {
         <div className="h-[44px] bg-zinc-900 flex items-center px-4 gap-3 shrink-0">
           <span className="text-white text-[11px] font-bold tracking-wider">ALL PAPERS</span>
           <span className="text-zinc-400 text-[10px]">{displayedPapers.length} / {state.results.length}</span>
-          {state.screening.duplicatesRemoved > 0 && (
+          {dupCount > 0 && (
             <span
               className="text-amber-300 text-[10px]"
               title="Records matched to one already retrieved, by DOI or title, and kept only once"
             >
-              {state.screening.duplicatesRemoved} dup removed
+              {dupCount} dup removed
             </span>
           )}
           {excludedCount > 0 && (

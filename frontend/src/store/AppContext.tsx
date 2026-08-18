@@ -3,6 +3,7 @@ import { createContext, useContext, useReducer, useEffect, useRef, useState, typ
 import { buildResearchContext } from '../lib/buildResearchContext'
 import { setAnalyticsSession, trackEvent } from '../lib/api'
 import { partitionNewPapers } from '../lib/dedupe'
+import { newId } from '../lib/ids'
 import type {
   AppState, AppAction, ResearchProfile, StepState, SystemItem, SystemMatrixRow,
   SessionSnapshot, ScreeningCriterion, SearchFilters, DecisionJournalEntry,
@@ -10,8 +11,11 @@ import type {
 import { BASE_MATRIX_COLUMNS, WELCOME_MESSAGES } from '../data/initialData'
 import {
   generateSessionId, saveSession, loadSession, getMostRecentSessionId,
-  migrateLocalSessionsToRemote,
+  migrateLocalSessionsToRemote, flushSessionLocal, type SaveOutcome,
 } from '../lib/sessionStorage'
+
+/** Save state as the UI shows it: an in-flight save plus every save outcome. */
+type SaveStatus = 'saving' | SaveOutcome
 
 
 const initialStepStates: Record<number, StepState> = {
@@ -66,7 +70,7 @@ function freshState(): AppState {
     reviewList: [],
     searchFilters: NO_SEARCH_FILTERS,
     criteria: DEFAULT_CRITERIA,
-    screening: { identifiedByQuery: {}, duplicatesRemoved: 0 },
+    screening: { identifiedByQuery: {}, retrievedByQuery: {} },
     matrixRows: [],
     matrixColumns: BASE_MATRIX_COLUMNS,
     systemMatrixRows: [],
@@ -168,6 +172,21 @@ function computeCompleteness(profile: ResearchProfile): number {
   return Math.round((filled / fields.length) * 100)
 }
 
+/** Copy of `map` with `oldKey` renamed to `newKey`, if it was present. */
+function renameKey(map: Record<string, string>, oldKey: string, newKey: string): Record<string, string> {
+  if (!(oldKey in map)) return map
+  const { [oldKey]: value, ...rest } = map
+  return { ...rest, [newKey]: value }
+}
+
+/** Copy of `map` without `key`. */
+function dropKey(map: Record<string, string>, key: string): Record<string, string> {
+  if (!(key in map)) return map
+  const rest = { ...map }
+  delete rest[key]
+  return rest
+}
+
 // Exported for unit testing; the app drives it through the provider below. This
 // file already opts out of fast-refresh by exporting useApp, so exporting the
 // reducer too costs nothing beyond what the hook export already does.
@@ -259,7 +278,7 @@ export function reducer(state: AppState, action: AppAction): AppState {
 
     case 'ADD_CUSTOM_SYSTEM': {
       const newItem: SystemItem = {
-        id: `sys-custom-${Date.now()}`,
+        id: newId('sys-custom'),
         name: action.name,
         description: '',
         category: 'other',
@@ -275,28 +294,44 @@ export function reducer(state: AppState, action: AppAction): AppState {
       return { ...state, queries: action.queries }
 
     case 'CLEAR_RESULTS':
-      return { ...state, results: [], screening: { identifiedByQuery: {}, duplicatesRemoved: 0 } }
+      return { ...state, results: [], screening: { identifiedByQuery: {}, retrievedByQuery: {} } }
 
     case 'ADD_SEARCH_RESULTS': {
       // Match incoming papers against everything already retrieved — by DOI
       // first, normalised title second — so the same study surfacing under
       // several queries is counted once and screened once.
-      const { fresh, enrichments, duplicateCount } = partitionNewPapers(state.results, action.results)
+      const { fresh, enrichments } = partitionNewPapers(state.results, action.results)
       const enrichedById = new Map(enrichments.map(e => [e.id, e.abstract]))
       const results = state.results.map(r =>
         enrichedById.has(r.id) ? { ...r, abstract: enrichedById.get(r.id)! } : r
       )
+      // Retrieved records are tracked per query for the same reason as
+      // identified ones: page 1 assigns, later pages add to that query's entry.
+      // Duplicates are no longer counted here at all — a running total grew on
+      // every re-run of a search, because each already-held paper is detected as
+      // a duplicate again. It is derived from these two figures instead
+      // (see `duplicatesRemoved` in types/index.ts), which is re-run safe.
+      const retrieved = action.retrievedFor
+      const retrievedByQuery = retrieved
+        ? {
+            ...state.screening.retrievedByQuery,
+            [retrieved.queryId]: retrieved.page === 1
+              ? retrieved.count
+              : (state.screening.retrievedByQuery?.[retrieved.queryId] ?? 0) + retrieved.count,
+          }
+        : state.screening.retrievedByQuery
       return {
         ...state,
         results: [...results, ...fresh],
         screening: {
+          ...state.screening,
           // Assigned per query, not accumulated: re-running a search finds the
           // same corpus again, and adding its total a second time would inflate
           // the PRISMA identification count.
           identifiedByQuery: action.identifiedFor
             ? { ...state.screening.identifiedByQuery, [action.identifiedFor.queryId]: action.identifiedFor.count }
             : state.screening.identifiedByQuery,
-          duplicatesRemoved: state.screening.duplicatesRemoved + duplicateCount,
+          retrievedByQuery,
         },
       }
     }
@@ -427,11 +462,13 @@ export function reducer(state: AppState, action: AppAction): AppState {
       const paper = state.results.find(r => r.id === action.paperId)
       if (!paper) return state
       const inList = state.reviewList.some(r => r.id === action.paperId)
+      const status = inList ? null : ('maybe' as const)
       return {
         ...state,
+        results: state.results.map(r => r.id === action.paperId ? { ...r, status } : r),
         reviewList: inList
           ? state.reviewList.filter(r => r.id !== action.paperId)
-          : [...state.reviewList, { ...paper, status: 'maybe' as const }],
+          : [...state.reviewList, { ...paper, status }],
       }
     }
 
@@ -460,17 +497,34 @@ export function reducer(state: AppState, action: AppAction): AppState {
     }
 
     case 'REMOVE_FROM_REVIEW':
-      return { ...state, reviewList: state.reviewList.filter(r => r.id !== action.paperId) }
+      // Returning the paper to unscreened keeps the PRISMA funnel adding up: a
+      // record is either excluded with a reason, still awaiting screening, or
+      // in the review list — never silently absent from all three.
+      return {
+        ...state,
+        reviewList: state.reviewList.filter(r => r.id !== action.paperId),
+        results: state.results.map(r =>
+          r.id === action.paperId
+            ? { ...r, status: null, screenedBy: undefined, screeningReason: undefined, screenUncertain: false }
+            : r
+        ),
+      }
 
     case 'UPDATE_REVIEW_STATUS':
-      return { ...state, reviewList: state.reviewList.map(r => r.id === action.paperId ? { ...r, status: action.status } : r) }
+      // `results` is what the PRISMA export and the search-result badges read,
+      // so the status has to be written to both copies or the two disagree.
+      return {
+        ...state,
+        reviewList: state.reviewList.map(r => r.id === action.paperId ? { ...r, status: action.status } : r),
+        results: state.results.map(r => r.id === action.paperId ? { ...r, status: action.status } : r),
+      }
 
     case 'ADD_DECISION_JOURNAL_ENTRY':
       return { ...state, decisionJournal: [...state.decisionJournal, action.entry] }
 
     case 'SEND_MESSAGE': {
       const userMsg = {
-        id: `msg-${Date.now()}`,
+        id: newId('msg'),
         type: 'student' as const,
         content: action.content,
         timestamp: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
@@ -525,6 +579,10 @@ export function reducer(state: AppState, action: AppAction): AppState {
     case 'RENAME_MATRIX_COLUMN': {
       const newName = action.newName.trim()
       if (!newName || newName === action.oldName || state.matrixColumns.includes(newName)) return state
+      // A column name is a key in three other places. Renaming only the column
+      // list would orphan its description and leave every theme pointing at a
+      // column that no longer exists — which the synthesis step then sends to
+      // the backend as a source it cannot resolve.
       return {
         ...state,
         matrixColumns: state.matrixColumns.map(c => c === action.oldName ? newName : c),
@@ -533,6 +591,11 @@ export function reducer(state: AppState, action: AppAction): AppState {
           const { [action.oldName]: cell, ...rest } = row.cells
           return { ...row, cells: { ...rest, [newName]: cell } }
         }),
+        columnDescriptions: renameKey(state.columnDescriptions, action.oldName, newName),
+        themes: state.themes.map(t => ({
+          ...t,
+          sourceColumns: (t.sourceColumns ?? []).map(c => c === action.oldName ? newName : c),
+        })),
       }
     }
 
@@ -546,19 +609,42 @@ export function reducer(state: AppState, action: AppAction): AppState {
           delete cells[action.column]
           return { ...row, cells }
         }),
-      }
-
-    case 'INIT_MATRIX_ROWS':
-      return {
-        ...state,
-        matrixRows: state.reviewList.map(paper => ({
-          paperId: paper.id,
-          title: paper.title,
-          authors: paper.authors,
-          year: paper.year,
-          cells: {} as Record<string, import('../types').MatrixCell>,
+        columnDescriptions: dropKey(state.columnDescriptions, action.column),
+        themes: state.themes.map(t => ({
+          ...t,
+          sourceColumns: (t.sourceColumns ?? []).filter(c => c !== action.column),
         })),
       }
+
+    case 'SYNC_MATRIX_ROWS': {
+      // Reconcile rows against the review list *incrementally*. Rebuilding them
+      // wholesale would throw away every filled cell — including ones a student
+      // has verified by hand — the moment a single paper leaves the list.
+      const existing = new Map(state.matrixRows.map(r => [r.paperId, r]))
+      const rows = state.reviewList.map(paper => {
+        const held = existing.get(paper.id)
+        if (!held) {
+          return {
+            paperId: paper.id,
+            title: paper.title,
+            authors: paper.authors,
+            year: paper.year,
+            cells: {} as Record<string, import('../types').MatrixCell>,
+          }
+        }
+        // Metadata is refreshed from the review list, but only by building a new
+        // row when it actually differs — otherwise the identity check below can
+        // never see "unchanged" and the effect that calls this would re-render
+        // forever. `cells` is the user's work and is carried across untouched.
+        const stale = held.title !== paper.title || held.authors !== paper.authors || held.year !== paper.year
+        return stale ? { ...held, title: paper.title, authors: paper.authors, year: paper.year } : held
+      })
+      // Nothing changed — return the same object so this can run from an effect
+      // on every render without causing one.
+      const same = rows.length === state.matrixRows.length &&
+        rows.every((r, i) => r === state.matrixRows[i])
+      return same ? state : { ...state, matrixRows: rows }
+    }
 
     case 'UPDATE_MATRIX_ROW_CELLS':
       return {
@@ -595,6 +681,11 @@ export function reducer(state: AppState, action: AppAction): AppState {
           const { [action.oldName]: cell, ...rest } = row.cells
           return { ...row, cells: { ...rest, [newName]: cell } }
         }),
+        systemColumnDescriptions: renameKey(state.systemColumnDescriptions, action.oldName, newName),
+        themes: state.themes.map(t => ({
+          ...t,
+          systemSourceColumns: (t.systemSourceColumns ?? []).map(c => c === action.oldName ? newName : c),
+        })),
       }
     }
 
@@ -608,20 +699,38 @@ export function reducer(state: AppState, action: AppAction): AppState {
           delete cells[action.column]
           return { ...row, cells }
         }),
+        systemColumnDescriptions: dropKey(state.systemColumnDescriptions, action.column),
+        themes: state.themes.map(t => ({
+          ...t,
+          systemSourceColumns: (t.systemSourceColumns ?? []).filter(c => c !== action.column),
+        })),
       }
 
-    case 'INIT_SYSTEM_MATRIX_ROWS': {
-      const newSystemRows: SystemMatrixRow[] = (state.systemItems ?? [])
+    case 'SYNC_SYSTEM_MATRIX_ROWS': {
+      // Same incremental reconciliation as SYNC_MATRIX_ROWS: deselecting one
+      // system must not wipe the extraction work done on all the others.
+      const existing = new Map((state.systemMatrixRows ?? []).map(r => [r.systemId, r]))
+      const rows: SystemMatrixRow[] = (state.systemItems ?? [])
         .filter(s => s.selected)
-        .map(s => ({
-          systemId: s.id,
-          name: s.name,
-          vendor: s.vendor,
-          category: s.category,
-          url: s.url,
-          cells: {} as Record<string, import('../types').MatrixCell>,
-        }))
-      return { ...state, systemMatrixRows: newSystemRows }
+        .map(s => {
+          const held = existing.get(s.id)
+          if (!held) {
+            return {
+              systemId: s.id,
+              name: s.name,
+              vendor: s.vendor,
+              category: s.category,
+              url: s.url,
+              cells: {} as Record<string, import('../types').MatrixCell>,
+            }
+          }
+          const stale = held.name !== s.name || held.vendor !== s.vendor ||
+            held.category !== s.category || held.url !== s.url
+          return stale ? { ...held, name: s.name, vendor: s.vendor, category: s.category, url: s.url } : held
+        })
+      const prev = state.systemMatrixRows ?? []
+      const same = rows.length === prev.length && rows.every((r, i) => r === prev[i])
+      return same ? state : { ...state, systemMatrixRows: rows }
     }
 
     case 'ADD_UPLOADED_PAPERS': {
@@ -740,12 +849,17 @@ export function reducer(state: AppState, action: AppAction): AppState {
       return { ...state, selectedFinalTopicId: action.topicId }
 
     case 'REMOVE_RESULTS': {
+      // Discarding a search result has to remove every downstream trace of it.
+      // Leaving the review-list copy or the matrix row behind would keep a
+      // paper in the synthesis that the user believes they deleted.
       const ids = new Set(action.paperIds)
-      return { ...state, results: state.results.filter(r => !ids.has(r.id)) }
+      return {
+        ...state,
+        results: state.results.filter(r => !ids.has(r.id)),
+        reviewList: state.reviewList.filter(r => !ids.has(r.id)),
+        matrixRows: state.matrixRows.filter(r => !ids.has(r.paperId)),
+      }
     }
-
-    case 'TOGGLE_TOPIC_SELECTED':
-      return { ...state, topics: state.topics.map(t => t.id === action.topicId ? { ...t, selected: !t.selected } : t) }
 
     case 'UPDATE_ACTION_STATUS':
       return {
@@ -772,7 +886,7 @@ export function reducer(state: AppState, action: AppAction): AppState {
 
 function automaticAuditEntry(state: AppState, action: AppAction): DecisionJournalEntry | null {
   const base = {
-    id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: newId('audit'),
     kind: 'user_action' as const,
     createdAt: new Date().toISOString(),
   }
@@ -864,15 +978,22 @@ const UI_ONLY_ACTIONS = new Set([
   'TOGGLE_HISTORY', 'SET_SAVE_STATUS',
   'DISMISS_BACK_NAV_MODAL',
   'BACK_NAV_CANCEL', 'BACK_NAV_REQUEST',
-  'RESTORE_STATE',
 ])
+
+/**
+ * Actions that change the document but must not themselves be pushed onto the
+ * undo stack — RESTORE_STATE *is* the undo, so recording it would make undo
+ * unreachable. It still has to trigger a save: leaving it in UI_ONLY_ACTIONS
+ * meant an undone change came back on the next reload.
+ */
+const NO_HISTORY_ACTIONS = new Set(['RESTORE_STATE'])
 
 const MAX_HISTORY = 30
 
 type AppContextValue = {
   state: AppState
   dispatch: React.Dispatch<AppAction>
-  saveStatus: 'saved' | 'saving'
+  saveStatus: SaveStatus
   canUndo: boolean
   canRedo: boolean
   undo: () => void
@@ -883,7 +1004,7 @@ const AppContext = createContext<AppContextValue | null>(null)
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, undefined, getInitialState)
-  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving'>('saved')
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved')
   const [canUndo, setCanUndo] = useState(false)
   const [canRedo, setCanRedo] = useState(false)
 
@@ -929,7 +1050,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       stepEntryTimeRef.current = now
     }
 
-    if (!UI_ONLY_ACTIONS.has(action.type)) {
+    if (!UI_ONLY_ACTIONS.has(action.type) && !NO_HISTORY_ACTIONS.has(action.type)) {
       // Push current state onto history, clear future
       historyRef.current = [...historyRef.current.slice(-(MAX_HISTORY - 1)), stateRef.current]
       futureRef.current = []
@@ -971,10 +1092,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setSaveStatus('saving')
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
     saveTimerRef.current = setTimeout(() => {
-      saveSession(stateRef.current)
-      setSaveStatus('saved')
+      // The status now follows what the save actually did. It used to be set to
+      // 'saved' unconditionally, so a failed write showed a green tick.
+      void saveSession(stateRef.current).then(setSaveStatus).catch(() => setSaveStatus('error'))
     }, 600)
   }, [state])
+
+  // A debounced save loses whatever happened in the last 600ms if the tab is
+  // closed inside that window. localStorage is synchronous, so the unload
+  // handler can still get it out the door.
+  useEffect(() => {
+    function flush() {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current)
+        saveTimerRef.current = null
+        flushSessionLocal(stateRef.current)
+      }
+    }
+    window.addEventListener('beforeunload', flush)
+    return () => {
+      window.removeEventListener('beforeunload', flush)
+      flush()
+    }
+  }, [])
 
   // ── Analytics: sync session ID and lifecycle events ───────────────────────
   useEffect(() => {

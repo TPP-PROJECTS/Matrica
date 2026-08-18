@@ -1,11 +1,12 @@
 import type { DecisionJournalEntry } from '../types'
+import { newId } from './ids'
 
 export function journalEntry(
   entry: Omit<DecisionJournalEntry, 'id' | 'createdAt'>,
 ): DecisionJournalEntry {
   return {
     ...entry,
-    id: `journal-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
+    id: newId('journal'),
     createdAt: new Date().toISOString(),
   }
 }

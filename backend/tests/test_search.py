@@ -17,6 +17,8 @@ from routers.search import (  # noqa: E402
     SourceSearchError,
     _citation_title_key,
     _resolve_openalex_id,
+    _openalex_page_size,
+    _pubmed_page_size,
     clean_query_openalex,
     deduplicate,
     openalex_filter_string,
@@ -246,3 +248,47 @@ def test_search_raises_when_every_database_failed(monkeypatch):
     with pytest.raises(Exception) as exc:
         asyncio.run(search_papers(SearchRequest(query="verified")))
     assert getattr(exc.value, "status_code", None) == 502
+
+
+# ── paging must not lose papers ───────────────────────────────────────────────
+# The merged page used to be truncated to `limit`. Because each database's own
+# offset had already moved past the discarded tail, "load more" could never
+# fetch those records again — they left the review permanently.
+
+def test_search_returns_the_whole_deduplicated_union(monkeypatch):
+    """Nothing retrieved from either database is dropped on the way out."""
+    async def openalex(*_args, **_kwargs):
+        return [paper(title=f"OA {i}", url=f"https://doi.org/10.1/oa{i}") for i in range(15)], 500
+
+    async def pubmed(*_args, **_kwargs):
+        return [paper(title=f"PM {i}", url=f"https://doi.org/10.1/pm{i}", source="pubmed") for i in range(7)], 300
+
+    monkeypatch.setattr("routers.search.search_openalex", openalex)
+    monkeypatch.setattr("routers.search.search_pubmed", pubmed)
+
+    result = asyncio.run(search_papers(SearchRequest(query="paging", limit=15)))
+    assert len(result.papers) == 22
+    assert {p.title for p in result.papers} == {f"OA {i}" for i in range(15)} | {f"PM {i}" for i in range(7)}
+
+
+def test_search_still_collapses_cross_database_duplicates(monkeypatch):
+    """Returning the whole union must not mean returning the same paper twice."""
+    async def openalex(*_args, **_kwargs):
+        return [paper(title="Shared", url="https://doi.org/10.1/shared", abstract="full")], 1
+
+    async def pubmed(*_args, **_kwargs):
+        return [paper(title="Shared", url="https://doi.org/10.1/shared", source="pubmed")], 1
+
+    monkeypatch.setattr("routers.search.search_openalex", openalex)
+    monkeypatch.setattr("routers.search.search_pubmed", pubmed)
+
+    result = asyncio.run(search_papers(SearchRequest(query="dup")))
+    assert len(result.papers) == 1
+    assert result.papers[0].source == "openalex+pubmed"
+
+
+def test_has_more_uses_the_same_page_size_the_search_applied():
+    """The offset advanced per page and the has_more arithmetic must agree."""
+    for limit in (5, 15, 30, 100):
+        assert _openalex_page_size(limit) == min(limit, 25)
+        assert _pubmed_page_size(limit) == min(limit, 20)

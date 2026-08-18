@@ -7,6 +7,7 @@ import { API, apiFetch } from '../lib/api'
 import { runPool } from '../lib/runPool'
 import { partitionNewPapers } from '../lib/dedupe'
 import { journalEntry } from '../lib/decisionJournal'
+import { newId } from '../lib/ids'
 
 // How many auto-fill requests are in flight at once. Enough to hide most of the
 // per-request latency without hammering the API from a single browser tab.
@@ -400,7 +401,7 @@ function AddPapersModal({ onClose, onAdd }: { onClose: () => void; onAdd: (paper
         }
         const data = await res.json()
         const paper: ResultCard = {
-          id: `up_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          id: newId('up'),
           title: data.title,
           authors: data.authors ?? '',
           year: data.year ?? 0,
@@ -568,7 +569,7 @@ function AddSystemModal({
       return
     }
     onAdd({
-      id: `sys-manual-${Date.now()}`,
+      id: newId('sys-manual'),
       name: result.name,
       description: result.description,
       category: result.category || 'other',
@@ -698,12 +699,15 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
     } catch { /* keep prior suggestions */ } finally { setEditColsLoading(false) }
   }
 
-  const reviewListIds = new Set(state.reviewList.map(p => p.id))
-  const rowsMismatch = state.reviewList.length > 0 &&
-    !state.matrixRows.every(r => reviewListIds.has(r.paperId))
-  const needsInit = state.reviewList.length > 0 && (
-    state.matrixColumns.length === 0 || state.matrixRows.length === 0 || rowsMismatch
-  )
+  // Column generation and row population are two separate concerns, and
+  // conflating them is what used to make a single removed paper wipe the whole
+  // matrix. Columns are generated once, when there are none; rows are
+  // reconciled continuously against the review list, preserving filled cells.
+  const needsColumns = state.reviewList.length > 0 && state.matrixColumns.length === 0
+
+  // Signature of the review list, so the sync effect fires when papers are
+  // added or removed but not on every unrelated render.
+  const reviewListKey = state.reviewList.map(p => p.id).join('|')
 
   async function runGenerate() {
     setGenerating(true); setGenError(false)
@@ -720,16 +724,23 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
       const data = await res.json()
       dispatch({ type: 'SET_MATRIX_COLUMNS', columns: data.columns })
       if (data.descriptions) dispatch({ type: 'MERGE_COLUMN_DESCRIPTIONS', system: false, descriptions: data.descriptions })
-      dispatch({ type: 'INIT_MATRIX_ROWS' })
     } catch { setGenError(true) } finally { setGenerating(false) }
   }
 
   useEffect(() => {
-    if (!needsInit || generating) return
+    if (!needsColumns || generating) return
     const timer = window.setTimeout(() => { void runGenerate() }, 0)
     return () => clearTimeout(timer)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [needsInit])
+  }, [needsColumns])
+
+  // Keep rows in step with the review list, in both directions: papers added on
+  // the screening step gain an empty row here, papers removed lose theirs, and
+  // everything else keeps the cells already extracted for it.
+  useEffect(() => {
+    dispatch({ type: 'SYNC_MATRIX_ROWS' })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewListKey])
 
   /**
    * Fill `columns` for each paper. Passing a single column is what the
@@ -1040,9 +1051,9 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
     } catch { /* keep prior suggestions */ } finally { setEditColsLoading(false) }
   }
 
-  const selectedIds = new Set(selectedSystems.map(s => s.id))
-  const rowsMismatch = selectedSystems.length > 0 && !systemMatrixRows.every(r => selectedIds.has(r.systemId))
-  const needsInit = selectedSystems.length > 0 && (systemMatrixColumns.length === 0 || systemMatrixRows.length === 0 || rowsMismatch)
+  // As on the literature side: generate columns once, reconcile rows always.
+  const needsColumns = selectedSystems.length > 0 && systemMatrixColumns.length === 0
+  const selectedSystemsKey = selectedSystems.map(s => s.id).join('|')
 
   async function runGenerate() {
     setGenerating(true); setGenError(false)
@@ -1059,16 +1070,20 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
       const data = await res.json()
       dispatch({ type: 'SET_SYSTEM_MATRIX_COLUMNS', columns: data.columns })
       if (data.descriptions) dispatch({ type: 'MERGE_COLUMN_DESCRIPTIONS', system: true, descriptions: data.descriptions })
-      dispatch({ type: 'INIT_SYSTEM_MATRIX_ROWS' })
     } catch { setGenError(true) } finally { setGenerating(false) }
   }
 
   useEffect(() => {
-    if (!needsInit || generating) return
+    if (!needsColumns || generating) return
     const timer = window.setTimeout(() => { void runGenerate() }, 0)
     return () => clearTimeout(timer)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [needsInit])
+  }, [needsColumns])
+
+  useEffect(() => {
+    dispatch({ type: 'SYNC_SYSTEM_MATRIX_ROWS' })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSystemsKey])
 
   async function fillSystems(
     systems: { id: string; name: string; category: string; vendor: string; description: string }[],

@@ -179,6 +179,17 @@ _PUBMED_LANGUAGES = {
 }
 
 
+# Each database's page size is a pure function of the requested limit, so the
+# offset for page N is the same on every call. Deriving them anywhere else risks
+# the two drifting apart, which silently skips or repeats records between pages.
+def _openalex_page_size(limit: int) -> int:
+    return min(limit, 25)
+
+
+def _pubmed_page_size(limit: int) -> int:
+    return min(limit, 20)
+
+
 async def search_openalex(
     query_text: str, limit: int, client: httpx.AsyncClient,
     page: int = 1, filters: SearchFilters | None = None,
@@ -186,7 +197,7 @@ async def search_openalex(
     """Returns (papers on this page, total hits across all pages)."""
     params = {
         "search": query_text,
-        "per-page": min(limit, 25),
+        "per-page": _openalex_page_size(limit),
         "page": max(page, 1),
         "select": OPENALEX_FIELDS,
     }
@@ -215,7 +226,7 @@ async def search_pubmed(
     """Search PubMed via E-utilities (free, no API key required).
 
     Returns (papers on this page, total hits across all pages)."""
-    retmax = min(limit, 20)
+    retmax = _pubmed_page_size(limit)
     try:
         # Step 1: esearch — get PMIDs
         search_resp = await client.get(
@@ -426,14 +437,21 @@ async def search_papers(req: SearchRequest):
 
     # OpenAlex first (it carries abstracts), then PubMed; deduplicate() merges
     # the same paper across the two sources by DOI, falling back to title.
-    combined = list(openalex_results) + list(pubmed_results)
-    combined = deduplicate(combined)[:req.limit]
+    #
+    # The union is returned whole, deliberately. Truncating it to `limit` used to
+    # discard the tail — and because each database's page offset had already
+    # advanced past those records, "load more" could never fetch them again, so
+    # papers were permanently lost from the review. `limit` is the per-database
+    # page size, not a cap on the merged page.
+    combined = deduplicate(list(openalex_results) + list(pubmed_results))
 
     # Either database still having pages left means "load more" has something
-    # to fetch. Compared per-database because their page sizes differ.
+    # to fetch. Compared per-database because their page sizes differ. The page
+    # sizes below must stay in step with the ones the two search functions apply,
+    # or paging will either stop early or loop past the end.
     has_more = (
-        openalex_total > page * min(req.limit, 25)
-        or pubmed_total > page * min(pubmed_limit, 20)
+        openalex_total > page * _openalex_page_size(req.limit)
+        or pubmed_total > page * _pubmed_page_size(pubmed_limit)
     )
 
     return SearchResponse(

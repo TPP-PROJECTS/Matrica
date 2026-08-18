@@ -1,4 +1,4 @@
-import { totalIdentified } from '../types'
+import { totalIdentified, duplicatesRemoved} from '../types'
 import type { AppState, ResultCard } from '../types'
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
@@ -126,9 +126,12 @@ export function exportPrismaCSV(state: AppState): void {
   // PRISMA separates the two identification pathways, so database searching and
   // citation chasing are reported as their own lines.
   const fromSearch = state.results.filter(r => (r.origin ?? 'search') !== 'snowball').length
+  // Duplicates are derived against the database-search corpus only —
+  // snowballed and uploaded papers were never counted as retrieved.
+  const searchHeld = state.results.filter(r => (r.origin ?? 'search') === 'search').length
   const fromSnowball = state.results.filter(r => r.origin === 'snowball').length
   const identifiedTotal = totalIdentified(state.screening)
-  const duplicates = state.screening.duplicatesRemoved
+  const duplicates = duplicatesRemoved(state.screening, searchHeld)
   const retrieved = state.results.length
   const excludedPapers = state.results.filter(r => r.status === 'excluded')
   const inReview = state.reviewList.length

@@ -132,13 +132,43 @@ export interface ScreeningCounts {
    * again would inflate "records identified" every time the user hits Search.
    */
   identifiedByQuery: Record<string, number>
-  /** Records dropped as duplicates of one already held. */
-  duplicatesRemoved: number
+  /**
+   * Records actually pulled into the tool, keyed by query, for the same reason.
+   * Page 1 of a query assigns; later pages add to that query's own entry.
+   */
+  retrievedByQuery: Record<string, number>
+  /**
+   * Legacy accumulated duplicate counter. It grew on every re-run of a search —
+   * the same inflation `identifiedByQuery` was keyed to avoid — so it is no
+   * longer written. Sessions saved before the fix still carry a value, and
+   * `duplicatesRemoved()` falls back to it so their exports do not change.
+   */
+  duplicatesRemoved?: number
 }
 
 /** Records identified across every query — the PRISMA identification total. */
 export function totalIdentified(counts: ScreeningCounts): number {
   return Object.values(counts.identifiedByQuery).reduce((a, b) => a + b, 0)
+}
+
+/** Records retrieved across every query, counting a repeat hit each time. */
+export function totalRetrieved(counts: ScreeningCounts): number {
+  return Object.values(counts.retrievedByQuery ?? {}).reduce((a, b) => a + b, 0)
+}
+
+/**
+ * Records removed as duplicates before screening.
+ *
+ * Derived, not counted: gross records retrieved minus the unique ones still
+ * held. A stored counter cannot survive the user re-running a search, because
+ * every already-held paper is re-detected as a duplicate on the second run.
+ * Subtraction is idempotent — running the same search ten times leaves both
+ * terms unchanged.
+ */
+export function duplicatesRemoved(counts: ScreeningCounts, uniqueHeld: number): number {
+  const gross = totalRetrieved(counts)
+  if (gross === 0) return counts.duplicatesRemoved ?? 0   // pre-fix session
+  return Math.max(0, gross - uniqueHeld)
 }
 
 export interface SystemItem {
@@ -515,7 +545,7 @@ export type AppAction =
   | { type: 'TOGGLE_SYSTEM_ITEM'; itemId: string } // @chatbot Select or deselect a system (flips its current state).
   | { type: 'ADD_CUSTOM_SYSTEM'; name: string } // @chatbot Add a custom system to the system review list.
   | { type: 'SET_QUERIES'; queries: QueryCard[] }
-  | { type: 'ADD_SEARCH_RESULTS'; results: ResultCard[]; identifiedFor?: { queryId: string; count: number } }
+  | { type: 'ADD_SEARCH_RESULTS'; results: ResultCard[]; identifiedFor?: { queryId: string; count: number }; retrievedFor?: { queryId: string; page: number; count: number } }
   | { type: 'CLEAR_RESULTS' }
   | { type: 'SET_SEARCH_FILTERS'; filters: SearchFilters } // @chatbot Set the database search limits (year range, open access, preprints, language) applied to future searches.
   | { type: 'ADD_CRITERION'; criterion: ScreeningCriterion } // @chatbot Add one inclusion or exclusion criterion to the screening protocol.
@@ -537,7 +567,6 @@ export type AppAction =
   | { type: 'ADD_CHAT_MESSAGE'; message: ChatMessage }
   | { type: 'DISMISS_MESSAGE'; messageId: string }
   | { type: 'TOGGLE_HISTORY' }
-  | { type: 'TOGGLE_TOPIC_SELECTED'; topicId: string }
   | { type: 'TOGGLE_GAP_SELECTED'; gapId: string } // @chatbot Select or deselect a gap dimension (flips its current state).
   | { type: 'SELECT_RQ'; rqId: string } // @chatbot Set the active research question.
   | { type: 'SELECT_STUDY_DESIGN'; designId: string } // @chatbot Choose the study design.
@@ -553,12 +582,12 @@ export type AppAction =
   | { type: 'ADD_MATRIX_COLUMN'; column: string } // @chatbot Add one column to the literature matrix.
   | { type: 'RENAME_MATRIX_COLUMN'; oldName: string; newName: string } // @chatbot Rename a literature matrix column (oldName must match exactly).
   | { type: 'REMOVE_MATRIX_COLUMN'; column: string } // @chatbot Remove a literature matrix column (must match exactly).
-  | { type: 'INIT_MATRIX_ROWS' }
+  | { type: 'SYNC_MATRIX_ROWS' }
   | { type: 'SET_SYSTEM_MATRIX_COLUMNS'; columns: string[] } // @chatbot Replace ALL system matrix columns.
   | { type: 'ADD_SYSTEM_MATRIX_COLUMN'; column: string } // @chatbot Add one column to the system matrix.
   | { type: 'RENAME_SYSTEM_MATRIX_COLUMN'; oldName: string; newName: string } // @chatbot Rename a system matrix column (oldName must match exactly).
   | { type: 'REMOVE_SYSTEM_MATRIX_COLUMN'; column: string } // @chatbot Remove a system matrix column (must match exactly).
-  | { type: 'INIT_SYSTEM_MATRIX_ROWS' }
+  | { type: 'SYNC_SYSTEM_MATRIX_ROWS' }
   | { type: 'ADD_UPLOADED_PAPERS'; papers: ResultCard[] }
   | { type: 'ADD_SYSTEM_WITH_ROW'; item: SystemItem }
   | { type: 'UPDATE_MATRIX_ROW_CELLS'; paperId: string; cells: Record<string, MatrixCell> }

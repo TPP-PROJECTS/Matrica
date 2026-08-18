@@ -102,12 +102,19 @@ export function TopBar() {
 
         <div className="w-px h-4 bg-zinc-700" />
 
-        {/* Save status */}
+        {/* Save status — reports what the write actually did, not that it was attempted */}
         <span className="text-[10px] text-zinc-600 flex items-center gap-1">
-          {saveStatus === 'saved' ? (
-            <><span className="text-green-500">●</span> Saved</>
-          ) : (
-            <><span className="text-amber-400 animate-pulse">●</span> Saving…</>
+          {saveStatus === 'saved' && <><span className="text-green-500">●</span> Saved</>}
+          {saveStatus === 'saving' && <><span className="text-amber-400 animate-pulse">●</span> Saving…</>}
+          {saveStatus === 'local-only' && (
+            <span title="Saved in this browser, but the server is unreachable" className="flex items-center gap-1 text-amber-300">
+              <span>●</span> This browser only
+            </span>
+          )}
+          {saveStatus === 'error' && (
+            <span title="Nothing accepted the last write — download a copy" className="flex items-center gap-1 text-red-400 font-semibold">
+              <span>●</span> Not saved
+            </span>
           )}
         </span>
 

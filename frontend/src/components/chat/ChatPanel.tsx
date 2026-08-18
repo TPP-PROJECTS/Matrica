@@ -5,6 +5,7 @@ import { buildResearchContext } from '../../lib/buildResearchContext'
 import { resolveAction, buildActionsSpec } from '../../lib/actionRegistry'
 import type { ProposedAction } from '../../types'
 import { API, apiFetch } from '../../lib/api'
+import { newId } from '../../lib/ids'
 
 
 interface AssistantApiResponse {
@@ -81,8 +82,8 @@ export function ChatPanel() {
       const { reply, actions: rawActions } = data
 
       // Build ProposedAction list
-      const proposedActions: ProposedAction[] = rawActions.map((a, i) => ({
-        id: `pa-${Date.now()}-${i}`,
+      const proposedActions: ProposedAction[] = rawActions.map(a => ({
+        id: newId('pa'),
         type: a.type,
         label: a.label,
         detail: a.detail,
@@ -107,7 +108,7 @@ export function ChatPanel() {
         dispatch({
           type: 'ADD_CHAT_MESSAGE',
           message: {
-            id: `actions-${Date.now()}`,
+            id: newId('actions'),
             type: 'action_confirm',
             content: '',
             timestamp: now,
