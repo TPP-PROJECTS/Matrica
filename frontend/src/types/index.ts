@@ -231,6 +231,62 @@ export interface SystemMatrixRow {
   cells: Record<string, MatrixCell>
 }
 
+// ── Risk of bias / quality appraisal ──────────────────────────────────────────
+//
+// The step between "these studies are eligible" and "this is what the evidence
+// says". Without it a review weighs a confounded cohort study the same as a
+// well-conducted trial.
+//
+// The instruments themselves (domains, signalling questions, allowed
+// judgements) are served by the backend and never generated: a reviewer citing
+// "RoB 2" entitles a reader to assume the published domains were applied.
+
+export type RobToolId = 'rob2' | 'robins_i' | 'amstar2'
+
+export interface RobJudgementOption {
+  value: string
+  label: string
+  tone: 'good' | 'warn' | 'bad' | 'unknown'
+}
+
+export interface RobDomainSpec {
+  id: string
+  label: string
+  question: string
+  /** AMSTAR 2 weights seven of its items as critical to the overall rating. */
+  critical: boolean
+}
+
+export interface RobTool {
+  id: RobToolId
+  name: string
+  fullName: string
+  appliesTo: string
+  reference: string
+  domains: RobDomainSpec[]
+  judgements: RobJudgementOption[]
+  overallRule: string
+}
+
+export interface RobDomainResult {
+  judgement: string
+  rationale: string
+  /** Quote from the paper, checked against it the same way matrix cells are. */
+  supportQuote: string
+  aiGenerated: boolean
+  /** An AI appraisal is a draft; this is the reviewer signing it off. */
+  verifiedByStudent: boolean
+}
+
+export interface RobAssessment {
+  paperId: string
+  toolId: RobToolId
+  domains: Record<string, RobDomainResult>
+  overall: string
+  overallRationale: string
+  assessedAt: string
+}
+
 export interface SynthesisBlock {
   id: string
   blockType: 'focus' | 'patterns' | 'unclear' | 'missing' | 'custom'
@@ -371,6 +427,7 @@ export interface DecisionJournalEntry {
     | 'profile' | 'query' | 'search_filter' | 'matrix_column' | 'matrix_cell'
     | 'system' | 'screening_protocol' | 'synthesis' | 'theme' | 'gap_statement'
     | 'topic' | 'paper' | 'research_question' | 'study_design' | 'final_topic'
+    | 'quality_appraisal'
   entityId: string
   entityLabel: string
   justification?: string
@@ -423,6 +480,9 @@ export interface SessionSnapshot {
   matrixRows: MatrixRow[]
   systemMatrixColumns: string[]
   systemMatrixRows: SystemMatrixRow[]
+  // Step 5b — quality appraisal
+  robToolId: RobToolId | null
+  robAssessments: RobAssessment[]
   // Step 6
   themes: Theme[]
   activeThemeId: string
@@ -485,6 +545,9 @@ export interface AppState {
   matrixRows: MatrixRow[]
   systemMatrixColumns: string[]
   systemMatrixRows: SystemMatrixRow[]
+  // Step 5b — quality appraisal
+  robToolId: RobToolId | null
+  robAssessments: RobAssessment[]
   // Step 6
   themes: Theme[]
   activeThemeId: string
@@ -624,6 +687,10 @@ export type AppAction =
   | { type: 'ADD_SYSTEM_WITH_ROW'; item: SystemItem }
   | { type: 'UPDATE_MATRIX_ROW_CELLS'; paperId: string; cells: Record<string, MatrixCell> }
   | { type: 'UPDATE_SYSTEM_MATRIX_ROW_CELLS'; systemId: string; cells: Record<string, MatrixCell> }
+  | { type: 'SET_ROB_TOOL'; toolId: RobToolId | null } // @chatbot Choose the risk-of-bias appraisal instrument (rob2, robins_i or amstar2), or null for none.
+  | { type: 'SET_ROB_ASSESSMENT'; assessment: RobAssessment }
+  | { type: 'UPDATE_ROB_DOMAIN'; paperId: string; domainId: string; judgement?: string; rationale?: string; verifiedByStudent?: boolean }
+  | { type: 'CLEAR_ROB_ASSESSMENTS' } // @chatbot Discard every risk-of-bias assessment, including ones a human confirmed.
   | { type: 'SET_THEMES'; themes: Theme[] }
   | { type: 'ADD_SYNTHESIS_BLOCK'; themeId: string; block: SynthesisBlock }
   | { type: 'UPDATE_SYNTHESIS_BLOCK'; themeId: string; blockId: string; content: string } // @chatbot Rewrite a synthesis block's content (full new text).

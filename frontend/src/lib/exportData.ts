@@ -1,5 +1,5 @@
 import { totalIdentified, duplicatesRemoved} from '../types'
-import type { AppState, ResultCard, SearchFilters } from '../types'
+import type { AppState, ResultCard, RobTool, SearchFilters } from '../types'
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -242,4 +242,69 @@ export function exportSearchStrategyCSV(state: AppState): void {
     'text/csv',
     toCsv(['Item', 'Value', 'Field', 'Detail', 'Count'], rows),
   )
+}
+
+// ── Risk of bias ──────────────────────────────────────────────────────────────
+//
+// A "risk of bias table" is an expected element of a systematic review report,
+// and reviewers read it before they read the findings. The export deliberately
+// records who made each judgement: an appraisal drafted by a model and never
+// confirmed by a human is not an appraisal the review can claim to have done,
+// and hiding that distinction in an export would be the most consequential
+// thing this tool could get wrong.
+
+export function exportRiskOfBiasCSV(state: AppState, tool: RobTool): void {
+  const byPaper = new Map(state.robAssessments.map(a => [a.paperId, a]))
+  const judgementLabel = (value: string) =>
+    tool.judgements.find(j => j.value === value)?.label ?? value
+
+  const headers = [
+    'Study', 'Year',
+    ...tool.domains.map(d => d.label + (d.critical ? ' (critical)' : '')),
+    'Overall', 'Confirmed by reviewer',
+  ]
+
+  const rows = state.reviewList.map(paper => {
+    const assessment = byPaper.get(paper.id)
+    if (!assessment) {
+      return [
+        paper.title, String(paper.year || ''),
+        ...tool.domains.map(() => 'Not appraised'),
+        'Not appraised', 'n/a',
+      ]
+    }
+    const results = tool.domains.map(d => assessment.domains[d.id])
+    const confirmed = results.filter(r => r && (!r.aiGenerated || r.verifiedByStudent)).length
+    return [
+      paper.title, String(paper.year || ''),
+      ...results.map(r => (r ? judgementLabel(r.judgement) : '—')),
+      judgementLabel(assessment.overall) || assessment.overall || '—',
+      `${confirmed} of ${tool.domains.length}`,
+    ]
+  })
+
+  rows.push(new Array(headers.length).fill(''))
+  rows.push(['Instrument', tool.fullName, ...new Array(headers.length - 2).fill('')])
+  rows.push(['Reference', tool.reference, ...new Array(headers.length - 2).fill('')])
+  rows.push(['Overall rule', tool.overallRule, ...new Array(headers.length - 2).fill('')])
+
+  // Per-domain rationales, which are the part a reader actually weighs.
+  const withRationale = state.reviewList.filter(p => byPaper.has(p.id))
+  if (withRationale.length > 0) {
+    rows.push(new Array(headers.length).fill(''))
+    rows.push(['Study', 'Domain', 'Judgement', 'Rationale', ...new Array(headers.length - 4).fill('')])
+    for (const paper of withRationale) {
+      const assessment = byPaper.get(paper.id)!
+      for (const domain of tool.domains) {
+        const result = assessment.domains[domain.id]
+        if (!result) continue
+        rows.push([
+          paper.title, domain.label, judgementLabel(result.judgement), result.rationale || '—',
+          ...new Array(headers.length - 4).fill(''),
+        ])
+      }
+    }
+  }
+
+  downloadText(`${safeBase(state)}_risk_of_bias.csv`, 'text/csv', toCsv(headers, rows))
 }

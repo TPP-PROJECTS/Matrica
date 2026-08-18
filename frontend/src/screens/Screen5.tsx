@@ -10,6 +10,7 @@ import { journalEntry } from '../lib/decisionJournal'
 import { newId } from '../lib/ids'
 import { SourceProvenance } from '../components/shared/SourceProvenance'
 import { locateQuote } from '../lib/provenance'
+import { RiskOfBiasPanel } from './RiskOfBiasPanel'
 
 // How many auto-fill requests are in flight at once. Enough to hide most of the
 // per-request latency without hammering the API from a single browser tab.
@@ -1364,7 +1365,13 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
 export function Screen5() {
   const { state, dispatch } = useApp()
   const systemItems = state.systemItems ?? []
-  const [activeTab, setActiveTab] = useState<'literature' | 'system'>('literature')
+  const [activeTab, setActiveTab] = useState<'literature' | 'system' | 'rob'>('literature')
+  // Surfaced on the tab so an unreviewed AI appraisal cannot be carried into
+  // the synthesis without the reviewer having seen that it is unreviewed.
+  const robUnconfirmed = state.robAssessments.reduce(
+    (n, a) => n + Object.values(a.domains).filter(d => d.aiGenerated && !d.verifiedByStudent).length,
+    0,
+  )
   const [evidenceTarget, setEvidenceTarget] = useState<EvidenceTarget | null>(null)
   const [synthesising, setSynthesising] = useState(false)
   const [synthError, setSynthError] = useState<string | null>(null)
@@ -1411,6 +1418,18 @@ export function Screen5() {
           })),
           columns: state.matrixColumns,
           system_columns: state.systemMatrixColumns ?? [],
+          // The quality appraisal travels with the evidence, so the synthesis
+          // cannot present a finding resting on high-risk studies as settled.
+          rob_summaries: state.robAssessments.map(a => {
+            const paper = state.reviewList.find(p => p.id === a.paperId)
+            const domains = Object.values(a.domains)
+            return {
+              title: paper?.title ?? a.paperId,
+              tool: a.toolId,
+              overall: a.overall,
+              confirmed: domains.length > 0 && domains.every(d => !d.aiGenerated || d.verifiedByStudent),
+            }
+          }),
           profile: state.profile,
           topics: state.topics.filter(t => t.selected).map(t => ({
             title: t.title,
@@ -1450,15 +1469,31 @@ export function Screen5() {
             <span className="ml-1.5 text-[10px] text-zinc-400">({systemItems.filter(s => s.selected).length})</span>
           </button>
         )}
+        <button onClick={() => setActiveTab('rob')}
+          title="Appraise the quality of the included studies before synthesising them"
+          className={`px-4 h-8 text-[12px] font-medium border-b-2 transition-colors ${activeTab === 'rob' ? 'border-amber-600 text-amber-700' : 'border-transparent text-zinc-400 hover:text-amber-600'}`}>
+          Risk of Bias
+          <span className="ml-1.5 text-[10px] text-zinc-400">
+            ({state.robAssessments.length}/{state.reviewList.length})
+          </span>
+          {robUnconfirmed > 0 && (
+            <span
+              className="ml-1 w-1.5 h-1.5 rounded-full bg-amber-500 inline-block align-middle"
+              title={`${robUnconfirmed} AI judgement(s) still awaiting your confirmation`}
+            />
+          )}
+        </button>
         <div className="flex-1" />
         <span className="text-[10px] text-zinc-400 pb-2">Step 6 · Matrix Table</span>
       </div>
 
       {/* Active matrix */}
       <div className="flex flex-col flex-1 overflow-hidden">
-        {activeTab === 'literature' || !state.systemMatrixEnabled
-          ? <LiteratureMatrix onEvidence={setEvidenceTarget} />
-          : <SystemMatrix onEvidence={setEvidenceTarget} />
+        {activeTab === 'rob'
+          ? <RiskOfBiasPanel />
+          : activeTab === 'literature' || !state.systemMatrixEnabled
+            ? <LiteratureMatrix onEvidence={setEvidenceTarget} />
+            : <SystemMatrix onEvidence={setEvidenceTarget} />
         }
       </div>
 

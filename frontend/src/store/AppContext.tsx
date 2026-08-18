@@ -75,6 +75,8 @@ function freshState(): AppState {
     matrixColumns: BASE_MATRIX_COLUMNS,
     systemMatrixRows: [],
     systemMatrixColumns: [],
+    robToolId: null,
+    robAssessments: [],
     themes: [],
     activeThemeId: '',
     gaps: [],
@@ -129,6 +131,8 @@ function snapshotToState(snap: SessionSnapshot): AppState {
     matrixRows: snap.matrixRows ?? base.matrixRows,
     systemMatrixColumns: snap.systemMatrixColumns ?? base.systemMatrixColumns,
     systemMatrixRows: snap.systemMatrixRows ?? base.systemMatrixRows,
+    robToolId: snap.robToolId ?? base.robToolId,
+    robAssessments: snap.robAssessments ?? base.robAssessments,
     themes: snap.themes ?? base.themes,
     activeThemeId: snap.activeThemeId ?? base.activeThemeId,
     gaps: snap.gaps ?? base.gaps,
@@ -176,6 +180,24 @@ function renameKey(map: Record<string, string>, oldKey: string, newKey: string):
   if (!(oldKey in map)) return map
   const { [oldKey]: value, ...rest } = map
   return { ...rest, [newKey]: value }
+}
+
+/**
+ * Drop appraisals for papers that are no longer under review.
+ *
+ * An assessment outlives its paper the same way a matrix row used to, and the
+ * result is a count like "2 of 1 appraised" and an orphan carried into the
+ * synthesis payload. Removal is the right move rather than hiding them: a paper
+ * that is no longer in the review has no place in its quality appraisal.
+ */
+function pruneRobAssessments(
+  assessments: import('../types').RobAssessment[],
+  reviewList: import('../types').ResultCard[],
+): import('../types').RobAssessment[] {
+  const live = new Set(reviewList.map(p => p.id))
+  return assessments.length === assessments.filter(a => live.has(a.paperId)).length
+    ? assessments
+    : assessments.filter(a => live.has(a.paperId))
 }
 
 /** Copy of `map` without `key`. */
@@ -385,6 +407,7 @@ export function reducer(state: AppState, action: AppAction): AppState {
             : r
         ),
         reviewList: state.reviewList.filter(r => r.id !== action.paperId),
+        robAssessments: (state.robAssessments ?? []).filter(a => a.paperId !== action.paperId),
       }
     }
 
@@ -438,10 +461,12 @@ export function reducer(state: AppState, action: AppAction): AppState {
         r.screenedBy === 'ai'
           ? { ...r, status: null, exclusionReasonId: null, screenedBy: undefined, screeningReason: undefined, screenUncertain: false, screenStatus: undefined }
           : r
+      const reviewList = state.reviewList.filter(r => r.screenedBy !== 'ai')
       return {
         ...state,
         results: state.results.map(clearAi),
-        reviewList: state.reviewList.filter(r => r.screenedBy !== 'ai'),
+        reviewList,
+        robAssessments: pruneRobAssessments(state.robAssessments ?? [], reviewList),
       }
     }
 
@@ -482,6 +507,9 @@ export function reducer(state: AppState, action: AppAction): AppState {
         reviewList: inList
           ? state.reviewList.filter(r => r.id !== action.paperId)
           : [...state.reviewList, { ...paper, status }],
+        robAssessments: inList
+          ? (state.robAssessments ?? []).filter(a => a.paperId !== action.paperId)
+          : (state.robAssessments ?? []),
       }
     }
 
@@ -521,6 +549,7 @@ export function reducer(state: AppState, action: AppAction): AppState {
             ? { ...r, status: null, screenedBy: undefined, screeningReason: undefined, screenUncertain: false }
             : r
         ),
+        robAssessments: (state.robAssessments ?? []).filter(a => a.paperId !== action.paperId),
       }
 
     case 'UPDATE_REVIEW_STATUS':
@@ -801,6 +830,47 @@ export function reducer(state: AppState, action: AppAction): AppState {
     case 'SET_AXIS_GAP':
       return { ...state, axisGaps: { ...state.axisGaps, [action.key]: action.text } }
 
+    case 'SET_ROB_TOOL':
+      // Changing instrument invalidates existing assessments: the domains and
+      // the judgement scale both differ, so a RoB 2 rating cannot be carried
+      // across to ROBINS-I. Dropping them is the honest move — silently
+      // relabelling them would misreport which appraisal was actually done.
+      return action.toolId === state.robToolId
+        ? state
+        : { ...state, robToolId: action.toolId, robAssessments: [] }
+
+    case 'SET_ROB_ASSESSMENT': {
+      const others = (state.robAssessments ?? []).filter(a => a.paperId !== action.assessment.paperId)
+      return { ...state, robAssessments: [...others, action.assessment] }
+    }
+
+    case 'UPDATE_ROB_DOMAIN':
+      // A human edit to any part of a domain marks it confirmed unless the
+      // caller says otherwise — reviewing the AI's draft *is* the sign-off.
+      return {
+        ...state,
+        robAssessments: (state.robAssessments ?? []).map(assessment => {
+          if (assessment.paperId !== action.paperId) return assessment
+          const current = assessment.domains[action.domainId]
+          if (!current) return assessment
+          return {
+            ...assessment,
+            domains: {
+              ...assessment.domains,
+              [action.domainId]: {
+                ...current,
+                judgement: action.judgement ?? current.judgement,
+                rationale: action.rationale ?? current.rationale,
+                verifiedByStudent: action.verifiedByStudent ?? true,
+              },
+            },
+          }
+        }),
+      }
+
+    case 'CLEAR_ROB_ASSESSMENTS':
+      return { ...state, robAssessments: [] }
+
     case 'SET_THEMES':
       return {
         ...state,
@@ -871,6 +941,7 @@ export function reducer(state: AppState, action: AppAction): AppState {
         results: state.results.filter(r => !ids.has(r.id)),
         reviewList: state.reviewList.filter(r => !ids.has(r.id)),
         matrixRows: state.matrixRows.filter(r => !ids.has(r.paperId)),
+        robAssessments: (state.robAssessments ?? []).filter(a => !ids.has(a.paperId)),
       }
     }
 
@@ -960,6 +1031,12 @@ function automaticAuditEntry(state: AppState, action: AppAction): DecisionJourna
     case 'UPDATE_REVIEW_STATUS': {
       const paper = state.reviewList.find(p => p.id === action.paperId)
       return { ...base, step: 5, action: 'Changed paper review status', entityType: 'paper', entityId: action.paperId, entityLabel: paper?.title ?? action.paperId, previousValue: paper?.status ?? '', newValue: action.status ?? '' }
+    }
+    case 'SET_ROB_TOOL':
+      return { ...base, step: 6, action: action.toolId ? 'Chose a risk-of-bias instrument' : 'Turned off risk-of-bias appraisal', entityType: 'quality_appraisal', entityId: action.toolId ?? 'none', entityLabel: action.toolId ?? 'None', previousValue: state.robToolId ?? '', newValue: action.toolId ?? '' }
+    case 'UPDATE_ROB_DOMAIN': {
+      const paper = state.reviewList.find(p => p.id === action.paperId)
+      return { ...base, step: 6, action: 'Confirmed a risk-of-bias judgement', entityType: 'quality_appraisal', entityId: `${action.paperId}:${action.domainId}`, entityLabel: `${paper?.title ?? action.paperId} — ${action.domainId}`, newValue: action.judgement ?? '', justification: action.rationale }
     }
     case 'UPDATE_THEME_COLUMNS': {
       const theme = state.themes.find(t => t.id === action.themeId)

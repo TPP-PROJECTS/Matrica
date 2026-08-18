@@ -424,6 +424,22 @@ export const ACTION_CATALOG: CatalogEntry[] = [
     ]
   },
   {
+    "type": "SET_ROB_TOOL",
+    "doc": "Choose the risk-of-bias appraisal instrument (rob2, robins_i or amstar2), or null for none.",
+    "fields": [
+      {
+        "name": "toolId",
+        "tsType": "RobToolId | null",
+        "optional": false
+      }
+    ]
+  },
+  {
+    "type": "CLEAR_ROB_ASSESSMENTS",
+    "doc": "Discard every risk-of-bias assessment, including ones a human confirmed.",
+    "fields": []
+  },
+  {
     "type": "UPDATE_SYNTHESIS_BLOCK",
     "doc": "Rewrite a synthesis block's content (full new text).",
     "fields": [

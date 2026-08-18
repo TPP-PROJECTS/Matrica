@@ -47,6 +47,21 @@ class SystemRowInfo(BaseModel):
     cells: dict[str, CellInfo] = {}
 
 
+class RobSummaryInfo(BaseModel):
+    """One study's appraisal, as the synthesis needs to see it.
+
+    Synthesis that ignores study quality reports a badly confounded cohort study
+    and a well-conducted trial as equal evidence — which is the thing a reader
+    of a review is least willing to forgive. `confirmed` travels with it because
+    an unconfirmed AI draft is a weaker warrant than a reviewer's own judgement,
+    and the synthesis should not treat the two as interchangeable.
+    """
+    title: str
+    tool: str = ''
+    overall: str = ''
+    confirmed: bool = False
+
+
 class GenerateSynthesisRequest(BaseModel):
     matrix_rows: list[MatrixRowInfo] = []
     system_rows: list[SystemRowInfo] = []
@@ -54,6 +69,7 @@ class GenerateSynthesisRequest(BaseModel):
     system_columns: list[str] = []
     profile: ProfileInfo
     topics: list[TopicInfo] = []
+    rob_summaries: list[RobSummaryInfo] = []
     custom_system_prompt: str | None = None
 
 
@@ -138,6 +154,25 @@ def _format_sys_matrix(rows: list[SystemRowInfo], columns: list[str]) -> str:
     return '\n'.join(lines)
 
 
+def _format_rob(summaries: list[RobSummaryInfo]) -> str:
+    """Render the appraisal so the synthesis has to weigh it."""
+    if not summaries:
+        return ""
+    lines = [
+        f"- {s.title}: {s.overall or 'not rated'}"
+        + ("" if s.confirmed else " (AI draft, not yet confirmed by the reviewer)")
+        for s in summaries
+    ]
+    tool = next((s.tool for s in summaries if s.tool), "an appraisal instrument")
+    return (
+        f"\nRISK OF BIAS ({tool}):\n" + "\n".join(lines) +
+        "\n\nWeigh the evidence accordingly: a finding resting mainly on studies at high or "
+        "serious risk of bias must be reported as such in the 'unclear' block rather than stated "
+        "as an established pattern. Where an appraisal is an unconfirmed AI draft, say that the "
+        "quality assessment is provisional rather than relying on it.\n"
+    )
+
+
 # ── Endpoint ──────────────────────────────────────────────────────────────────
 
 @router.post('/synthesis/generate', response_model=GenerateSynthesisResponse)
@@ -145,6 +180,7 @@ async def generate_synthesis(req: GenerateSynthesisRequest):
     lit_section = _format_lit_matrix(req.matrix_rows, req.columns)
     sys_section = _format_sys_matrix(req.system_rows, req.system_columns)
     topic_list = '\n'.join(f'- [{t.type}] {t.title}' for t in req.topics) or '(none)'
+    rob_section = _format_rob(req.rob_summaries)
 
     user_content = f"""Perform narrative synthesis for this systematic review.
 
@@ -163,7 +199,7 @@ LITERATURE MATRIX ({len(req.matrix_rows)} papers, columns: {', '.join(c for c in
 
 SYSTEM REVIEW ({len(req.system_rows)} systems, columns: {', '.join(req.system_columns) or 'none'}):
 {sys_section}
-
+{rob_section}
 Generate 2–4 synthesis themes. For each theme produce the 4 required blocks.
 
 Respond with JSON:

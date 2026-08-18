@@ -1,9 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useApp } from '../../store/AppContext'
 import { exportAsDocx, exportAsPdf } from '../../lib/exportReport'
-import { exportBibTeX, exportRIS, exportMatrixCSV, exportPrismaCSV, exportSearchStrategyCSV } from '../../lib/exportData'
+import { exportBibTeX, exportRIS, exportMatrixCSV, exportPrismaCSV, exportSearchStrategyCSV, exportRiskOfBiasCSV } from '../../lib/exportData'
 import { reportResearchQuestions } from '../../lib/researchQuestions'
 import { downloadSessionFile } from '../../lib/sessionStorage'
+import { API, apiFetch } from '../../lib/api'
+import type { RobTool } from '../../types'
 
 interface Props {
   onClose: () => void
@@ -12,6 +14,24 @@ interface Props {
 export function ExportModal({ onClose }: Props) {
   const { state } = useApp()
   const [loading, setLoading] = useState<'pdf' | 'docx' | null>(null)
+  // The appraisal instrument's domains live on the backend, so the risk-of-bias
+  // table can only be built once they are loaded.
+  const [robTool, setRobTool] = useState<RobTool | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const toolId = state.robToolId
+    // Resolved through a promise even in the "no tool" case, so no setState
+    // happens synchronously in the effect body and cascades a render.
+    const load = toolId
+      ? apiFetch(`${API}/rob/tools/${toolId}`)
+          .then(res => (res.ok ? res.json() : Promise.reject(new Error())))
+      : Promise.resolve(null)
+    load
+      .then(tool => { if (!cancelled) setRobTool(tool) })
+      .catch(() => { if (!cancelled) setRobTool(null) })
+    return () => { cancelled = true }
+  }, [state.robToolId])
 
   const title = state.sessionTitle || 'Research Report'
   const topicsCount  = state.topics.filter(t => t.selected).length
@@ -31,6 +51,7 @@ export function ExportModal({ onClose }: Props) {
     { key: 'ris',    label: 'RIS (.ris)',       hint: 'Import into EndNote / RefWorks', ready: citableCount > 0, run: () => exportRIS(state) },
     { key: 'csv',    label: 'Matrix (.csv)',    hint: 'Open the literature matrix in Excel', ready: matrixCount > 0, run: () => exportMatrixCSV(state) },
     { key: 'prisma', label: 'PRISMA flow (.csv)', hint: 'Screening counts for a PRISMA diagram', ready: state.results.length > 0, run: () => exportPrismaCSV(state) },
+    { key: 'rob', label: 'Risk of bias (.csv)', hint: 'Appraisal table with per-domain judgements and rationales', ready: Boolean(robTool) && state.robAssessments.length > 0, run: () => robTool && exportRiskOfBiasCSV(state, robTool) },
     { key: 'strategy', label: 'Search strategy (.csv)', hint: 'PRISMA appendix: full query per database, dates, hits', ready: searchedQueries > 0, run: () => exportSearchStrategyCSV(state) },
     { key: 'session', label: 'Session backup (.json)', hint: 'Complete working copy — re-importable into this tool', ready: true, run: () => downloadSessionFile(state) },
   ]
@@ -41,6 +62,7 @@ export function ExportModal({ onClose }: Props) {
     { label: `Queries (${state.queries.length})`, ready: state.queries.length > 0 },
     { label: 'Search Strategy (reproducible)', ready: searchedQueries > 0 },
     { label: `Papers (${papersCount})`,  ready: papersCount > 0 },
+    { label: `Risk of Bias (${state.robAssessments.length})`, ready: state.robAssessments.length > 0 },
     { label: 'Literature Matrix',   ready: state.matrixRows.length > 0 },
     { label: `Synthesis (${themesCount} themes)`, ready: themesCount > 0 },
     { label: `Gap Analysis (${gapsCount})`, ready: gapsCount > 0 },
