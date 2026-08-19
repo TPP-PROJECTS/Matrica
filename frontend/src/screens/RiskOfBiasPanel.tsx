@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useApp } from '../store/AppContext'
 import { API, apiFetch } from '../lib/api'
 import { runPool } from '../lib/runPool'
-import { checkProvenance } from '../lib/provenance'
+import { checkProvenance, paperSources } from '../lib/provenance'
 import { SourceProvenance } from '../components/shared/SourceProvenance'
 import type { RobAssessment, RobTool, RobToolId, ResultCard } from '../types'
 
@@ -41,11 +41,13 @@ function DomainRow({
   tool,
   domainId,
   paper,
+  fullText,
   assessment,
 }: {
   tool: RobTool
   domainId: string
   paper: ResultCard
+  fullText: string | undefined
   assessment: RobAssessment
 }) {
   const { dispatch } = useApp()
@@ -56,7 +58,7 @@ function DomainRow({
 
   const tone = toneOf(tool, result.judgement)
   const needsReview = result.aiGenerated && !result.verifiedByStudent
-  const quoteVerdict = checkProvenance(paper.abstract ?? '', result.supportQuote)
+  const quoteVerdict = checkProvenance(paperSources(paper.abstract, fullText), result.supportQuote)
 
   return (
     <div className={`border-b border-zinc-100 ${needsReview ? 'bg-amber-50/30' : ''}`}>
@@ -86,7 +88,7 @@ function DomainRow({
           )}
           {quoteVerdict.kind === 'not_found' && (
             <p className="text-[9px] font-bold text-red-600 mt-0.5">
-              ✕ supporting quote is not in the abstract
+              ✕ supporting quote is not in the paper text
             </p>
           )}
         </div>
@@ -136,7 +138,10 @@ function DomainRow({
             </p>
             <p className="text-[10px] text-zinc-600 leading-relaxed">{spec.question}</p>
           </div>
-          <SourceProvenance sourceText={paper.abstract ?? ''} quote={result.supportQuote} />
+          <SourceProvenance
+            sources={paperSources(paper.abstract, fullText)}
+            quote={result.supportQuote}
+          />
           <div>
             <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1">
               Your rationale
@@ -167,12 +172,14 @@ function DomainRow({
 function PaperAppraisal({
   tool,
   paper,
+  fullText,
   assessment,
   onAssess,
   busy,
 }: {
   tool: RobTool
   paper: ResultCard
+  fullText: string | undefined
   assessment: RobAssessment | undefined
   onAssess: () => void
   busy: boolean
@@ -195,7 +202,14 @@ function PaperAppraisal({
         </button>
         <div className="flex-1 min-w-0">
           <p className="text-[11px] font-semibold text-zinc-900 truncate">{paper.title}</p>
-          <p className="text-[9px] text-zinc-400">{paper.authors} · {paper.year || '—'}</p>
+          <p className="text-[9px] text-zinc-400">
+            {paper.authors} · {paper.year || '—'}
+            {/* Whether a full text was available largely determines what this
+                appraisal could possibly establish, so it is stated up front. */}
+            {fullText
+              ? <span className="ml-1.5 text-green-700 font-semibold">full text</span>
+              : <span className="ml-1.5 text-amber-700 font-semibold">abstract only</span>}
+          </p>
         </div>
 
         {assessment ? (
@@ -233,6 +247,7 @@ function PaperAppraisal({
               tool={tool}
               domainId={domain.id}
               paper={paper}
+              fullText={fullText}
               assessment={assessment}
             />
           ))}
@@ -280,9 +295,11 @@ export function RiskOfBiasPanel() {
     [tools, state.robToolId],
   )
   const byPaper = useMemo(
-    () => new Map(state.robAssessments.map(a => [a.paperId, a])),
+    () => new Map((state.robAssessments ?? []).map(a => [a.paperId, a])),
     [state.robAssessments],
   )
+  const fullTextFor = (paperId: string) => state.paperFullTexts?.[paperId] ?? ''
+  const withFullText = state.reviewList.filter(p => fullTextFor(p.id)).length
 
   async function assessOne(paper: ResultCard, activeTool: RobTool): Promise<void> {
     const res = await apiFetch(`${API}/rob/assess`, {
@@ -293,6 +310,12 @@ export function RiskOfBiasPanel() {
         paper: {
           title: paper.title, abstract: paper.abstract ?? '',
           authors: paper.authors, year: paper.year || null,
+          // Most risk-of-bias domains are simply not answerable from an
+          // abstract — allocation concealment, blinding and pre-specified
+          // analysis plans live in the Methods section. Sending the full text
+          // the matrix step already fetched is the difference between an
+          // appraisal and a page of "no information".
+          fullText: state.paperFullTexts?.[paper.id] ?? '',
         },
       }),
     })
@@ -388,9 +411,11 @@ export function RiskOfBiasPanel() {
 
         {tool && (
           <p className="text-[9px] text-zinc-400 mt-1.5 leading-snug">
-            {tool.fullName} · {tool.reference}. Drafts are generated from the abstract, where most
-            domains genuinely cannot be judged — “no information” is the correct answer there, not a
-            failure. Every judgement is yours until you confirm it.
+            {tool.fullName} · {tool.reference}. Drafts read the open-access full text where the
+            matrix step retrieved one, and the abstract otherwise — and from an abstract most
+            domains genuinely cannot be judged, where “no information” is the correct answer rather
+            than a failure. Every judgement is yours until you confirm it.
+            {` ${withFullText} of ${state.reviewList.length} papers have a full text available.`}
           </p>
         )}
         {loadError && <p className="text-[10px] text-red-600 mt-1.5">{loadError}</p>}
@@ -422,6 +447,7 @@ export function RiskOfBiasPanel() {
               key={paper.id}
               tool={tool}
               paper={paper}
+              fullText={fullTextFor(paper.id)}
               assessment={byPaper.get(paper.id)}
               busy={busy}
               onAssess={() => { void assessOne(paper, tool) }}

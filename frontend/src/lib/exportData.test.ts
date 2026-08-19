@@ -112,11 +112,20 @@ describe('exportPrismaCSV', () => {
   it('reports the database total, not just what was retrieved', () => {
     exportPrismaCSV(appState({
       results: [paper({ id: 'a' }), paper({ id: 'b' })],
-      screening: { identifiedByQuery: { q1: 4000, q2: 213 }, duplicatesRemoved: 7 },
+      screening: { identifiedByQuery: { q1: 4000, q2: 213 }, retrievedByQuery: { q1: 6, q2: 3 } },
     }))
     const out = contentOf()
     expect(out).toContain('4213')
+    // 9 records retrieved, 2 unique held ⇒ 7 removed as duplicates.
     expect(out).toContain('Duplicate records removed before screening,7')
+  })
+
+  it('falls back to the stored duplicate counter for a pre-fix session', () => {
+    exportPrismaCSV(appState({
+      results: [paper({ id: 'a' }), paper({ id: 'b' })],
+      screening: { identifiedByQuery: { q1: 4213 }, retrievedByQuery: {}, duplicatesRemoved: 7 },
+    }))
+    expect(contentOf()).toContain('Duplicate records removed before screening,7')
   })
 
   it('itemises exclusions by reason', () => {
@@ -127,7 +136,7 @@ describe('exportPrismaCSV', () => {
         paper({ id: 'b', status: 'excluded', exclusionReasonId: 'ex-pop' }),
         paper({ id: 'c', status: 'excluded', exclusionReasonId: 'ex-des' }),
       ],
-      screening: { identifiedByQuery: { q1: 3 }, duplicatesRemoved: 0 },
+      screening: { identifiedByQuery: { q1: 3 }, retrievedByQuery: {} },
     }))
     const out = contentOf()
     expect(out).toContain('Wrong population,2')
@@ -138,7 +147,7 @@ describe('exportPrismaCSV', () => {
     exportPrismaCSV(appState({
       criteria: [],
       results: [paper({ id: 'a', status: 'excluded', exclusionReasonId: 'ex-gone' })],
-      screening: { identifiedByQuery: { q1: 1 }, duplicatesRemoved: 0 },
+      screening: { identifiedByQuery: { q1: 1 }, retrievedByQuery: {} },
     }))
     expect(contentOf()).toContain('Reason no longer defined,1')
   })
@@ -153,7 +162,7 @@ describe('exportPrismaCSV', () => {
         paper({ id: 'a', status: 'excluded', exclusionReasonId: null }),
         paper({ id: 'b', status: 'excluded', exclusionReasonId: null }),
       ],
-      screening: { identifiedByQuery: { q1: 2 }, duplicatesRemoved: 0 },
+      screening: { identifiedByQuery: { q1: 2 }, retrievedByQuery: {} },
     }))
     expect(contentOf()).toContain('Did not meet inclusion criteria,2')
   })
@@ -165,14 +174,14 @@ describe('exportPrismaCSV', () => {
         paper({ id: 'b', origin: 'snowball' }),
         paper({ id: 'c', origin: 'snowball' }),
       ],
-      screening: { identifiedByQuery: { q1: 1 }, duplicatesRemoved: 0 },
+      screening: { identifiedByQuery: { q1: 1 }, retrievedByQuery: {} },
     }))
     const out = contentOf()
     expect(out).toContain('citation searching (snowballing),2')
   })
 
   it('lists the eligibility criteria the screening ran against', () => {
-    exportPrismaCSV(appState({ criteria, screening: { identifiedByQuery: {}, duplicatesRemoved: 0 } }))
+    exportPrismaCSV(appState({ criteria, screening: { identifiedByQuery: {}, retrievedByQuery: {} } }))
     const out = contentOf()
     expect(out).toContain('Adults only,inclusion')
     expect(out).toContain('Wrong population,exclusion')

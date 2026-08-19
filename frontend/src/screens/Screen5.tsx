@@ -9,7 +9,7 @@ import { partitionNewPapers } from '../lib/dedupe'
 import { journalEntry } from '../lib/decisionJournal'
 import { newId } from '../lib/ids'
 import { SourceProvenance } from '../components/shared/SourceProvenance'
-import { locateQuote } from '../lib/provenance'
+import { checkProvenance, paperSources, type SourceCandidate } from '../lib/provenance'
 import { RiskOfBiasPanel } from './RiskOfBiasPanel'
 import { buildRobSummaries } from '../lib/robSummaries'
 
@@ -26,6 +26,8 @@ interface EvidenceTarget {
   // literature context
   paperTitle?: string
   paperAbstract?: string
+  /** Open-access full text, when we hold a copy — quotes may come from it. */
+  paperFullText?: string
   paperAuthors?: string
   paperYear?: number
   // system context
@@ -142,7 +144,7 @@ function EvidencePopover({
               below is commentary on top of it. */}
           {target.paperTitle && (
             <SourceProvenance
-              sourceText={target.paperAbstract ?? ''}
+              sources={paperSources(target.paperAbstract, target.paperFullText)}
               quote={target.cell.sourceRef}
             />
           )}
@@ -195,20 +197,21 @@ function EvidencePopover({
 // ── Clean cell renderer (no dots, no badges) ──────────────────────────────────
 function CellContent({
   cell,
-  sourceText,
+  sources,
   onEvidence,
 }: {
   cell: MatrixCell | undefined
   column: string
-  /** The text the cell claims to be extracted from, for checking its quote. */
-  sourceText?: string
+  /** The texts the cell may have been extracted from, for checking its quote. */
+  sources: SourceCandidate[]
   onEvidence?: (rect: DOMRect) => void
 }) {
   // A cell claiming a quote that is not in the source is the one case worth
   // surfacing on the grid itself. Making the reviewer open every cell to find
   // those defeats the purpose — this is the audit they are here to do.
   const quoteMissing = Boolean(
-    sourceText && cell?.sourceRef && !locateQuote(sourceText, cell.sourceRef),
+    cell?.sourceRef && sources.some(s => s.text) &&
+    checkProvenance(sources, cell.sourceRef).kind === 'not_found',
   )
 
   if (!cell || cell.evidenceType === 'not_available') {
@@ -229,7 +232,7 @@ function CellContent({
       {quoteMissing && (
         <p
           className="text-[8px] font-bold text-red-600 mt-0.5"
-          title="The supporting quote for this value is not present in the abstract"
+          title="The supporting quote for this value is not present in the paper text we hold"
         >
           ✕ quote not in source
         </p>
@@ -802,11 +805,20 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
             paper: { title: paper.title, abstract: paper.abstract, authors: paper.authors, year: paper.year || null, url: paper.source ?? '' },
             columns, profile: state.profile,
             topics: state.topics.filter(t => t.selected).map(t => ({ title: t.title, description: t.description, type: t.type })),
+            // Locating and downloading an open-access PDF is the slow part of
+            // filling a row; hand back the copy we already hold so filling a
+            // second column for the same paper does not repeat it.
+            cached_full_text: state.paperFullTexts?.[paper.id] ?? '',
             custom_system_prompt: prompt ?? null,
           }),
         })
         if (!res.ok) throw new Error()
         const data = await res.json()
+        // Keep the full text: it is what the supporting quotes are checked
+        // against, and what the risk-of-bias step reads.
+        if (data.fullText) {
+          dispatch({ type: 'SET_PAPER_FULL_TEXT', paperId: paper.id, text: data.fullText })
+        }
         const cells: Record<string, MatrixCell> = {}
         for (const [col, cd] of Object.entries(data.cells as Record<string, { value: string; evidenceType: string; confidenceScore: number; confidenceLevel: string; extractionMethod: string; sourceQuote?: string }>)) {
           cells[col] = { value: cd.value, aiGenerated: true, confidenceScore: cd.confidenceScore, confidenceLevel: cd.confidenceLevel as ConfidenceLevel, evidenceType: cd.evidenceType as MatrixCell['evidenceType'], sourceRef: cd.sourceQuote ?? '', extractionMethod: cd.extractionMethod as MatrixCell['extractionMethod'], verifiedByStudent: false }
@@ -965,6 +977,25 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
                     <p className="text-[11px] font-semibold text-zinc-900 leading-tight line-clamp-2">{row.title}</p>
                     <p className="text-[9px] text-zinc-400 mt-0.5">{row.authors}</p>
                     <p className="text-[9px] text-zinc-400">{row.year || '—'}</p>
+                    {/* Which text this row was extracted from is the first thing
+                        that governs how far a reader can trust it, and it used
+                        to be invisible: the backend reported it and the UI threw
+                        it away. */}
+                    {state.paperFullTexts?.[row.paperId] ? (
+                      <span
+                        className="inline-block mt-1 text-[8px] font-bold px-1 py-0.5 rounded bg-green-50 text-green-700 border border-green-200"
+                        title="An open-access full text was retrieved; extraction read the whole paper"
+                      >
+                        FULL TEXT
+                      </span>
+                    ) : (
+                      <span
+                        className="inline-block mt-1 text-[8px] font-bold px-1 py-0.5 rounded bg-zinc-100 text-zinc-500 border border-zinc-200"
+                        title="No open-access copy was obtainable; extraction read the abstract only, so details it does not mention could not be extracted"
+                      >
+                        ABSTRACT ONLY
+                      </span>
+                    )}
                   </td>
                   {dataCols.map(col =>
                     // During a single-column fill only that column is pending —
@@ -975,10 +1006,11 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
                           key={`cell-${col}`}
                           cell={row.cells[col]}
                           column={col}
-                          sourceText={paper?.abstract}
+                          sources={paperSources(paper?.abstract, state.paperFullTexts?.[row.paperId])}
                           onEvidence={row.cells[col]?.value ? rect => onEvidence({
                             rect, cell: row.cells[col], column: col,
                             paperTitle: paper?.title, paperAbstract: paper?.abstract,
+                            paperFullText: state.paperFullTexts?.[row.paperId],
                             paperAuthors: paper?.authors, paperYear: paper?.year,
                           }) : undefined}
                         />
@@ -1293,6 +1325,10 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
                           key={`cell-${col}`}
                           cell={row.cells[col]}
                           column={col}
+                          // A system row is filled from background knowledge
+                          // rather than a supplied document, so there is no
+                          // source text for a quote to be checked against.
+                          sources={[]}
                           onEvidence={row.cells[col]?.value ? rect => onEvidence({
                             rect, cell: row.cells[col], column: col,
                             systemName: sys?.name, systemVendor: sys?.vendor, systemDescription: sys?.description,

@@ -273,12 +273,24 @@ class AutofillRowRequest(BaseModel):
     columns: list[str]
     profile: ProfileInfo
     topics: list[TopicInfo] = []
+    # Full text the caller already holds for this paper. Fetching it means
+    # locating an open-access copy and downloading a PDF, which is by far the
+    # slowest part of filling a row — and filling a second column for the same
+    # paper would otherwise repeat all of it. Passing the cached copy back skips
+    # the round trip entirely.
+    cached_full_text: str = ""
     custom_system_prompt: str | None = None
 
 
 class AutofillRowResponse(BaseModel):
     cells: dict[str, CellData]
     fullTextUsed: bool = False
+    # The full text this call worked from, returned so the caller can keep it.
+    # Without it the text is discarded the moment the response is built: the
+    # supporting quotes could then only ever be checked against the abstract
+    # (flagging every legitimately full-text-derived value as unverifiable), and
+    # the risk-of-bias step would have to download the same PDF over again.
+    fullText: str = ""
 
 
 class AutofillSystemRowRequest(BaseModel):
@@ -416,7 +428,7 @@ async def autofill_literature_row(req: AutofillRowRequest):
     col_list = '\n'.join(f'- {c}' for c in req.columns)
     topic_list = '\n'.join(f'  [{t.type}] {t.title}' for t in req.topics) or '(none)'
 
-    full_text = await _get_paper_full_text(req.paper)
+    full_text = req.cached_full_text or await _get_paper_full_text(req.paper)
     full_text_section = (
         f"\nFULL TEXT (extracted from open-access PDF; may be truncated/noisy):\n{full_text}\n"
         if full_text else ""
@@ -474,7 +486,9 @@ Respond with JSON:
                 extractionMethod=cd.get("extractionMethod", "inferred"),
                 sourceQuote=str(cd.get("sourceQuote", "") or ""),
             )
-        return AutofillRowResponse(cells=cells, fullTextUsed=bool(full_text))
+        return AutofillRowResponse(
+            cells=cells, fullTextUsed=bool(full_text), fullText=full_text,
+        )
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="AI returned invalid JSON")
     except Exception as e:

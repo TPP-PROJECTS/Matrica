@@ -480,6 +480,20 @@ export interface SessionSnapshot {
   matrixRows: MatrixRow[]
   systemMatrixColumns: string[]
   systemMatrixRows: SystemMatrixRow[]
+  /**
+   * Open-access full text per paper id, when a copy could be obtained.
+   *
+   * Kept in one keyed map rather than on ResultCard because every paper is held
+   * twice — once in `results`, once in `reviewList` — and a 24 000-character
+   * document stored twice per paper adds up fast against the browser's quota.
+   *
+   * Cached because fetching it means locating an OA copy and downloading a PDF:
+   * doing that again for every column, and again for the risk-of-bias step,
+   * is the slowest thing the tool does. Holding it also lets a supporting quote
+   * be checked against the text it actually came from, rather than only against
+   * the abstract.
+   */
+  paperFullTexts: Record<string, string>
   // Step 5b — quality appraisal
   robToolId: RobToolId | null
   robAssessments: RobAssessment[]
@@ -545,6 +559,20 @@ export interface AppState {
   matrixRows: MatrixRow[]
   systemMatrixColumns: string[]
   systemMatrixRows: SystemMatrixRow[]
+  /**
+   * Open-access full text per paper id, when a copy could be obtained.
+   *
+   * Kept in one keyed map rather than on ResultCard because every paper is held
+   * twice — once in `results`, once in `reviewList` — and a 24 000-character
+   * document stored twice per paper adds up fast against the browser's quota.
+   *
+   * Cached because fetching it means locating an OA copy and downloading a PDF:
+   * doing that again for every column, and again for the risk-of-bias step,
+   * is the slowest thing the tool does. Holding it also lets a supporting quote
+   * be checked against the text it actually came from, rather than only against
+   * the abstract.
+   */
+  paperFullTexts: Record<string, string>
   // Step 5b — quality appraisal
   robToolId: RobToolId | null
   robAssessments: RobAssessment[]
@@ -687,6 +715,7 @@ export type AppAction =
   | { type: 'ADD_SYSTEM_WITH_ROW'; item: SystemItem }
   | { type: 'UPDATE_MATRIX_ROW_CELLS'; paperId: string; cells: Record<string, MatrixCell> }
   | { type: 'UPDATE_SYSTEM_MATRIX_ROW_CELLS'; systemId: string; cells: Record<string, MatrixCell> }
+  | { type: 'SET_PAPER_FULL_TEXT'; paperId: string; text: string }
   | { type: 'SET_ROB_TOOL'; toolId: RobToolId | null } // @chatbot Choose the risk-of-bias appraisal instrument (rob2, robins_i or amstar2), or null for none.
   | { type: 'SET_ROB_ASSESSMENT'; assessment: RobAssessment }
   | { type: 'UPDATE_ROB_DOMAIN'; paperId: string; domainId: string; judgement?: string; rationale?: string; verifiedByStudent?: boolean }

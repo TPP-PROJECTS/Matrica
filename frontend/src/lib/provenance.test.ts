@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { checkProvenance, locateQuote, segmentForHighlight } from './provenance'
+import { checkProvenance, locateQuote, paperSources, segmentForHighlight } from './provenance'
 
 const ABSTRACT =
   'Background: Diabetes affects millions. Methods: We randomised 240 adults to ' +
@@ -60,22 +60,55 @@ describe('locateQuote', () => {
   })
 })
 
+const FULL_TEXT =
+  'Methods. Participants were recruited from twelve primary care practices between ' +
+  'March 2018 and June 2019. Allocation was concealed using sequentially numbered ' +
+  'opaque sealed envelopes. Outcome assessors remained blinded throughout.'
+
 describe('checkProvenance', () => {
   it('reports a locatable quote as verified', () => {
-    expect(checkProvenance(ABSTRACT, 'HbA1c fell by 0.8% in the treatment arm').kind).toBe('verified')
+    const v = checkProvenance(paperSources(ABSTRACT, ''), 'HbA1c fell by 0.8% in the treatment arm')
+    expect(v.kind).toBe('verified')
   })
 
-  it('reports a quote that is not in the source as not_found', () => {
+  it('reports a quote that is in neither source as not_found', () => {
     // The signal that matters: the model produced a quote it could not have read.
-    expect(checkProvenance(ABSTRACT, 'Participants were followed for five years').kind).toBe('not_found')
+    const v = checkProvenance(paperSources(ABSTRACT, FULL_TEXT), 'Participants were followed for five years')
+    expect(v.kind).toBe('not_found')
+  })
+
+  it('verifies a quote that is only in the full text', () => {
+    // This is the case that used to be flagged as fabricated: extraction reads
+    // the PDF, quotes the Methods section, and the abstract does not contain it.
+    const v = checkProvenance(
+      paperSources(ABSTRACT, FULL_TEXT),
+      'Allocation was concealed using sequentially numbered opaque sealed envelopes.',
+    )
+    expect(v.kind).toBe('verified')
+    if (v.kind === 'verified') expect(v.source.label).toBe('full text')
+  })
+
+  it('names the abstract when the quote is there, since it is the shorter read', () => {
+    const v = checkProvenance(paperSources(ABSTRACT, FULL_TEXT), 'HbA1c fell by 0.8% in the treatment arm')
+    expect(v.kind).toBe('verified')
+    if (v.kind === 'verified') expect(v.source.label).toBe('abstract')
+  })
+
+  it('still rejects a paraphrase even with the full text available', () => {
+    const v = checkProvenance(
+      paperSources(ABSTRACT, FULL_TEXT),
+      'Allocation was hidden using numbered sealed envelopes.',
+    )
+    expect(v.kind).toBe('not_found')
   })
 
   it('distinguishes an inferred value from a fabricated quote', () => {
-    expect(checkProvenance(ABSTRACT, '').kind).toBe('no_quote')
+    expect(checkProvenance(paperSources(ABSTRACT, FULL_TEXT), '').kind).toBe('no_quote')
   })
 
-  it('reports a missing abstract separately from a missing quote', () => {
-    expect(checkProvenance('', 'HbA1c fell by 0.8% in the treatment arm').kind).toBe('no_source')
+  it('reports having no text to check against separately from having no quote', () => {
+    expect(checkProvenance(paperSources('', ''), 'HbA1c fell by 0.8% in the treatment arm').kind)
+      .toBe('no_source')
   })
 })
 

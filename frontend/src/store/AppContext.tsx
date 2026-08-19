@@ -75,6 +75,7 @@ function freshState(): AppState {
     matrixColumns: BASE_MATRIX_COLUMNS,
     systemMatrixRows: [],
     systemMatrixColumns: [],
+    paperFullTexts: {},
     robToolId: null,
     robAssessments: [],
     themes: [],
@@ -131,6 +132,7 @@ function snapshotToState(snap: SessionSnapshot): AppState {
     matrixRows: snap.matrixRows ?? base.matrixRows,
     systemMatrixColumns: snap.systemMatrixColumns ?? base.systemMatrixColumns,
     systemMatrixRows: snap.systemMatrixRows ?? base.systemMatrixRows,
+    paperFullTexts: snap.paperFullTexts ?? base.paperFullTexts,
     robToolId: snap.robToolId ?? base.robToolId,
     robAssessments: snap.robAssessments ?? base.robAssessments,
     themes: snap.themes ?? base.themes,
@@ -198,6 +200,23 @@ function pruneRobAssessments(
   return assessments.length === assessments.filter(a => live.has(a.paperId)).length
     ? assessments
     : assessments.filter(a => live.has(a.paperId))
+}
+
+/**
+ * Drop cached full text for papers that are gone.
+ *
+ * These are the largest things the session stores, so an orphan here costs far
+ * more than a stale matrix row: leaving them behind is what would eventually
+ * push a long review past the browser's storage quota.
+ */
+function pruneFullTexts(
+  texts: Record<string, string>,
+  removed: (id: string) => boolean,
+): Record<string, string> {
+  const kept = Object.entries(texts ?? {}).filter(([id]) => !removed(id))
+  return kept.length === Object.keys(texts ?? {}).length
+    ? texts
+    : Object.fromEntries(kept)
 }
 
 /** Copy of `map` without `key`. */
@@ -329,7 +348,12 @@ export function reducer(state: AppState, action: AppAction): AppState {
       }
 
     case 'CLEAR_RESULTS':
-      return { ...state, results: [], screening: { identifiedByQuery: {}, retrievedByQuery: {} } }
+      return {
+        ...state,
+        results: [],
+        screening: { identifiedByQuery: {}, retrievedByQuery: {} },
+        paperFullTexts: {},
+      }
 
     case 'ADD_SEARCH_RESULTS': {
       // Match incoming papers against everything already retrieved — by DOI
@@ -830,6 +854,13 @@ export function reducer(state: AppState, action: AppAction): AppState {
     case 'SET_AXIS_GAP':
       return { ...state, axisGaps: { ...state.axisGaps, [action.key]: action.text } }
 
+    case 'SET_PAPER_FULL_TEXT': {
+      if (!action.text) return state
+      const held = state.paperFullTexts ?? {}
+      if (held[action.paperId] === action.text) return state
+      return { ...state, paperFullTexts: { ...held, [action.paperId]: action.text } }
+    }
+
     case 'SET_ROB_TOOL':
       // Changing instrument invalidates existing assessments: the domains and
       // the judgement scale both differ, so a RoB 2 rating cannot be carried
@@ -942,6 +973,7 @@ export function reducer(state: AppState, action: AppAction): AppState {
         reviewList: state.reviewList.filter(r => !ids.has(r.id)),
         matrixRows: state.matrixRows.filter(r => !ids.has(r.paperId)),
         robAssessments: (state.robAssessments ?? []).filter(a => !ids.has(a.paperId)),
+        paperFullTexts: pruneFullTexts(state.paperFullTexts, id => ids.has(id)),
       }
     }
 
