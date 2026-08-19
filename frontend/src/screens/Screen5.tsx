@@ -11,6 +11,7 @@ import { newId } from '../lib/ids'
 import { SourceProvenance } from '../components/shared/SourceProvenance'
 import { locateQuote } from '../lib/provenance'
 import { RiskOfBiasPanel } from './RiskOfBiasPanel'
+import { buildRobSummaries } from '../lib/robSummaries'
 
 // How many auto-fill requests are in flight at once. Enough to hide most of the
 // per-request latency without hammering the API from a single browser tab.
@@ -1420,16 +1421,7 @@ export function Screen5() {
           system_columns: state.systemMatrixColumns ?? [],
           // The quality appraisal travels with the evidence, so the synthesis
           // cannot present a finding resting on high-risk studies as settled.
-          rob_summaries: state.robAssessments.map(a => {
-            const paper = state.reviewList.find(p => p.id === a.paperId)
-            const domains = Object.values(a.domains)
-            return {
-              title: paper?.title ?? a.paperId,
-              tool: a.toolId,
-              overall: a.overall,
-              confirmed: domains.length > 0 && domains.every(d => !d.aiGenerated || d.verifiedByStudent),
-            }
-          }),
+          rob_summaries: buildRobSummaries(state),
           profile: state.profile,
           topics: state.topics.filter(t => t.selected).map(t => ({
             title: t.title,

@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 from config import MODEL
+from routers.rob_catalog import RobSummaryInfo, TOOLS_BY_ID, concerning_domains
 
 router = APIRouter()
 client = AsyncOpenAI()
@@ -62,6 +63,7 @@ class GenerateGapRequest(BaseModel):
     profile: ProfileInfo = ProfileInfo()
     topics: list[TopicInfo] = []
     themes: list[ThemeInfo] = []
+    rob_summaries: list[RobSummaryInfo] = []
     custom_system_prompt: str | None = None
 
 
@@ -74,7 +76,7 @@ GAP_SYSTEM_PROMPT = """You are a senior systematic review methodologist writing 
 Your job is NOT to report matrix coverage, confidence scores, or generic "AI found a gap" claims. Your job is to infer a real scholarly gap by comparing:
 1. What the researcher wants to discuss or investigate (profile + selected topics)
 2. What the reviewed papers actually report (literature matrix)
-3. What remains absent, thin, contradictory, methodologically weak, or disconnected from the intended research focus
+3. What remains absent, thin, contradictory, methodologically weak, or disconnected from the intended research focus. When a risk-of-bias appraisal is supplied, it — not the study-design labels in the matrix — is the evidence for any claim about methodological weakness.
 4. Where relevant, what the system landscape shows or fails to show (system matrix)
 
 Definition of a valid paper-level gap:
@@ -190,9 +192,61 @@ def _summarise_sys_axes(rows: list[SystemRowInfo], focus_cols: list[str]) -> str
     return '\n\n'.join(sections)
 
 
+def _summarise_rob(summaries: list[RobSummaryInfo]) -> str:
+    """Render the quality appraisal as raw material for a gap argument.
+
+    The gap step has always been asked to identify what is "methodologically
+    weak", but until the appraisal was passed in it could only guess at that
+    from whatever the extraction matrix happened to contain — typically a
+    "Study Design" column saying "cohort". Naming the domains that actually
+    failed is what lets the analysis say *what* a future study would have to do
+    differently, which is the difference between a gap a reviewer accepts and
+    one they dismiss as a restatement of the study-design list.
+    """
+    if not summaries:
+        return ""
+
+    tool_id = next((s.tool for s in summaries if s.tool), "")
+    tool = TOOLS_BY_ID.get(tool_id)
+    tool_name = tool["name"] if tool else "an appraisal instrument"
+    labels = {j["value"]: j["label"] for j in tool["judgements"]} if tool else {}
+
+    lines = []
+    for summary in summaries:
+        concerns = concerning_domains(summary)
+        rating = labels.get(summary.overall, summary.overall) or "not rated"
+        line = f"• {summary.title} — overall {rating}"
+        if concerns:
+            line += f"; problems in: {', '.join(concerns)}"
+        if not summary.confirmed:
+            line += " [AI draft, not confirmed by the reviewer]"
+        lines.append(line)
+
+    unconfirmed = sum(1 for s in summaries if not s.confirmed)
+    caveat = (
+        f"\n{unconfirmed} of {len(summaries)} appraisals are unconfirmed AI drafts. Where the "
+        "argument rests on those, present the methodological limitation as provisional."
+        if unconfirmed else ""
+    )
+
+    return f"""
+
+RISK-OF-BIAS APPRAISAL ({tool_name}):
+{chr(10).join(lines)}
+
+Use these ratings directly rather than inferring study quality from design labels in the matrix.
+A domain that repeatedly fails across studies is one of the strongest gaps available: it means the
+question has been asked but not yet answered credibly, and it tells the reader exactly what a new
+study would have to do differently. Where a domain is rated "no information" across many studies,
+the gap is in reporting rather than in conduct — say so, and do not claim the studies were poorly
+conducted on that basis.{caveat}
+"""
+
+
 @router.post('/gaps/generate', response_model=GenerateGapResponse)
 async def generate_gap_statement(req: GenerateGapRequest):
     lit_summary = _summarise_lit(req.matrix_rows, req.columns)
+    rob_summary = _summarise_rob(req.rob_summaries)
     sys_summary = _summarise_sys(req.system_rows, req.system_columns)
     focused_lit = _summarise_lit_axes(req.matrix_rows, req.focus_columns)
     focused_sys = _summarise_sys_axes(req.system_rows, req.focus_system_columns)
@@ -250,7 +304,7 @@ CROSS-PAPER VALUES UNDER THE SELECTED DIRECTION:
 
 CROSS-SYSTEM VALUES UNDER THE SELECTED DIRECTION:
 {focused_sys}
-
+{rob_summary}
 TASK:
 Compare the actual values above across papers/systems. Do not restate them row by row. Synthesise them into patterns:
 1. What kinds of findings/outcomes/capabilities are being reported under this same direction?
@@ -288,6 +342,7 @@ LITERATURE MATRIX ({len(req.matrix_rows)} papers):
 
 SYSTEM REVIEW ({len(req.system_rows)} systems):
 {sys_summary}
+{rob_summary}
 {custom_instruction}
 
 Analyse the mismatch between the intended discussion target and the actual evidence. Start from what the papers actually found, then identify what remains unresolved, under-explained, methodologically weak, or absent.

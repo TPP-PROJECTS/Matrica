@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 from config import MODEL
+from routers.rob_catalog import RobSummaryInfo, TOOLS_BY_ID, concerning_domains
 
 router = APIRouter()
 client = AsyncOpenAI()
@@ -45,21 +46,6 @@ class SystemRowInfo(BaseModel):
     vendor: str = ''
     category: str = ''
     cells: dict[str, CellInfo] = {}
-
-
-class RobSummaryInfo(BaseModel):
-    """One study's appraisal, as the synthesis needs to see it.
-
-    Synthesis that ignores study quality reports a badly confounded cohort study
-    and a well-conducted trial as equal evidence — which is the thing a reader
-    of a review is least willing to forgive. `confirmed` travels with it because
-    an unconfirmed AI draft is a weaker warrant than a reviewer's own judgement,
-    and the synthesis should not treat the two as interchangeable.
-    """
-    title: str
-    tool: str = ''
-    overall: str = ''
-    confirmed: bool = False
 
 
 class GenerateSynthesisRequest(BaseModel):
@@ -158,14 +144,25 @@ def _format_rob(summaries: list[RobSummaryInfo]) -> str:
     """Render the appraisal so the synthesis has to weigh it."""
     if not summaries:
         return ""
-    lines = [
-        f"- {s.title}: {s.overall or 'not rated'}"
-        + ("" if s.confirmed else " (AI draft, not yet confirmed by the reviewer)")
-        for s in summaries
-    ]
-    tool = next((s.tool for s in summaries if s.tool), "an appraisal instrument")
+
+    tool_id = next((s.tool for s in summaries if s.tool), "")
+    tool = TOOLS_BY_ID.get(tool_id)
+    tool_name = tool["name"] if tool else "an appraisal instrument"
+    labels = {j["value"]: j["label"] for j in tool["judgements"]} if tool else {}
+
+    lines = []
+    for summary in summaries:
+        concerns = concerning_domains(summary)
+        rating = labels.get(summary.overall, summary.overall) or "not rated"
+        line = f"- {summary.title}: {rating}"
+        if concerns:
+            line += f" (problems in: {', '.join(concerns)})"
+        if not summary.confirmed:
+            line += " [AI draft, not yet confirmed by the reviewer]"
+        lines.append(line)
+
     return (
-        f"\nRISK OF BIAS ({tool}):\n" + "\n".join(lines) +
+        f"\nRISK OF BIAS ({tool_name}):\n" + "\n".join(lines) +
         "\n\nWeigh the evidence accordingly: a finding resting mainly on studies at high or "
         "serious risk of bias must be reported as such in the 'unclear' block rather than stated "
         "as an established pattern. Where an appraisal is an unconfirmed AI draft, say that the "

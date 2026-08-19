@@ -164,3 +164,80 @@ def test_unparseable_model_output_is_a_502_not_a_crash():
     with pytest.raises(HTTPException) as exc:
         run_assess("I could not assess that paper.")
     assert exc.value.status_code == 502
+
+
+# ── Feeding the appraisal downstream ──────────────────────────────────────────
+# The gap step is asked to identify what is "methodologically weak". Before the
+# appraisal was passed in it could only infer that from design labels in the
+# extraction matrix, which is a much weaker claim than naming the domain that
+# actually failed.
+
+from routers.gaps import _summarise_rob  # noqa: E402
+from routers.rob_catalog import RobSummaryInfo, concerning_domains  # noqa: E402
+
+
+def summary(**over) -> RobSummaryInfo:
+    base = dict(
+        title="A trial", tool="rob2", overall="high", confirmed=True,
+        domains={"randomisation": "low", "confounding": "serious"},
+    )
+    base.update(over)
+    return RobSummaryInfo(**base)
+
+
+def test_concerning_domains_names_the_ones_that_failed():
+    s = summary(tool="robins_i", domains={"confounding": "serious", "selection": "low"})
+    assert concerning_domains(s) == ["Bias due to confounding"]
+
+
+def test_no_information_counts_as_a_concern():
+    # A trial that never reports how it concealed allocation has not shown that
+    # it did; treating that as neutral would launder silence into quality.
+    s = summary(domains={"randomisation": "no_information"})
+    assert concerning_domains(s) == ["Bias arising from the randomisation process"]
+
+
+def test_a_clean_study_raises_no_concerns():
+    s = summary(domains={"randomisation": "low", "measurement": "low"})
+    assert concerning_domains(s) == []
+
+
+def test_domains_from_another_instrument_are_ignored():
+    # 'confounding' is a ROBINS-I domain and has no meaning under RoB 2.
+    s = summary(tool="rob2", domains={"confounding": "serious"})
+    assert concerning_domains(s) == []
+
+
+def test_an_unknown_tool_yields_no_concerns_rather_than_guessing():
+    assert concerning_domains(summary(tool="newcastle_ottawa")) == []
+
+
+def test_gap_context_names_the_failing_domains():
+    text = _summarise_rob([summary(tool="robins_i", domains={"confounding": "serious"})])
+    assert "Bias due to confounding" in text
+    assert "RoB" in text or "ROBINS-I" in text
+
+
+def test_gap_context_flags_unconfirmed_drafts():
+    text = _summarise_rob([summary(confirmed=False)])
+    assert "not confirmed" in text
+    assert "provisional" in text
+
+
+def test_gap_context_omits_the_caveat_when_everything_is_confirmed():
+    text = _summarise_rob([summary(confirmed=True)])
+    assert "unconfirmed AI drafts" not in text
+
+
+def test_gap_context_tells_the_model_not_to_infer_quality_from_design_labels():
+    text = _summarise_rob([summary()])
+    assert "rather than inferring study quality from design labels" in text
+
+
+def test_gap_context_separates_poor_reporting_from_poor_conduct():
+    text = _summarise_rob([summary(domains={"randomisation": "no_information"})])
+    assert "reporting rather than in conduct" in text
+
+
+def test_no_appraisal_adds_nothing_to_the_prompt():
+    assert _summarise_rob([]) == ""

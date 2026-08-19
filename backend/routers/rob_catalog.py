@@ -18,8 +18,29 @@ Instruments implemented:
   AMSTAR 2   Appraisal of systematic reviews (Shea 2017)
 """
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 router = APIRouter()
+
+
+class RobSummaryInfo(BaseModel):
+    """One study's appraisal, as the downstream steps need to see it.
+
+    Shared by the synthesis and gap endpoints so both read the appraisal the
+    same way. `confirmed` travels with it because an unconfirmed AI draft is a
+    weaker warrant than a reviewer's own judgement, and neither step should
+    treat the two as interchangeable.
+
+    `domains` carries the raw domainId -> judgement map rather than a
+    pre-digested verdict: which judgements count as a concern is a property of
+    the instrument, and the instrument lives here, so the frontend ships what it
+    has and this module decides what it means.
+    """
+    title: str
+    tool: str = ''
+    overall: str = ''
+    confirmed: bool = False
+    domains: dict[str, str] = {}
 
 
 def _d(domain_id: str, label: str, question: str, critical: bool = False) -> dict:
@@ -250,6 +271,31 @@ ROB_TOOLS = [
 ]
 
 TOOLS_BY_ID = {tool["id"]: tool for tool in ROB_TOOLS}
+
+# Judgement "tones" that represent a problem with the study rather than a clean
+# bill of health. 'unknown' is deliberately included: on these instruments "no
+# information" is not neutral — a trial that never reports how it concealed
+# allocation has not demonstrated that it did.
+_CONCERNING_TONES = {"warn", "bad", "unknown"}
+
+
+def concerning_domains(summary: RobSummaryInfo) -> list[str]:
+    """Human-readable labels of the domains where this study fell down.
+
+    The gap analysis needs the specific weakness ("confounding was not
+    adequately controlled") rather than a bare overall rating, because a gap
+    argument has to name what future work would have to do differently.
+    """
+    tool = TOOLS_BY_ID.get(summary.tool)
+    if tool is None:
+        return []
+    tones = {j["value"]: j["tone"] for j in tool["judgements"]}
+    labels = {d["id"]: d["label"] for d in tool["domains"]}
+    return [
+        labels[domain_id]
+        for domain_id, judgement in summary.domains.items()
+        if domain_id in labels and tones.get(judgement) in _CONCERNING_TONES
+    ]
 
 
 @router.get("/rob/tools")

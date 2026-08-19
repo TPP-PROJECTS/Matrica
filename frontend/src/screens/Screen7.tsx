@@ -6,6 +6,7 @@ import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
 import type { MatrixCell } from '../types'
 import { API, apiFetch } from '../lib/api'
 import { journalEntry } from '../lib/decisionJournal'
+import { buildRobSummaries } from '../lib/robSummaries'
 
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -379,6 +380,11 @@ export function Screen7() {
         coverageLabel: t.coverageLabel,
         blocks: t.blocks.map(b => ({ blockType: b.blockType, content: b.content })),
       })),
+      // The gap step is asked to identify what is methodologically weak. Without
+      // the appraisal it could only infer that from design labels in the matrix;
+      // with it, the analysis can name the domain that actually failed and say
+      // what a new study would have to do differently.
+      rob_summaries: buildRobSummaries(state),
     }
   }
 
