@@ -66,6 +66,13 @@ plan was pre-specified. Answering "low risk" because nothing looked wrong is a s
 absence of a description is not evidence of good conduct. A reviewer reading your output must be \
 able to tell what the paper actually reported apart from what it simply did not mention.
 
+Answer the question each domain actually asks, rather than applying a rule of thumb attached to
+its name. Several domains turn on whether a feature COULD have biased THIS study's result, not on
+whether the feature is present: an unblinded trial measuring all-cause mortality is not biased by
+its lack of blinding, and saying otherwise downgrades every pragmatic trial in the review for a
+problem it does not have. Read the domain's wording and apply it to the outcome and design in
+front of you.
+
 For each domain return:
 - judgement: exactly one of the allowed values listed for the instrument
 - rationale: one or two sentences saying what in the text drove the judgement, or stating plainly \

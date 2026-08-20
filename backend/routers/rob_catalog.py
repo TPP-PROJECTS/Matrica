@@ -103,8 +103,13 @@ ROB2_DOMAINS = [
         "measurement",
         "Bias in measurement of the outcome",
         "Was the method of measuring the outcome appropriate and comparable between groups? "
-        "Were outcome assessors aware of the intervention received, and could that awareness "
-        "have influenced the measurement?",
+        "Were outcome assessors aware of the intervention received, and — this is what decides "
+        "the domain — COULD that awareness have influenced the measurement? That depends on the "
+        "outcome, not on whether the trial was blinded. For an objective outcome that cannot be "
+        "swayed by an assessor's belief (all-cause mortality, laboratory values, a registry-linked "
+        "event), an open-label trial is still low risk on this domain. Downgrade for lack of "
+        "blinding only where the outcome involves judgement: clinician-rated severity, "
+        "patient-reported symptoms, adjudicated composite endpoints, cause-specific death.",
     ),
     _d(
         "reporting",
@@ -153,8 +158,11 @@ ROBINS_I_DOMAINS = [
     _d(
         "measurement",
         "Bias in measurement of outcomes",
-        "Could the outcome measure have been influenced by knowledge of the intervention "
-        "received, and were methods of outcome assessment comparable across groups?",
+        "COULD the outcome measure have been influenced by knowledge of the intervention "
+        "received, and were methods of outcome assessment comparable across groups? Whether "
+        "assessors were blinded matters only to the extent the outcome is open to judgement: an "
+        "objective outcome (death from any cause, a laboratory value, a linked registry record) "
+        "is not biased by an unblinded assessor, whereas a rated or self-reported one can be.",
     ),
     _d(
         "reporting",
