@@ -4,7 +4,7 @@ import { API, apiFetch } from '../lib/api'
 import { runPool } from '../lib/runPool'
 import { checkProvenance, paperSources } from '../lib/provenance'
 import { SourceProvenance } from '../components/shared/SourceProvenance'
-import type { RobAssessment, RobTool, RobToolId, ResultCard } from '../types'
+import type { RobAssessment, RobRecommendation, RobTool, RobToolId, ResultCard } from '../types'
 
 /**
  * Quality appraisal of the included studies.
@@ -277,6 +277,7 @@ function PaperAppraisal({
 export function RiskOfBiasPanel() {
   const { state, dispatch } = useApp()
   const [tools, setTools] = useState<RobTool[]>([])
+  const [recommendation, setRecommendation] = useState<RobRecommendation | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
@@ -290,10 +291,42 @@ export function RiskOfBiasPanel() {
     return () => { cancelled = true }
   }, [])
 
+  // The step already knows which study design the reviewer chose, so asking
+  // them to pick an instrument unaided is a question the tool can answer. It is
+  // not a small choice either: appraising a machine-learning model with RoB 2
+  // produces five domains of "no information" about a randomisation that never
+  // happened.
+  useEffect(() => {
+    const designId = state.selectedStudyDesignId
+    let cancelled = false
+    const load = designId
+      ? apiFetch(`${API}/rob/recommend/${designId}`)
+          .then(res => (res.ok ? res.json() : Promise.reject(new Error())))
+      : Promise.resolve(null)
+    load
+      .then(rec => { if (!cancelled) setRecommendation(rec) })
+      .catch(() => { if (!cancelled) setRecommendation(null) })
+    return () => { cancelled = true }
+  }, [state.selectedStudyDesignId])
+
+  // Pre-select the expected instrument, but only when the reviewer has not
+  // already chosen one — overriding their choice would be worse than not
+  // helping at all.
+  useEffect(() => {
+    const suggested = recommendation?.recommended?.[0]?.id
+    if (suggested && !state.robToolId) {
+      dispatch({ type: 'SET_ROB_TOOL', toolId: suggested })
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recommendation])
+
   const tool = useMemo(
     () => tools.find(t => t.id === state.robToolId) ?? null,
     [tools, state.robToolId],
   )
+  const recommendedIds = new Set((recommendation?.recommended ?? []).map(t => t.id))
+  const guidance = recommendation?.guidance ?? null
+  const designHasNoInstrument = Boolean(recommendation && recommendation.recommended.length === 0)
   const byPaper = useMemo(
     () => new Map((state.robAssessments ?? []).map(a => [a.paperId, a])),
     [state.robAssessments],
@@ -380,9 +413,18 @@ export function RiskOfBiasPanel() {
             className="h-7 border border-zinc-200 rounded px-2 text-[11px] outline-none focus:border-blue-400"
           >
             <option value="">None selected</option>
-            {tools.map(t => (
-              <option key={t.id} value={t.id}>{t.name} — {t.appliesTo}</option>
-            ))}
+            {recommendedIds.size > 0 && (
+              <optgroup label="Suited to your study design">
+                {tools.filter(t => recommendedIds.has(t.id)).map(t => (
+                  <option key={t.id} value={t.id}>{t.name} — {t.appliesTo}</option>
+                ))}
+              </optgroup>
+            )}
+            <optgroup label={recommendedIds.size > 0 ? 'Other instruments' : 'All instruments'}>
+              {tools.filter(t => !recommendedIds.has(t.id)).map(t => (
+                <option key={t.id} value={t.id}>{t.name} — {t.appliesTo}</option>
+              ))}
+            </optgroup>
           </select>
 
           {tool && (
@@ -423,14 +465,47 @@ export function RiskOfBiasPanel() {
 
       {/* Papers */}
       <div className="flex-1 overflow-y-auto px-4 py-3">
-        {!state.robToolId && (
+        {/* No validated instrument covers this design. Saying so plainly, with the
+            concerns the field does raise, is the honest alternative to offering
+            an instrument that does not fit — which a reviewer would then cite. */}
+        {guidance && (
+          <div className="mb-4 border border-amber-200 bg-amber-50/40 rounded-lg p-3">
+            <p className="text-[11px] font-semibold text-amber-900 mb-1">
+              {designHasNoInstrument
+                ? 'No validated appraisal instrument covers this study design'
+                : 'Additional appraisal notes for this design'}
+            </p>
+            <p className="text-[10px] text-amber-800 leading-snug mb-2">{guidance.note}</p>
+            <p className="text-[8px] font-bold text-amber-700 uppercase tracking-widest mb-1">
+              What reviewers in this field ask instead
+            </p>
+            <ul className="space-y-1">
+              {guidance.concerns.map((c, i) => (
+                <li key={i} className="flex gap-1.5 text-[10px] text-amber-900 leading-snug">
+                  <span className="text-amber-400 shrink-0">·</span>
+                  <span>{c}</span>
+                </li>
+              ))}
+            </ul>
+            <p className="text-[9px] text-amber-700 mt-2 leading-snug">
+              This is an informal checklist, not a validated instrument — use it to structure your
+              own appraisal, but do not cite it in a methods section as one.
+            </p>
+          </div>
+        )}
+
+        {!state.robToolId && !designHasNoInstrument && (
           <div className="text-center py-10 max-w-md mx-auto">
             <p className="text-[12px] text-zinc-600 font-medium">No appraisal instrument chosen</p>
             <p className="text-[10px] text-zinc-400 mt-1.5 leading-relaxed">
-              Choose the one that matches your included study designs. Reviews that report an
-              appraisal are expected to name the instrument, and reviewers will ask: RoB 2 for
-              randomised trials, ROBINS-I for non-randomised studies of interventions, AMSTAR 2 for
-              appraising other systematic reviews.
+              Reviews that report an appraisal are expected to name the instrument, and it has to
+              match what you included: RoB 2 for randomised trials, ROBINS-I for non-randomised
+              studies of interventions, PROBAST for prediction and machine-learning models,
+              CASP or MMAT for qualitative work, AXIS for surveys, QUADAS-2 for diagnostic
+              accuracy, AMSTAR 2 for appraising other reviews.
+              {state.selectedStudyDesignId
+                ? ' The list above is ordered so the ones suited to your chosen study design come first.'
+                : ' Choose a study design first and this list will be narrowed for you.'}
             </p>
           </div>
         )}

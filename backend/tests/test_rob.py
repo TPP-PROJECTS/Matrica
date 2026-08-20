@@ -29,9 +29,14 @@ from routers.rob_catalog import (  # noqa: E402
 
 # ── Catalog ───────────────────────────────────────────────────────────────────
 
-def test_the_three_instruments_are_offered():
+def test_instruments_span_every_research_tradition_the_tool_supports():
     ids = {t["id"] for t in list_rob_tools()["tools"]}
-    assert ids == {"rob2", "robins_i", "amstar2"}
+    # Clinical intervention research, which is where the step started...
+    assert {"rob2", "robins_i", "amstar2"} <= ids
+    # ...and the traditions it originally left out entirely.
+    assert {"probast", "quadas2", "casp_qualitative", "axis"} <= ids
+    assert {"mmat_qualitative", "mmat_rct", "mmat_nonrandomised",
+            "mmat_descriptive", "mmat_mixed"} <= ids
 
 
 def test_rob2_has_its_five_published_domains():
@@ -61,10 +66,13 @@ def test_each_instrument_keeps_its_own_judgement_scale():
     assert "partial_yes" in [j["value"] for j in TOOLS_BY_ID["amstar2"]["judgements"]]
 
 
-def test_every_instrument_offers_a_no_information_judgement():
-    # Without it the model has no way to say the text does not report something.
-    for tool in TOOLS_BY_ID.values():
-        assert "no_information" in [j["value"] for j in tool["judgements"]]
+def test_every_instrument_offers_a_way_to_say_the_report_does_not_say():
+    # Instruments name it differently — no_information, unclear, can't tell —
+    # but every one must offer it, or the model has no honest answer available
+    # when the paper is silent. The tone is what the code keys on.
+    for tool_id, tool in TOOLS_BY_ID.items():
+        tones = [j["tone"] for j in tool["judgements"]]
+        assert "unknown" in tones, tool_id
 
 
 def test_every_domain_carries_a_signalling_question():
@@ -122,6 +130,13 @@ def test_a_judgement_outside_the_scale_falls_back_to_no_information():
                         '"overall": "", "overallRationale": ""}')
     randomisation = next(d for d in result.domains if d.domainId == "randomisation")
     assert randomisation.judgement == "no_information"
+
+
+def test_the_fallback_uses_the_instrument_own_unknown_value():
+    """A hardcoded "no_information" is outside PROBAST's and CASP's scales."""
+    for tool_id, expected in (("probast", "unclear"), ("casp_qualitative", "cant_tell")):
+        result = run_assess('{"domains": [], "overall": "", "overallRationale": ""}', tool_id=tool_id)
+        assert {d.judgement for d in result.domains} == {expected}, tool_id
 
 
 def test_a_robins_i_judgement_is_rejected_on_a_rob2_assessment():
@@ -241,3 +256,100 @@ def test_gap_context_separates_poor_reporting_from_poor_conduct():
 
 def test_no_appraisal_adds_nothing_to_the_prompt():
     assert _summarise_rob([]) == ""
+
+
+# ── Coverage across every research field the tool supports ───────────────────
+# The appraisal step originally shipped with three clinical instruments while
+# the study-design catalog offered 54 designs spanning AI, education, HCI and
+# qualitative research. Appraising a machine-learning model with RoB 2 yields
+# five domains of "no information" about a randomisation that never happened, so
+# every design must resolve either to a real instrument or to an explicit
+# statement that none exists.
+
+from routers.rob_catalog import (  # noqa: E402
+    APPRAISAL_GUIDANCE,
+    RECOMMENDED_TOOLS,
+    ROB_TOOLS,
+    recommend_for_design,
+)
+from routers.study_design_catalog import STUDY_DESIGN_CATALOG  # noqa: E402
+
+
+def test_every_study_design_gets_an_instrument_or_an_explanation():
+    unmet = [
+        d["id"] for d in STUDY_DESIGN_CATALOG
+        if d["id"] not in RECOMMENDED_TOOLS and d["id"] not in APPRAISAL_GUIDANCE
+    ]
+    assert unmet == [], f"designs with neither instrument nor guidance: {unmet}"
+
+
+def test_every_recommendation_names_a_real_instrument():
+    known = {t["id"] for t in ROB_TOOLS}
+    for design, tools in RECOMMENDED_TOOLS.items():
+        assert tools, f"{design} maps to an empty list"
+        for t in tools:
+            assert t in known, f"{design} recommends unknown instrument {t}"
+
+
+def test_an_ai_model_study_is_sent_to_probast_not_rob2():
+    rec = recommend_for_design("ai_model_study")
+    assert [t["id"] for t in rec["recommended"]][0] == "probast"
+    assert "rob2" not in [t["id"] for t in rec["recommended"]]
+
+
+def test_a_qualitative_study_is_not_sent_to_a_trials_instrument():
+    for design in ("ethnography", "grounded_theory", "phenomenology"):
+        ids = [t["id"] for t in recommend_for_design(design)["recommended"]]
+        assert ids[0] == "casp_qualitative"
+        assert "rob2" not in ids and "robins_i" not in ids
+
+
+def test_a_trial_still_goes_to_rob2():
+    assert [t["id"] for t in recommend_for_design("rct")["recommended"]][0] == "rob2"
+
+
+def test_a_cross_sectional_survey_goes_to_axis():
+    assert [t["id"] for t in recommend_for_design("survey_study")["recommended"]][0] == "axis"
+
+
+def test_a_design_without_an_instrument_returns_named_concerns():
+    rec = recommend_for_design("design_science")
+    assert rec["recommended"] == []
+    assert rec["guidance"] is not None
+    assert len(rec["guidance"]["concerns"]) >= 4
+    assert "no risk-of-bias instrument" in rec["guidance"]["note"] or "frameworks" in rec["guidance"]["note"]
+
+
+def test_ai_benchmark_concerns_name_data_leakage_and_contamination():
+    concerns = " ".join(APPRAISAL_GUIDANCE["ai_model_study"]["concerns"]).lower()
+    assert "leakage" in concerns
+    assert "contamination" in concerns
+    assert "baseline" in concerns
+
+
+def test_an_unmapped_design_returns_empty_rather_than_guessing():
+    rec = recommend_for_design("not_a_real_design")
+    assert rec["recommended"] == []
+    assert rec["guidance"] is None
+
+
+def test_checklist_instruments_do_not_pretend_to_score():
+    # MMAT, CASP and AXIS all warn against summing their items; the rule text is
+    # what the UI shows, so it has to say so.
+    for tool_id in ("mmat_qualitative", "casp_qualitative", "axis"):
+        rule = TOOLS_BY_ID[tool_id]["overallRule"].lower()
+        assert "score" in rule
+
+
+def test_mmat_variants_all_carry_the_two_screening_questions():
+    for tool_id in ("mmat_qualitative", "mmat_rct", "mmat_nonrandomised",
+                    "mmat_descriptive", "mmat_mixed"):
+        ids = [d["id"] for d in TOOLS_BY_ID[tool_id]["domains"]]
+        assert ids[:2] == ["s1", "s2"], tool_id
+
+
+def test_probast_analysis_domain_asks_about_leakage():
+    analysis = next(d for d in TOOLS_BY_ID["probast"]["domains"] if d["id"] == "analysis")
+    q = analysis["question"].lower()
+    assert "held out" in q or "leaked" in q
+    assert "calibration" in q

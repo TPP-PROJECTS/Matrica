@@ -60,7 +60,8 @@ published appraisal instrument. You are given one study and the instrument's dom
 Answer each domain from the supplied text ONLY.
 
 The single most important rule: if the supplied text does not contain the information a domain \
-asks about, the judgement is "no_information". Abstracts almost never describe allocation \
+asks about, use the instrument's own "not reported" judgement — listed among its allowed values as \
+no_information, unclear or cant_tell depending on the instrument. Abstracts almost never describe allocation \
 concealment, blinding of outcome assessors, handling of missing data, or whether the analysis \
 plan was pre-specified. Answering "low risk" because nothing looked wrong is a serious error — \
 absence of a description is not evidence of good conduct. A reviewer reading your output must be \
@@ -79,7 +80,7 @@ For each domain return:
 that the text does not report it
 - supportQuote: the sentence from the supplied text that the judgement rests on, copied CHARACTER \
 FOR CHARACTER. This quote is checked against the source, so a paraphrased or tidied one will fail \
-that check. Use "" when the judgement is "no_information" or is a reasoned inference rather than \
+that check. Use "" when the judgement is the instrument's "not reported" value, or is a reasoned inference rather than \
 something the text states — an empty quote is a correct answer.
 
 Then give the overall judgement by applying the instrument's stated rule, and one or two sentences \
@@ -95,6 +96,14 @@ async def assess_risk_of_bias(req: AssessRequest):
         raise HTTPException(status_code=404, detail=f"Unknown appraisal tool: {req.toolId}")
 
     allowed = [j["value"] for j in tool["judgements"]]
+    # Every instrument offers some way to say "the report does not tell us", but
+    # they name it differently — no_information, unclear, can't tell. The
+    # fallback for a missing or invalid answer has to be the one this instrument
+    # actually uses, or the response carries a value outside its own scale.
+    unknown_value = next(
+        (j["value"] for j in tool["judgements"] if j["tone"] == "unknown"),
+        allowed[-1],
+    )
     domain_block = "\n".join(
         f'- {d["id"]} — {d["label"]}\n  {d["question"]}' for d in tool["domains"]
     )
@@ -154,7 +163,7 @@ Respond with JSON:
             raw = by_id.get(spec["id"], {})
             judgement = str(raw.get("judgement", "")).strip().lower().replace(" ", "_")
             if judgement not in allowed:
-                judgement = "no_information"
+                judgement = unknown_value
             domains.append(DomainJudgement(
                 domainId=spec["id"],
                 judgement=judgement,

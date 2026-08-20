@@ -241,7 +241,32 @@ export interface SystemMatrixRow {
 // judgements) are served by the backend and never generated: a reviewer citing
 // "RoB 2" entitles a reader to assume the published domains were applied.
 
-export type RobToolId = 'rob2' | 'robins_i' | 'amstar2'
+/**
+ * Instrument ids. Open rather than a closed union: the catalog lives on the
+ * backend and grows there, and a union here would silently reject a new
+ * instrument the server already serves.
+ */
+export type RobToolId = string
+
+/**
+ * What to appraise a study with when no validated instrument covers its design.
+ *
+ * Several designs — AI benchmarks, design science, simulation, Delphi — have no
+ * published risk-of-bias tool. Offering one anyway is the worst outcome: the
+ * reviewer would cite an instrument that does not cover their work and readers
+ * would take the rating at face value. So the field's recognised concerns are
+ * named instead, explicitly as an informal checklist.
+ */
+export interface AppraisalGuidance {
+  note: string
+  concerns: string[]
+}
+
+export interface RobRecommendation {
+  designId: string
+  recommended: RobTool[]
+  guidance: AppraisalGuidance | null
+}
 
 export interface RobJudgementOption {
   value: string
