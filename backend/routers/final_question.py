@@ -404,6 +404,166 @@ purpose and real-paper subsections. Everything must be specific to "{req.topic.t
     }
 
 
+# ── Sample prose for one subsection ───────────────────────────────────────────
+#
+# The structure step produces *writing instructions* — "state the effect
+# direction, cite the trials that disagree". This turns one of those into the
+# paragraphs themselves, so the researcher starts from a draft that already
+# marshals their own evidence instead of a blank page under a heading.
+#
+# The hard constraint is citation integrity. A model asked to write academic
+# prose will produce plausible citations whether or not the papers exist, and a
+# fabricated citation in a draft is far more dangerous than a blank section: it
+# survives editing, it looks authoritative, and nobody checks a reference they
+# assume came from their own library. So the reviewed papers are supplied as a
+# closed list and the model is told it may cite nothing else.
+
+
+class SamplePaper(BaseModel):
+    """One reviewed paper, as the drafter may cite it."""
+    title: str
+    authors: str = ''
+    year: int | None = None
+    # Extracted matrix values, so the prose can state what this paper found.
+    cells: dict[str, str] = {}
+    robOverall: str = ''
+
+
+class SampleRequest(BaseContext):
+    section_name: str
+    section_purpose: str = ''
+    subsection_title: str
+    subsection_content: str = ''          # the writing instructions to realise
+    topic: TopicDetail
+    research_question: str = ''
+    study_design: str = ''
+    papers: list[SamplePaper] = []
+    target_words: int = 220
+
+
+SAMPLE_SYSTEM = """\
+You are an experienced academic author drafting one subsection of a manuscript. You are given the
+subsection's heading, the writing instructions for it, and the evidence the authors have collected:
+their extraction matrix, synthesis themes, gap statement and quality appraisal.
+
+Write the actual prose that belongs under that heading. Not an outline, not a description of what
+the section will contain — the paragraphs themselves, as they would be read in the published
+article.
+
+CITATION RULES — these are absolute:
+- You may cite ONLY papers from the REVIEWED PAPERS list supplied below. That list is closed.
+- Cite as (First author surname, Year), e.g. (Alvarez, 2021). For two authors use (Alvarez & Chen,
+  2021); for three or more use (Alvarez et al., 2021).
+- Never invent a citation, a finding, a statistic, an effect size or a sample size. Every number
+  you write must appear in the supplied evidence.
+- If the evidence does not support a claim the instructions ask for, write the surrounding prose
+  and mark the unsupported part inline as [EVIDENCE NEEDED: what is missing] rather than inventing
+  it. A visible gap is useful to the author; a fabricated sentence is not.
+- Where the quality appraisal records that a finding rests on studies at high or serious risk of
+  bias, reflect that hedge in the prose rather than stating the finding flatly.
+
+STYLE:
+- Academic register, third person, past tense for what studies did, present tense for what the
+  evidence shows.
+- Continuous prose in paragraphs. No bullet lists and no headings — the heading already exists.
+- Around {target_words} words unless the instructions clearly call for more or less.
+- Do not open with "This section will…" or otherwise narrate the structure.
+
+Return the prose itself and nothing else — no JSON, no markdown fences, no preamble, no closing
+remark. The first character of your reply is the first character of the paragraph.
+"""
+
+
+def _clean_prose(raw: str) -> str:
+    """Strip the wrappers a model adds around prose it was asked to return bare.
+
+    Belt and braces: the prompt asks for the paragraphs alone, but a stray code
+    fence or an accidental {"sample": …} envelope should degrade to the text
+    rather than to an error.
+    """
+    text = (raw or '').strip()
+
+    if text.startswith('```'):
+        text = _re.sub(r'^```[a-zA-Z]*\s*', '', text)
+        text = _re.sub(r'\s*```$', '', text).strip()
+
+    if text.startswith('{'):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                for key in ('sample', 'text', 'prose', 'content'):
+                    if isinstance(parsed.get(key), str):
+                        return parsed[key].strip()
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    return text
+
+
+def _format_sample_papers(papers: list[SamplePaper]) -> str:
+    if not papers:
+        return "(none — the author has not added papers to the review yet)"
+    lines = []
+    for p in papers:
+        head = f"- {p.authors or 'Unknown author'} ({p.year or 'n.d.'}). {p.title}"
+        if p.robOverall:
+            head += f" [risk of bias: {p.robOverall}]"
+        extracted = '; '.join(f"{k}: {v}" for k, v in p.cells.items() if v)
+        if extracted:
+            head += f"\n    extracted — {extracted[:600]}"
+        lines.append(head)
+    return '\n'.join(lines)
+
+
+@router.post("/final-question/generate-sample")
+def generate_sample(req: SampleRequest):
+    if not req.subsection_title.strip():
+        raise HTTPException(status_code=422, detail="A subsection title is required")
+
+    context = build_context_text(req)
+    target = max(60, min(req.target_words, 900))
+
+    user_msg = f"""{context}
+
+Final topic: {req.topic.title}
+{req.topic.description}
+
+Research question: {req.research_question or '(not yet fixed)'}
+Study design: {req.study_design or '(not specified)'}
+
+SECTION: {req.section_name}
+Section purpose: {req.section_purpose or '(not stated)'}
+
+SUBSECTION TO WRITE: {req.subsection_title}
+Writing instructions for it:
+{req.subsection_content or '(none given — infer from the heading and the evidence)'}
+
+REVIEWED PAPERS (the ONLY works you may cite):
+{_format_sample_papers(req.papers)}
+
+Write the prose for the subsection "{req.subsection_title}" in about {target} words.
+"""
+
+    try:
+        response = client.responses.create(
+            model=MODEL,
+            instructions=req.custom_system_prompt or SAMPLE_SYSTEM.replace("{target_words}", str(target)),
+            input=user_msg,
+        )
+        # Plain prose, not JSON. A single string gains nothing from being
+        # wrapped in an object, and wrapping it adds a real failure mode: the
+        # paragraph breaks and quotation marks that academic prose is made of
+        # are exactly what makes a hand-rolled JSON parse fall over.
+        sample = _clean_prose(response.output_text or '')
+        if not sample:
+            raise HTTPException(status_code=502, detail="Sample generation returned empty text")
+        return {"sample": sample}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Sample generation error: {str(e)}")
+
+
 # ── Legacy endpoint (kept for backward compatibility) ─────────────────────────
 @router.post("/final-question/generate")
 def generate_final_question_legacy(ctx: BaseContext):

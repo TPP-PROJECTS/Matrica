@@ -4,6 +4,9 @@ import { AIBadge } from "../components/shared/AIBadge";
 import { CustomizePromptModal } from "../components/shared/CustomizePromptModal";
 import { ExportModal } from "../components/overlays/ExportModal";
 import type { StudyDesignOption, PaperSection } from "../types";
+import { SampleProse } from "../components/shared/SampleProse";
+import { buildSampleContext } from "../lib/sampleEvidence";
+import { primaryResearchQuestion } from "../lib/researchQuestions";
 import { API, apiFetch } from '../lib/api'
 
 const DESIGN_CATEGORY_ORDER = [
@@ -169,6 +172,9 @@ function EditableSectionCard({
   onChange,
   onDelete,
   onMove,
+  onGenerateSample,
+  samplingIndex,
+  sampleError,
 }: {
   section: PaperSection;
   accent: string;
@@ -177,6 +183,11 @@ function EditableSectionCard({
   onChange: (updated: PaperSection) => void;
   onDelete: () => void;
   onMove: (dir: -1 | 1) => void;
+  /** Draft prose for one subsection; resolves when the text has landed. */
+  onGenerateSample: (subIndex: number) => Promise<void>;
+  /** Which subsection index is currently being drafted, if any. */
+  samplingIndex: number | null;
+  sampleError: { index: number; message: string } | null;
 }) {
   // null = viewing · 'header' = editing section name/purpose · number = editing that subsection
   const [editTarget, setEditTarget] = useState<null | "header" | number>(null);
@@ -213,6 +224,13 @@ function EditableSectionCard({
     onChange({ ...section, subsections: next });
     setEditTarget(null);
   }
+  function setSample(i: number, sample: string | undefined, edited: boolean) {
+    const next = subsections.map((sub, idx) =>
+      idx === i ? { ...sub, sample, sampleEdited: sample ? edited : undefined } : sub
+    );
+    onChange({ ...section, subsections: next });
+  }
+
   function deleteSub(i: number) {
     onChange({ ...section, subsections: subsections.filter((_, idx) => idx !== i) });
     setEditTarget(null);
@@ -332,6 +350,15 @@ function EditableSectionCard({
                     </span>
                   </div>
                   <p className="text-[10px] text-zinc-500 leading-relaxed mt-0.5 ml-[26px]">{sub.content}</p>
+                  <SampleProse
+                    sample={sub.sample}
+                    edited={Boolean(sub.sampleEdited)}
+                    busy={samplingIndex === i}
+                    error={sampleError?.index === i ? sampleError.message : null}
+                    onGenerate={() => { void onGenerateSample(i); }}
+                    onChange={(text) => setSample(i, text, true)}
+                    onClear={() => setSample(i, undefined, false)}
+                  />
                 </div>
               )
             )}
@@ -368,6 +395,8 @@ export function Screen8() {
   const [generatingStructure, setGeneratingStructure] = useState(false);
   const [topicError, setTopicError] = useState<string | null>(null);
   const [structureError, setStructureError] = useState<string | null>(null);
+  const [sampling, setSampling] = useState<{ section: number; sub: number } | null>(null);
+  const [sampleError, setSampleError] = useState<{ section: number; sub: number; message: string } | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [matchError, setMatchError] = useState<string | null>(null);
   const [showTopicsModal, setShowTopicsModal] = useState(false);
@@ -583,6 +612,67 @@ export function Screen8() {
   }, [catalogLoaded, state.selectedFinalTopicId]);
 
   // ── Paper-section editing ──
+  // ── Sample prose ────────────────────────────────────────────────────────────
+  // One subsection at a time, because the author reads each draft before asking
+  // for the next: generating the whole paper at once would produce far more
+  // unchecked text than anyone reviews, which is the failure mode this feature
+  // most needs to avoid.
+  async function generateSample(sectionIdx: number, subIdx: number) {
+    const section = paperSections[sectionIdx];
+    const sub = section?.subsections?.[subIdx];
+    if (!sub || sampling) return;
+
+    setSampling({ section: sectionIdx, sub: subIdx });
+    setSampleError(null);
+    try {
+      const res = await apiFetch(`${API}/final-question/generate-sample`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...buildSampleContext(state),
+          section_name: section.name,
+          section_purpose: section.purpose,
+          subsection_title: sub.title,
+          subsection_content: sub.content,
+          topic: selectedTopic
+            ? {
+                id: selectedTopic.id, title: selectedTopic.title,
+                description: selectedTopic.description, rationale: selectedTopic.rationale,
+                keyThemes: selectedTopic.keyThemes,
+              }
+            : { id: "", title: state.profile.focus || "", description: "" },
+          research_question: primaryResearchQuestion(state)?.text ?? "",
+          study_design: selectedDesign?.name ?? "",
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.detail || `Sample generation failed (HTTP ${res.status})`);
+      }
+      const data = await res.json();
+      if (!data.sample?.trim()) throw new Error("Sample generation returned empty text.");
+
+      const nextSections = paperSections.map((sec, i) =>
+        i !== sectionIdx
+          ? sec
+          : {
+              ...sec,
+              subsections: (sec.subsections ?? []).map((ss, j) =>
+                j === subIdx ? { ...ss, sample: data.sample, sampleEdited: false } : ss
+              ),
+            }
+      );
+      updateSections(nextSections);
+    } catch (e) {
+      setSampleError({
+        section: sectionIdx, sub: subIdx,
+        message: e instanceof Error ? e.message : "Sample generation failed.",
+      });
+    } finally {
+      setSampling(null);
+    }
+  }
+
   function updateSections(next: PaperSection[]) {
     if (!selectedTopic) return;
     dispatch({
@@ -860,6 +950,11 @@ export function Screen8() {
                     onChange={(updated) => changeSection(idx, updated)}
                     onDelete={() => deleteSection(idx)}
                     onMove={(dir) => moveSection(idx, dir)}
+                    onGenerateSample={(subIdx) => generateSample(idx, subIdx)}
+                    samplingIndex={sampling?.section === idx ? sampling.sub : null}
+                    sampleError={sampleError?.section === idx
+                      ? { index: sampleError.sub, message: sampleError.message }
+                      : null}
                   />
                 ))}
                 <button

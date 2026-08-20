@@ -4,9 +4,25 @@
     {
       "name": "frontend",
       "runtimeExecutable": "/Users/jingxiansu/.nvm/versions/node/v22.11.0/bin/node",
-      "runtimeArgs": ["node_modules/vite/bin/vite.js"],
+      "runtimeArgs": [
+        "node_modules/vite/bin/vite.js"
+      ],
       "port": 5174,
       "cwd": "/Volumes/T9/TPP/topic-generator/frontend"
+    },
+    {
+      "name": "backend",
+      "runtimeExecutable": "/Volumes/T9/TPP/topic-generator/backend/venv/bin/python",
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "main:app",
+        "--port",
+        "8001",
+        "--reload"
+      ],
+      "port": 8001,
+      "cwd": "/Volumes/T9/TPP/topic-generator/backend"
     }
   ]
 }

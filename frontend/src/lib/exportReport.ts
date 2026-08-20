@@ -264,7 +264,19 @@ export async function exportAsDocx(state: AppState): Promise<void> {
       if (s.subsections && s.subsections.length > 0) {
         for (const sub of s.subsections) {
           sections.push(h3(sub.title))
-          if (sub.content) sections.push(para(sub.content))
+          if (sub.content) sections.push(para(sub.content, { italic: true, color: '666666' }))
+          // Drafted prose is the point of the section, so it is exported as the
+          // body text; the outline above it is demoted to a grey note. An
+          // unedited draft is labelled, because a citation-bearing paragraph
+          // reads as finished long before it has been checked.
+          if (sub.sample) {
+            if (!sub.sampleEdited) {
+              sections.push(para('[AI draft — verify every citation before use]', { bold: true, color: 'B45309' }))
+            }
+            for (const paragraph of sub.sample.split(/\n{2,}/)) {
+              if (paragraph.trim()) sections.push(para(paragraph.trim()))
+            }
+          }
         }
       } else {
         for (const b of s.bullets) sections.push(bullet(b))
@@ -394,7 +406,11 @@ ${(finalTopic || paperSections.length > 0) ? section('10. Final Research Topic &
       <p><strong>${s.number}. ${s.name}</strong></p>
       ${s.purpose ? `<p style="font-style:italic;color:#555">${s.purpose}</p>` : ''}
       ${(s.subsections && s.subsections.length > 0)
-        ? s.subsections.map(sub => `<p style="margin-left:12px"><strong>${sub.title}</strong><br>${sub.content}</p>`).join('')
+        ? s.subsections.map(sub => `<p style="margin-left:12px"><strong>${sub.title}</strong><br><span style="color:#666;font-style:italic">${sub.content}</span>${
+            sub.sample
+              ? `${sub.sampleEdited ? '' : '<br><strong style="color:#b45309">[AI draft — verify every citation before use]</strong>'}<br>${sub.sample.split(/\n{2,}/).filter(Boolean).map(p => `<span>${p.trim()}</span>`).join('<br><br>')}`
+              : ''
+          }</p>`).join('')
         : `<ul>${s.bullets.map(b => `<li>${b}</li>`).join('')}</ul>`}
     </div>`).join('')}
 `) : ''}

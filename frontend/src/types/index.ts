@@ -345,6 +345,21 @@ export interface StudyDesignOption {
 export interface PaperSubsection {
   title: string     // topic-specific heading as it would appear in the article
   content: string   // outline of exactly what to write under this heading
+  /**
+   * Draft prose for this subsection — the paragraphs themselves rather than
+   * instructions for writing them, generated from the review's own matrix,
+   * synthesis, gap statement and appraisal.
+   *
+   * Kept separate from `content` because they answer different questions: the
+   * outline says what belongs here and survives rewriting, the sample is one
+   * attempt at saying it. Either can be regenerated without disturbing the
+   * other, and the sample is freely editable — once the author has rewritten a
+   * paragraph it is theirs, and regenerating would throw that away, so
+   * regeneration is always an explicit action.
+   */
+  sample?: string
+  /** Whether the current sample text is the model's or the author's own. */
+  sampleEdited?: boolean
 }
 
 export interface PaperSection {
