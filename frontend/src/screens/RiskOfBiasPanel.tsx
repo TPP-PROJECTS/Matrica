@@ -1,10 +1,18 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useApp } from '../store/AppContext'
 import { API, apiFetch } from '../lib/api'
 import { runPool } from '../lib/runPool'
 import { checkProvenance, paperSources } from '../lib/provenance'
 import { SourceProvenance } from '../components/shared/SourceProvenance'
-import type { RobAssessment, RobRecommendation, RobTool, RobToolId, ResultCard } from '../types'
+import type {
+  RobAssessment,
+  RobDomainSpec,
+  RobRecommendation,
+  RobTool,
+  RobToolId,
+  ResultCard,
+} from '../types'
 
 /**
  * Quality appraisal of the included studies.
@@ -33,6 +41,150 @@ function toneOf(tool: RobTool, judgement: string): string {
 
 function labelOf(tool: RobTool, judgement: string): string {
   return tool.judgements.find(j => j.value === judgement)?.label ?? '—'
+}
+
+// ── What each judgement means ─────────────────────────────────────────────────
+
+/**
+ * The instrument's own criteria for each option, behind a "?" beside the
+ * dropdown that uses them.
+ *
+ * The distinctions these scales draw are not guessable from the labels: RoB 2's
+ * "some concerns" asserts that something was reported and is imperfect, while
+ * "no information" asserts that nothing was reported at all — and ROBINS-I's
+ * "low" means comparable to a well-conducted randomised trial, not "good for an
+ * observational study". A reviewer working from the labels alone quietly
+ * invents a personal scale, and the appraisal stops meaning what its citation
+ * says it means. So the criteria sit one click from the choice rather than in a
+ * manual.
+ */
+function JudgementCriteria({
+  tool,
+  domain,
+  align = 'right',
+}: {
+  tool: RobTool
+  domain?: RobDomainSpec
+  align?: 'left' | 'right'
+}) {
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  // Anchored to the button but rendered in a portal: the card it sits in clips
+  // its own corners, and the list it sits in scrolls, so an absolutely
+  // positioned panel gets cut off exactly where the criteria start.
+  const [at, setAt] = useState<{ top: number; left: number; maxHeight: number } | null>(null)
+
+  function toggle() {
+    if (at) { setAt(null); return }
+    const rect = buttonRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const width = 320
+    const left = align === 'right'
+      ? Math.max(8, rect.right - width)
+      : Math.min(rect.left, window.innerWidth - width - 8)
+    const top = rect.bottom + 6
+    setAt({ top, left, maxHeight: Math.max(160, window.innerHeight - top - 12) })
+  }
+
+  return (
+    <div className="shrink-0">
+      <button
+        ref={buttonRef}
+        onClick={toggle}
+        aria-label="What each judgement means"
+        aria-expanded={at !== null}
+        title="What each judgement means"
+        className={`w-4 h-4 rounded-full border text-[9px] font-bold leading-none ${
+          domain ? 'mt-1' : ''
+        } ${
+          at
+            ? 'border-blue-400 text-blue-600 bg-blue-50'
+            : 'border-zinc-300 text-zinc-400 hover:border-zinc-500 hover:text-zinc-700'
+        }`}
+      >
+        ?
+      </button>
+
+      {at && createPortal(
+        <>
+          {/* Click anywhere to dismiss — this is a reference card, not a dialog. */}
+          <div className="fixed inset-0 z-40" onClick={() => setAt(null)} />
+          <div
+            className="fixed z-50 w-80 overflow-y-auto bg-white border border-zinc-200 rounded-lg shadow-xl p-3 text-left"
+            style={{ top: at.top, left: at.left, maxHeight: at.maxHeight }}
+          >
+            <p className="text-[10px] font-semibold text-zinc-900 leading-snug">
+              {tool.name} — what each judgement means
+            </p>
+            <p className="text-[9px] text-zinc-400 mt-0.5">{tool.reference}</p>
+
+            {domain && (
+              <div className="mt-2 pt-2 border-t border-zinc-100">
+                <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1">
+                  Judging: {domain.label}
+                </p>
+                <p className="text-[10px] text-zinc-600 leading-relaxed">{domain.question}</p>
+              </div>
+            )}
+
+            <ul className="mt-2 pt-2 border-t border-zinc-100 space-y-2">
+              {tool.judgements.map(j => (
+                <li key={j.value}>
+                  <span
+                    className={`inline-block text-[9px] font-bold px-1.5 py-0.5 rounded border ${TONE_STYLES[j.tone]}`}
+                  >
+                    {j.label}
+                  </span>
+                  <p className="text-[10px] text-zinc-600 leading-relaxed mt-1">
+                    {j.criteria ?? 'This instrument does not define the option further.'}
+                  </p>
+                </li>
+              ))}
+            </ul>
+
+            <div className="mt-2 pt-2 border-t border-zinc-100">
+              <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1">
+                How the domains roll up
+              </p>
+              <p className="text-[10px] text-zinc-600 leading-relaxed">{tool.overallRule}</p>
+            </div>
+
+            {/* Where the wording above came from. The criteria are paraphrased to
+                fit this card, so a reviewer who needs to settle a borderline
+                judgement — or to defend one in a methods section — has to be
+                able to reach the instrument itself in one click. */}
+            {(tool.referenceUrl || tool.toolUrl) && (
+              <div className="mt-2 pt-2 border-t border-zinc-100">
+                <p className="text-[8px] font-bold text-zinc-400 uppercase tracking-widest mb-1">
+                  Where these criteria come from
+                </p>
+                {tool.referenceUrl && (
+                  <a
+                    href={tool.referenceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="block text-[10px] text-blue-600 hover:underline leading-relaxed"
+                  >
+                    Published source: {tool.reference} ↗
+                  </a>
+                )}
+                {tool.toolUrl && (
+                  <a
+                    href={tool.toolUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="block text-[10px] text-blue-600 hover:underline leading-relaxed"
+                  >
+                    Full guidance and worked examples: {tool.name} official site ↗
+                  </a>
+                )}
+              </div>
+            )}
+          </div>
+        </>,
+        document.body,
+      )}
+    </div>
+  )
 }
 
 // ── One domain row ────────────────────────────────────────────────────────────
@@ -109,6 +261,8 @@ function DomainRow({
             <option key={j.value} value={j.value}>{j.label}</option>
           ))}
         </select>
+
+        <JudgementCriteria tool={tool} domain={spec} />
 
         {needsReview ? (
           <button
@@ -405,6 +559,10 @@ export function RiskOfBiasPanel() {
       <div className="px-4 py-3 border-b border-zinc-200 shrink-0">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-[11px] font-semibold text-zinc-700">Appraisal instrument</span>
+          {/* Beside the label rather than after the dropdown: the instrument
+              names are long enough to fill the row, and the scale is what a
+              reviewer reaches for before they choose. */}
+          {tool && <JudgementCriteria tool={tool} align="left" />}
           <select
             value={state.robToolId ?? ''}
             onChange={e =>
@@ -453,7 +611,20 @@ export function RiskOfBiasPanel() {
 
         {tool && (
           <p className="text-[9px] text-zinc-400 mt-1.5 leading-snug">
-            {tool.fullName} · {tool.reference}. Drafts read the open-access full text where the
+            {tool.fullName} ·{' '}
+            {tool.referenceUrl ? (
+              <a
+                href={tool.referenceUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="text-blue-600 hover:underline"
+              >
+                {tool.reference} ↗
+              </a>
+            ) : (
+              tool.reference
+            )}
+            . Drafts read the open-access full text where the
             matrix step retrieved one, and the abstract otherwise — and from an abstract most
             domains genuinely cannot be judged, where “no information” is the correct answer rather
             than a failure. Every judgement is yours until you confirm it.

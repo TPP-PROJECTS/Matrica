@@ -286,6 +286,14 @@ export function exportRiskOfBiasCSV(state: AppState, tool: RobTool): void {
   rows.push(new Array(headers.length).fill(''))
   rows.push(['Instrument', tool.fullName, ...new Array(headers.length - 2).fill('')])
   rows.push(['Reference', tool.reference, ...new Array(headers.length - 2).fill('')])
+  // The links, so a reader of the export can check the criteria the judgements
+  // were made against rather than taking the instrument's name on trust.
+  if (tool.referenceUrl) {
+    rows.push(['Reference URL', tool.referenceUrl, ...new Array(headers.length - 2).fill('')])
+  }
+  if (tool.toolUrl) {
+    rows.push(['Instrument guidance', tool.toolUrl, ...new Array(headers.length - 2).fill('')])
+  }
   rows.push(['Overall rule', tool.overallRule, ...new Array(headers.length - 2).fill('')])
 
   // Per-domain rationales, which are the part a reader actually weighs.

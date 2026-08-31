@@ -54,25 +54,108 @@ def _d(domain_id: str, label: str, question: str, critical: bool = False) -> dic
 # appraisal.
 
 ROB2_JUDGEMENTS = [
-    {"value": "low", "label": "Low risk", "tone": "good"},
-    {"value": "some_concerns", "label": "Some concerns", "tone": "warn"},
-    {"value": "high", "label": "High risk", "tone": "bad"},
-    {"value": "no_information", "label": "No information", "tone": "unknown"},
+    {
+        "value": "low", "label": "Low risk", "tone": "good",
+        "criteria": (
+            "What this domain asks about was done, and the paper says so. There is no plausible "
+            "route by which this domain could have altered the result."
+        ),
+    },
+    {
+        "value": "some_concerns", "label": "Some concerns", "tone": "warn",
+        "criteria": (
+            "Something was reported and it is imperfect, but the problem is unlikely to have "
+            "materially changed the effect estimate — e.g. 'randomised' with no account of how "
+            "the sequence was concealed, or a small departure from the intended analysis."
+        ),
+    },
+    {
+        "value": "high", "label": "High risk", "tone": "bad",
+        "criteria": (
+            "There is a plausible route by which this domain could have substantially altered the "
+            "result — e.g. a predictable allocation sequence, differential loss to follow-up, or "
+            "a subjective outcome rated by someone who knew the assignment."
+        ),
+    },
+    {
+        "value": "no_information", "label": "No information", "tone": "unknown",
+        "criteria": (
+            "The paper does not report enough to judge this domain at all. This is the correct "
+            "answer for most methodological domains read from an abstract alone, and it is not "
+            "the same as 'some concerns', which asserts that something WAS reported and is "
+            "imperfect."
+        ),
+    },
 ]
 
 ROBINS_I_JUDGEMENTS = [
-    {"value": "low", "label": "Low risk", "tone": "good"},
-    {"value": "moderate", "label": "Moderate risk", "tone": "warn"},
-    {"value": "serious", "label": "Serious risk", "tone": "bad"},
-    {"value": "critical", "label": "Critical risk", "tone": "bad"},
-    {"value": "no_information", "label": "No information", "tone": "unknown"},
+    {
+        "value": "low", "label": "Low risk", "tone": "good",
+        "criteria": (
+            "The study is comparable to a well-performed randomised trial with regard to this "
+            "domain. Note the bar: this is not 'good for an observational study'."
+        ),
+    },
+    {
+        "value": "moderate", "label": "Moderate risk", "tone": "warn",
+        "criteria": (
+            "The study is sound for a non-randomised study with regard to this domain, but "
+            "cannot be considered comparable to a well-performed randomised trial."
+        ),
+    },
+    {
+        "value": "serious", "label": "Serious risk", "tone": "bad",
+        "criteria": (
+            "The study has some important problems in this domain — e.g. an important "
+            "confounder left uncontrolled, or exposure measured differently between groups."
+        ),
+    },
+    {
+        "value": "critical", "label": "Critical risk", "tone": "bad",
+        "criteria": (
+            "The study is too problematic in this domain to provide any useful evidence on the "
+            "effects of the intervention. A study judged critical anywhere is normally excluded "
+            "from the synthesis rather than reported alongside the others."
+        ),
+    },
+    {
+        "value": "no_information", "label": "No information", "tone": "unknown",
+        "criteria": (
+            "The paper reports nothing on which a judgement for this domain could be based — a "
+            "statement about the report, not a middle rating between moderate and serious."
+        ),
+    },
 ]
 
 AMSTAR2_JUDGEMENTS = [
-    {"value": "yes", "label": "Yes", "tone": "good"},
-    {"value": "partial_yes", "label": "Partial yes", "tone": "warn"},
-    {"value": "no", "label": "No", "tone": "bad"},
-    {"value": "no_information", "label": "No information", "tone": "unknown"},
+    {
+        "value": "yes", "label": "Yes", "tone": "good",
+        "criteria": "The review meets every element the item asks for.",
+    },
+    {
+        "value": "partial_yes", "label": "Partial yes", "tone": "warn",
+        "criteria": (
+            "The review meets the item's minimum elements but not the full set — AMSTAR 2 "
+            "defines this option only for the items that list a reduced set (e.g. searching two "
+            "databases and giving keywords, without the full strategy or a grey-literature "
+            "search). For the remaining items the answer is yes or no."
+        ),
+    },
+    {
+        "value": "no", "label": "No", "tone": "bad",
+        "criteria": (
+            "The review does not meet the item. On a critical item — 2, 4, 7, 9, 11, 13 or 15 — "
+            "one 'no' is a critical flaw and caps overall confidence in the review at low."
+        ),
+    },
+    {
+        "value": "no_information", "label": "No information", "tone": "unknown",
+        "criteria": (
+            "The report does not say either way. AMSTAR 2 itself has no such option: for scoring "
+            "an unreported item counts as 'no', so record what you could not find here and "
+            "resolve it against the full text before you report a rating."
+        ),
+    },
 ]
 
 
@@ -236,17 +319,53 @@ AMSTAR2_DOMAINS = [
 # scale, where "unclear" means the report does not say — which is a finding, not
 # a neutral middle.
 PROBAST_JUDGEMENTS = [
-    {"value": "low", "label": "Low risk", "tone": "good"},
-    {"value": "high", "label": "High risk", "tone": "bad"},
-    {"value": "unclear", "label": "Unclear", "tone": "unknown"},
+    {
+        "value": "low", "label": "Low risk", "tone": "good",
+        "criteria": (
+            "Every signalling question in the domain is answered yes or probably yes: nothing in "
+            "how the study was done could have biased the reported performance or accuracy."
+        ),
+    },
+    {
+        "value": "high", "label": "High risk", "tone": "bad",
+        "criteria": (
+            "At least one signalling question is answered no or probably no, and that feature "
+            "could have biased the result — for a model study most often performance measured on "
+            "data that took part in some step of fitting; for an accuracy study most often a "
+            "reference standard applied selectively or interpreted knowing the index test."
+        ),
+    },
+    {
+        "value": "unclear", "label": "Unclear", "tone": "unknown",
+        "criteria": (
+            "The report does not describe the domain well enough to answer its questions. This "
+            "is a finding about the reporting, not a neutral middle between low and high, and it "
+            "is what most domains come to when only an abstract is available."
+        ),
+    },
 ]
 
 # MMAT, CASP and AXIS are criterion checklists rather than risk scales: each item
 # is met, not met, or not determinable from the report.
 CHECKLIST_JUDGEMENTS = [
-    {"value": "yes", "label": "Yes", "tone": "good"},
-    {"value": "no", "label": "No", "tone": "bad"},
-    {"value": "cant_tell", "label": "Can't tell", "tone": "unknown"},
+    {
+        "value": "yes", "label": "Yes", "tone": "good",
+        "criteria": "The paper reports doing what the item asks, clearly enough to check.",
+    },
+    {
+        "value": "no", "label": "No", "tone": "bad",
+        "criteria": (
+            "The paper reports something that fails the item, or makes clear it was not done."
+        ),
+    },
+    {
+        "value": "cant_tell", "label": "Can't tell", "tone": "unknown",
+        "criteria": (
+            "The paper does not say. Record this rather than 'no': a study done badly and a "
+            "study reported badly are different findings, and readers need the distinction. "
+            "These checklists are not scored, so a 'can\u2019t tell' is reported as it stands."
+        ),
+    },
 ]
 
 
@@ -516,6 +635,8 @@ ROB_TOOLS = [
         "fullName": "Cochrane risk-of-bias tool for randomised trials, version 2",
         "appliesTo": "Randomised controlled trials",
         "reference": "Sterne JAC et al. BMJ 2019;366:l4898",
+        "referenceUrl": "https://doi.org/10.1136/bmj.l4898",
+        "toolUrl": "https://www.riskofbias.info/welcome/rob-2-0-tool",
         "domains": ROB2_DOMAINS,
         "judgements": ROB2_JUDGEMENTS,
         # How the per-domain judgements roll up. Stated so the UI and the report
@@ -532,6 +653,8 @@ ROB_TOOLS = [
         "fullName": "Risk Of Bias In Non-randomised Studies — of Interventions",
         "appliesTo": "Non-randomised / observational studies of interventions",
         "reference": "Sterne JAC et al. BMJ 2016;355:i4919",
+        "referenceUrl": "https://doi.org/10.1136/bmj.i4919",
+        "toolUrl": "https://www.riskofbias.info/welcome/home",
         "domains": ROBINS_I_DOMAINS,
         "judgements": ROBINS_I_JUDGEMENTS,
         "overallRule": (
@@ -546,6 +669,8 @@ ROB_TOOLS = [
         "fullName": "A MeaSurement Tool to Assess systematic Reviews, version 2",
         "appliesTo": "Systematic reviews and meta-analyses",
         "reference": "Shea BJ et al. BMJ 2017;358:j4008",
+        "referenceUrl": "https://doi.org/10.1136/bmj.j4008",
+        "toolUrl": "https://amstar.ca/Amstar-2.php",
         "domains": AMSTAR2_DOMAINS,
         "judgements": AMSTAR2_JUDGEMENTS,
         "overallRule": (
@@ -564,6 +689,8 @@ ROB_TOOLS += [
         "fullName": "Prediction model Risk Of Bias ASsessment Tool",
         "appliesTo": "Prediction models, including machine-learning models",
         "reference": "Wolff RF et al. Ann Intern Med 2019;170:51-58",
+        "referenceUrl": "https://doi.org/10.7326/M18-1376",
+        "toolUrl": "https://www.probast.org/",
         "domains": PROBAST_DOMAINS,
         "judgements": PROBAST_JUDGEMENTS,
         "overallRule": (
@@ -579,6 +706,8 @@ ROB_TOOLS += [
         "fullName": "Quality Assessment of Diagnostic Accuracy Studies, version 2",
         "appliesTo": "Diagnostic and prognostic accuracy studies",
         "reference": "Whiting PF et al. Ann Intern Med 2011;155:529-536",
+        "referenceUrl": "https://doi.org/10.7326/0003-4819-155-8-201110180-00009",
+        "toolUrl": "https://www.bristol.ac.uk/population-health-sciences/projects/quadas/",
         "domains": QUADAS2_DOMAINS,
         "judgements": PROBAST_JUDGEMENTS,
         "overallRule": (
@@ -592,7 +721,12 @@ ROB_TOOLS += [
         "name": "MMAT — Qualitative",
         "fullName": "Mixed Methods Appraisal Tool (2018), qualitative studies",
         "appliesTo": "Qualitative studies, within a review that may also include other designs",
-        "reference": "Hong QN et al. MMAT version 2018",
+        "reference": "Hong QN et al. Education for Information 2018;34:285-291 (MMAT version 2018)",
+        "referenceUrl": "https://doi.org/10.3233/EFI-180221",
+        "toolUrl": (
+            "https://mixedmethodsappraisaltoolpublic.pbworks.com/w/file/fetch"
+            "/127916259/MMAT_2018_criteria-manual_2018-08-01_ENG.pdf"
+        ),
         "domains": MMAT_QUALITATIVE_DOMAINS,
         "judgements": CHECKLIST_JUDGEMENTS,
         "overallRule": (
@@ -606,7 +740,12 @@ ROB_TOOLS += [
         "name": "MMAT — Randomised trials",
         "fullName": "Mixed Methods Appraisal Tool (2018), quantitative randomised controlled trials",
         "appliesTo": "Randomised trials inside a mixed-design review (use RoB 2 for a trials-only review)",
-        "reference": "Hong QN et al. MMAT version 2018",
+        "reference": "Hong QN et al. Education for Information 2018;34:285-291 (MMAT version 2018)",
+        "referenceUrl": "https://doi.org/10.3233/EFI-180221",
+        "toolUrl": (
+            "https://mixedmethodsappraisaltoolpublic.pbworks.com/w/file/fetch"
+            "/127916259/MMAT_2018_criteria-manual_2018-08-01_ENG.pdf"
+        ),
         "domains": MMAT_RCT_DOMAINS,
         "judgements": CHECKLIST_JUDGEMENTS,
         "overallRule": (
@@ -620,7 +759,12 @@ ROB_TOOLS += [
         "name": "MMAT — Non-randomised",
         "fullName": "Mixed Methods Appraisal Tool (2018), quantitative non-randomised studies",
         "appliesTo": "Cohort, case-control and other non-randomised quantitative studies",
-        "reference": "Hong QN et al. MMAT version 2018",
+        "reference": "Hong QN et al. Education for Information 2018;34:285-291 (MMAT version 2018)",
+        "referenceUrl": "https://doi.org/10.3233/EFI-180221",
+        "toolUrl": (
+            "https://mixedmethodsappraisaltoolpublic.pbworks.com/w/file/fetch"
+            "/127916259/MMAT_2018_criteria-manual_2018-08-01_ENG.pdf"
+        ),
         "domains": MMAT_NONRANDOMISED_DOMAINS,
         "judgements": CHECKLIST_JUDGEMENTS,
         "overallRule": (
@@ -634,7 +778,12 @@ ROB_TOOLS += [
         "name": "MMAT — Descriptive quantitative",
         "fullName": "Mixed Methods Appraisal Tool (2018), quantitative descriptive studies",
         "appliesTo": "Surveys, prevalence studies and other descriptive quantitative work",
-        "reference": "Hong QN et al. MMAT version 2018",
+        "reference": "Hong QN et al. Education for Information 2018;34:285-291 (MMAT version 2018)",
+        "referenceUrl": "https://doi.org/10.3233/EFI-180221",
+        "toolUrl": (
+            "https://mixedmethodsappraisaltoolpublic.pbworks.com/w/file/fetch"
+            "/127916259/MMAT_2018_criteria-manual_2018-08-01_ENG.pdf"
+        ),
         "domains": MMAT_DESCRIPTIVE_DOMAINS,
         "judgements": CHECKLIST_JUDGEMENTS,
         "overallRule": "Report the items rather than a score.",
@@ -644,7 +793,12 @@ ROB_TOOLS += [
         "name": "MMAT — Mixed methods",
         "fullName": "Mixed Methods Appraisal Tool (2018), mixed methods studies",
         "appliesTo": "Studies combining qualitative and quantitative components",
-        "reference": "Hong QN et al. MMAT version 2018",
+        "reference": "Hong QN et al. Education for Information 2018;34:285-291 (MMAT version 2018)",
+        "referenceUrl": "https://doi.org/10.3233/EFI-180221",
+        "toolUrl": (
+            "https://mixedmethodsappraisaltoolpublic.pbworks.com/w/file/fetch"
+            "/127916259/MMAT_2018_criteria-manual_2018-08-01_ENG.pdf"
+        ),
         "domains": MMAT_MIXED_DOMAINS,
         "judgements": CHECKLIST_JUDGEMENTS,
         "overallRule": (
@@ -659,6 +813,7 @@ ROB_TOOLS += [
         "fullName": "Critical Appraisal Skills Programme qualitative checklist",
         "appliesTo": "Qualitative studies",
         "reference": "CASP qualitative checklist",
+        "referenceUrl": "https://casp-uk.net/casp-tools-checklists/qualitative-studies-checklist/",
         "domains": CASP_QUALITATIVE_DOMAINS,
         "judgements": CHECKLIST_JUDGEMENTS,
         "overallRule": (
@@ -673,6 +828,7 @@ ROB_TOOLS += [
         "fullName": "Appraisal tool for Cross-Sectional Studies",
         "appliesTo": "Cross-sectional and survey studies",
         "reference": "Downes MJ et al. BMJ Open 2016;6:e011458",
+        "referenceUrl": "https://doi.org/10.1136/bmjopen-2016-011458",
         "domains": AXIS_DOMAINS,
         "judgements": CHECKLIST_JUDGEMENTS,
         "overallRule": (

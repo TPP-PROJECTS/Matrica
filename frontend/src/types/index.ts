@@ -272,6 +272,13 @@ export interface RobJudgementOption {
   value: string
   label: string
   tone: 'good' | 'warn' | 'bad' | 'unknown'
+  /**
+   * What the instrument says warrants this judgement. Shown behind the "?" next
+   * to every judgement dropdown: a reviewer picking "Some concerns" over "High
+   * risk" is applying a published rule, and having to remember it is how a
+   * whole appraisal drifts into a personal scale.
+   */
+  criteria?: string
 }
 
 export interface RobDomainSpec {
@@ -287,7 +294,12 @@ export interface RobTool {
   name: string
   fullName: string
   appliesTo: string
+  /** The citation the instrument is published under, shown wherever it is used. */
   reference: string
+  /** Resolvable link to that publication (a DOI, or the checklist's own page). */
+  referenceUrl?: string
+  /** The instrument's official home, where its full guidance manual lives. */
+  toolUrl?: string
   domains: RobDomainSpec[]
   judgements: RobJudgementOption[]
   overallRule: string
