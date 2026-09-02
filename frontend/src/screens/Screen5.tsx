@@ -385,9 +385,91 @@ interface ParseItem {
   file?: File
   url?: string
   paper?: ResultCard
+  /** Body text the upload carried, if any — the row's only route to a full text. */
+  fullText?: string
 }
 
-function AddPapersModal({ onClose, onAdd }: { onClose: () => void; onAdd: (papers: ResultCard[]) => void }) {
+/**
+ * Which text a row was extracted from — and, when that is only the abstract, the
+ * way to change it.
+ *
+ * An open-access copy is fetched automatically; a paywalled paper has no such
+ * route, and those are ordinary in a review. The researcher can usually open it
+ * through their institution, so their PDF is the one full text the tool can get,
+ * and without somewhere to hand it over the row stayed on the abstract however
+ * much of the paper the user could actually read.
+ */
+function FullTextBadge({ hasFullText, disabled, onAttach }: {
+  hasFullText: boolean
+  disabled: boolean
+  onAttach: (text: string) => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function attach(files: FileList | null) {
+    const file = files?.[0]
+    if (inputRef.current) inputRef.current.value = ''
+    if (!file) return
+    setBusy(true); setError(null)
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      const res = await apiFetch(`${API}/matrix/paper-full-text`, { method: 'POST', body: fd })
+      if (!res.ok) {
+        const detail = await res.json().then(d => d.detail).catch(() => null)
+        throw new Error(typeof detail === 'string' ? detail : 'Could not read that file')
+      }
+      const data = await res.json() as { fullText: string }
+      onAttach(data.fullText)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not read that file')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (hasFullText) return (
+    <span
+      className="inline-block mt-1 text-[8px] font-bold px-1 py-0.5 rounded bg-green-50 text-green-700 border border-green-200"
+      title="A full text was available; extraction read the whole paper"
+    >
+      FULL TEXT
+    </span>
+  )
+
+  return (
+    <>
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".pdf,.txt,application/pdf,text/plain"
+        className="hidden"
+        onChange={e => void attach(e.target.files)}
+      />
+      <button
+        onClick={() => inputRef.current?.click()}
+        disabled={disabled || busy}
+        title="No open-access copy was obtainable, so extraction read the abstract only and could not reach anything the abstract does not mention. Attach the PDF to have the whole paper read instead."
+        className="inline-flex items-center gap-1 mt-1 text-[8px] font-bold px-1 py-0.5 rounded bg-zinc-100 text-zinc-500 border border-zinc-200 hover:border-purple-400 hover:text-purple-600 disabled:opacity-50 disabled:hover:border-zinc-200 disabled:hover:text-zinc-500"
+      >
+        {busy ? (
+          <><span className="w-2 h-2 border border-purple-200 border-t-purple-600 rounded-full animate-spin" />READING…</>
+        ) : (
+          <>ABSTRACT ONLY<span className="font-normal text-purple-500">⬆PDF</span></>
+        )}
+      </button>
+      {error && <p className="text-[8px] text-red-500 mt-0.5 leading-tight">{error}</p>}
+    </>
+  )
+}
+
+
+function AddPapersModal({ onClose, onAdd }: {
+  onClose: () => void
+  onAdd: (papers: ResultCard[], fullTexts: Record<string, string>) => void
+}) {
   const [items, setItems] = useState<ParseItem[]>([])
   const [urlText, setUrlText] = useState('')
   const [parsing, setParsing] = useState(false)
@@ -450,7 +532,8 @@ function AddPapersModal({ onClose, onAdd }: { onClose: () => void; onAdd: (paper
           topicId: '', queryId: '', confidence: 'none',
           isDuplicate: false, status: 'included', notes: '',
         }
-        setItems(prev => prev.map(p => p.key === it.key ? { ...p, status: 'done', paper } : p))
+        setItems(prev => prev.map(p => p.key === it.key
+          ? { ...p, status: 'done', paper, fullText: data.fullText || undefined } : p))
       } catch (e) {
         setItems(prev => prev.map(p => p.key === it.key
           ? { ...p, status: 'error', error: e instanceof Error ? e.message : 'Parse failed' } : p))
@@ -469,7 +552,7 @@ function AddPapersModal({ onClose, onAdd }: { onClose: () => void; onAdd: (paper
         <div className="flex items-center px-4 py-3 border-b border-zinc-100 shrink-0">
           <div className="flex-1">
             <p className="text-[13px] font-semibold text-zinc-800">Add papers to matrix</p>
-            <p className="text-[10px] text-zinc-400">Upload PDF/text files or paste URLs / DOIs — one per line</p>
+            <p className="text-[10px] text-zinc-400">Upload PDF/text files or paste URLs / DOIs — one per line. An uploaded PDF is read in full, not just for its citation.</p>
           </div>
           <button onClick={onClose} className="text-zinc-400 hover:text-zinc-600 text-[15px]">✕</button>
         </div>
@@ -549,7 +632,11 @@ function AddPapersModal({ onClose, onAdd }: { onClose: () => void; onAdd: (paper
             {parsing ? 'Parsing…' : 'Parse all'}
           </button>
           <button
-            onClick={() => onAdd(parsed.map(it => it.paper!))}
+            onClick={() => {
+              const fullTexts: Record<string, string> = {}
+              for (const it of parsed) if (it.fullText) fullTexts[it.paper!.id] = it.fullText
+              onAdd(parsed.map(it => it.paper!), fullTexts)
+            }}
             disabled={parsed.length === 0 || parsing}
             className="px-3 h-7 bg-purple-600 text-white rounded text-[11px] font-medium hover:bg-purple-700 disabled:opacity-40"
           >
@@ -790,6 +877,11 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
     papers: { id: string; title: string; abstract: string; authors: string; year: number; source?: string }[],
     columns: string[] = dataCols,
     prompt?: string | null,
+    // Full texts obtained in the same tick as this call. A dispatch has not
+    // reached `state` yet when the caller runs, so reading the store alone would
+    // send an empty cached text and the backend would fall back to the abstract
+    // — for exactly the papers a user just supplied a PDF to avoid that.
+    fullTextOverrides?: Record<string, string>,
   ) {
     if (filling || columns.length === 0 || papers.length === 0) return
     abortRef.current = false
@@ -808,7 +900,7 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
             // Locating and downloading an open-access PDF is the slow part of
             // filling a row; hand back the copy we already hold so filling a
             // second column for the same paper does not repeat it.
-            cached_full_text: state.paperFullTexts?.[paper.id] ?? '',
+            cached_full_text: fullTextOverrides?.[paper.id] ?? state.paperFullTexts?.[paper.id] ?? '',
             custom_system_prompt: prompt ?? null,
           }),
         })
@@ -854,14 +946,36 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
     fillPapers(papers, [col], customAutoFillPrompt)
   }
 
-  function handleAddPapers(papers: ResultCard[]) {
+  function handleAddPapers(papers: ResultCard[], fullTexts: Record<string, string> = {}) {
     setShowAddPapers(false)
     if (papers.length === 0) return
     const { fresh } = partitionNewPapers([...state.results, ...state.reviewList], papers)
     dispatch({ type: 'ADD_UPLOADED_PAPERS', papers })
+    // An uploaded PDF is the whole paper, so keep its text: it is what the next
+    // extraction reads, what the supporting quotes are checked against, and what
+    // the risk-of-bias step needs.
+    for (const paper of fresh) {
+      if (fullTexts[paper.id]) {
+        dispatch({ type: 'SET_PAPER_FULL_TEXT', paperId: paper.id, text: fullTexts[paper.id] })
+      }
+    }
     // parse the newly added rows right away (columns must already exist;
     // otherwise the init effect will generate columns first)
-    if (dataCols.length > 0) fillPapers(fresh, dataCols, customAutoFillPrompt)
+    if (dataCols.length > 0) fillPapers(fresh, dataCols, customAutoFillPrompt, fullTexts)
+  }
+
+  /**
+   * A PDF supplied for a row that had only an abstract. The text is stored first
+   * so it survives a cancelled re-extraction, then the row is re-filled: the
+   * cells standing in it came from the abstract, and leaving them under a FULL
+   * TEXT badge would have the badge claim more than the cells hold.
+   */
+  function handleFullTextAttached(paperId: string, text: string) {
+    dispatch({ type: 'SET_PAPER_FULL_TEXT', paperId, text })
+    const paper = state.reviewList.find(p => p.id === paperId)
+    if (paper && dataCols.length > 0) {
+      fillPapers([paper], dataCols, customAutoFillPrompt, { [paperId]: text })
+    }
   }
 
   if (state.reviewList.length === 0) return (
@@ -981,21 +1095,11 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
                         that governs how far a reader can trust it, and it used
                         to be invisible: the backend reported it and the UI threw
                         it away. */}
-                    {state.paperFullTexts?.[row.paperId] ? (
-                      <span
-                        className="inline-block mt-1 text-[8px] font-bold px-1 py-0.5 rounded bg-green-50 text-green-700 border border-green-200"
-                        title="An open-access full text was retrieved; extraction read the whole paper"
-                      >
-                        FULL TEXT
-                      </span>
-                    ) : (
-                      <span
-                        className="inline-block mt-1 text-[8px] font-bold px-1 py-0.5 rounded bg-zinc-100 text-zinc-500 border border-zinc-200"
-                        title="No open-access copy was obtainable; extraction read the abstract only, so details it does not mention could not be extracted"
-                      >
-                        ABSTRACT ONLY
-                      </span>
-                    )}
+                    <FullTextBadge
+                      hasFullText={!!state.paperFullTexts?.[row.paperId]}
+                      disabled={filling}
+                      onAttach={text => handleFullTextAttached(row.paperId, text)}
+                    />
                   </td>
                   {dataCols.map(col =>
                     // During a single-column fill only that column is pending —

@@ -163,6 +163,24 @@ export async function exportAsDocx(state: AppState): Promise<void> {
         ),
       ), spacer())
     }
+
+    // Searches run in another database's own interface and imported as a file.
+    // They are part of the same strategy and PRISMA item 7 asks for all of it,
+    // so a report that omitted them would understate what the review searched.
+    const imported = state.importedSearches ?? []
+    if (imported.length > 0) {
+      sections.push(para('Searches run in other databases and imported', { bold: true }), spacer())
+      sections.push(makeTable(
+        ['Database', 'Strategy as run', 'Date searched', 'Records in file', 'New to review'],
+        imported.map(i => [
+          i.database,
+          i.queryAsRun || 'Not recorded',
+          i.searchedAt || '—',
+          String(i.recordsInFile),
+          String(i.recordsAdded),
+        ]),
+      ), spacer())
+    }
     sections.push(divider())
   }
 
@@ -370,6 +388,10 @@ ${selectedTopics.length > 0 ? section('2. Selected Topics', selectedTopics.map(t
 
 ${state.queries.length > 0 ? section('3. Search Queries', `<table><thead><tr><th>#</th><th>Query</th><th>Databases</th><th>Priority</th></tr></thead><tbody>${state.queries.map(q =>
   `<tr><td>${q.queryN}</td><td style="font-family:monospace;font-size:9px">${q.text}</td><td>${(q.databases ?? []).join(', ')}</td><td>${q.priority}</td></tr>`
+).join('')}</tbody></table>`) : ''}
+
+${(state.importedSearches ?? []).length > 0 ? section('3b. Searches imported from other databases', `<table><thead><tr><th>Database</th><th>Strategy as run</th><th>Date searched</th><th>Records in file</th><th>New to review</th></tr></thead><tbody>${(state.importedSearches ?? []).map(i =>
+  `<tr><td>${i.database}</td><td style="font-family:monospace;font-size:9px">${i.queryAsRun || 'Not recorded'}</td><td>${i.searchedAt || '—'}</td><td>${i.recordsInFile}</td><td>${i.recordsAdded}</td></tr>`
 ).join('')}</tbody></table>`) : ''}
 
 ${included.length > 0 ? section('4. Included Papers', `<table><thead><tr><th>Title</th><th>Authors</th><th>Year</th><th>Source</th><th>Status</th></tr></thead><tbody>${included.map(p =>

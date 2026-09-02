@@ -6,6 +6,7 @@ import { API, apiFetch } from '../lib/api'
 import { runPool } from '../lib/runPool'
 import { screenPaper } from '../lib/screenApi'
 import { CitationsModal } from '../components/overlays/CitationsModal'
+import { ImportRecordsModal } from '../components/overlays/ImportRecordsModal'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
 import { journalEntry } from '../lib/decisionJournal'
 import { newId } from '../lib/ids'
@@ -1129,6 +1130,7 @@ export function Screen4() {
   const [filterTopicId, setFilterTopicId] = useState<string | null>(null)
   const [filterQueryId, setFilterQueryId] = useState<string | null>(null)
   const [showProtocol, setShowProtocol] = useState(false)
+  const [showImport, setShowImport] = useState(false)
   // The Auto-screen trigger lives inside the protocol panel, so a pass can only
   // start while the panel is open — its progress bar stays reachable throughout.
   const auto = useAutoScreen()
@@ -1136,6 +1138,7 @@ export function Screen4() {
   const includedCount = state.reviewList.filter(p => p.status === 'included').length
   const maybeCount    = state.reviewList.filter(p => p.status === 'maybe').length
   const excludedCount = state.results.filter(p => p.status === 'excluded').length
+  const importedCount = state.results.filter(p => p.origin === 'import').length
   // Derived rather than counted, so re-running a search cannot inflate it.
   const dupCount = duplicatesRemoved(state.screening, state.results.filter(r => (r.origin ?? 'search') === 'search').length)
 
@@ -1219,9 +1222,24 @@ export function Screen4() {
               {excludedCount} excluded
             </span>
           )}
+          {importedCount > 0 && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded text-sky-300"
+              title="Records brought in from another database's export file"
+            >
+              {importedCount} imported
+            </span>
+          )}
+          <button
+            onClick={() => setShowImport(true)}
+            title="Import a RIS or BibTeX export from Scopus, Web of Science, Embase or any other database"
+            className="ml-auto text-zinc-300 text-[10px] hover:text-white"
+          >
+            ⬆ Import
+          </button>
           <button
             onClick={() => setShowProtocol(v => !v)}
-            className="ml-auto text-zinc-300 text-[10px] hover:text-white"
+            className="text-zinc-300 text-[10px] hover:text-white"
           >
             {showProtocol ? '▴' : '▾'} Protocol ({state.criteria.length})
           </button>
@@ -1343,6 +1361,9 @@ export function Screen4() {
           </button>
         </div>
       </div>
+
+      {/* ── Import from another database's export file ── */}
+      {showImport && <ImportRecordsModal onClose={() => setShowImport(false)} />}
 
       {/* ── Citation snowballing ── */}
       {snowballSeed && (

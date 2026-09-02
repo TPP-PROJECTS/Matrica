@@ -33,6 +33,13 @@ const NO_SEARCH_FILTERS: SearchFilters = {
 }
 
 /**
+ * Databases a new review starts with. It matches the backend's own default, so
+ * an existing review's searches are unchanged; the picker in the search step is
+ * where the rest of the available databases are turned on.
+ */
+const DEFAULT_SEARCH_SOURCES = ['openalex', 'pubmed']
+
+/**
  * Starter exclusion reasons. These are the discipline-agnostic ones every
  * review needs; topic-specific inclusion criteria are for the user to add. They
  * are seeded rather than left empty so that screening can never produce an
@@ -69,8 +76,10 @@ function freshState(): AppState {
     results: [],
     reviewList: [],
     searchFilters: NO_SEARCH_FILTERS,
+    searchSources: DEFAULT_SEARCH_SOURCES,
     criteria: DEFAULT_CRITERIA,
     screening: { identifiedByQuery: {}, retrievedByQuery: {} },
+    importedSearches: [],
     matrixRows: [],
     matrixColumns: BASE_MATRIX_COLUMNS,
     systemMatrixRows: [],
@@ -126,8 +135,11 @@ function snapshotToState(snap: SessionSnapshot): AppState {
     results: snap.results ?? [],
     reviewList: snap.reviewList ?? [],
     searchFilters: snap.searchFilters ?? base.searchFilters,
+    // A session saved before the picker existed searched the original pair.
+    searchSources: snap.searchSources ?? base.searchSources,
     criteria: snap.criteria ?? base.criteria,
     screening: snap.screening ?? base.screening,
+    importedSearches: snap.importedSearches ?? base.importedSearches,
     matrixColumns: snap.matrixColumns ?? base.matrixColumns,
     matrixRows: snap.matrixRows ?? base.matrixRows,
     systemMatrixColumns: snap.systemMatrixColumns ?? base.systemMatrixColumns,
@@ -342,7 +354,17 @@ export function reducer(state: AppState, action: AppAction): AppState {
         ...state,
         queries: state.queries.map(q =>
           q.id === action.queryId
-            ? { ...q, lastRunAt: action.runAt, lastRunFilters: action.filters, sourceQueries: action.sourceQueries }
+            // `databases` is refreshed from the run rather than left as it was
+            // set when the card was made: it is what the report's methods
+            // section prints, and a database that failed or was deselected
+            // since then did not search this query.
+            ? {
+                ...q,
+                lastRunAt: action.runAt,
+                lastRunFilters: action.filters,
+                sourceQueries: action.sourceQueries,
+                databases: action.sourceQueries.map(sq => sq.source),
+              }
             : q
         ),
       }
@@ -397,6 +419,13 @@ export function reducer(state: AppState, action: AppAction): AppState {
 
     case 'SET_SEARCH_FILTERS':
       return { ...state, searchFilters: action.filters }
+
+    case 'SET_SEARCH_SOURCES':
+      // An empty selection would search nothing and report a 400 as a failure;
+      // the last database cannot be removed.
+      return action.sources.length === 0
+        ? state
+        : { ...state, searchSources: action.sources }
 
     case 'ADD_CRITERION': {
       const label = action.criterion.label.trim()
@@ -799,6 +828,30 @@ export function reducer(state: AppState, action: AppAction): AppState {
       return same ? state : { ...state, systemMatrixRows: rows }
     }
 
+    case 'IMPORT_RECORDS': {
+      // Imported records go through exactly the de-duplication the tool's own
+      // search results do: the same study is legitimately in both a Scopus
+      // export and an OpenAlex result set, and screening it twice is waste and
+      // a reliability problem at once. What the import must not do is write to
+      // `retrievedByQuery` — the duplicate figure is derived from that against
+      // the papers held from database *queries*, so adding a file's records to
+      // one side of that subtraction and not the other would corrupt it. The
+      // duplicates this import did remove are reported from its own counts.
+      const { fresh, enrichments } = partitionNewPapers(state.results, action.papers)
+      const enrichedById = new Map(enrichments.map(e => [e.id, e.abstract]))
+      const results = state.results.map(r =>
+        enrichedById.has(r.id) ? { ...r, abstract: enrichedById.get(r.id)! } : r
+      )
+      return {
+        ...state,
+        results: [...results, ...fresh],
+        importedSearches: [
+          ...state.importedSearches,
+          { ...action.search, recordsAdded: fresh.length },
+        ],
+      }
+    }
+
     case 'ADD_UPLOADED_PAPERS': {
       const { fresh } = partitionNewPapers([...state.results, ...state.reviewList], action.papers)
       if (fresh.length === 0) return state
@@ -1033,12 +1086,16 @@ function automaticAuditEntry(state: AppState, action: AppAction): DecisionJourna
     }
     case 'ADD_TOPIC':
       return { ...base, step: 4, action: 'Added custom topic', entityType: 'topic', entityId: action.topic.id, entityLabel: action.topic.title, details: action.topic.description }
+    case 'SET_SEARCH_SOURCES':
+      return { ...base, step: 4, action: 'Changed which databases are searched', entityType: 'search_filter', entityId: 'search-sources', entityLabel: 'Databases searched', previousValue: state.searchSources.join(', '), newValue: action.sources.join(', ') }
     case 'SET_SEARCH_FILTERS':
       return { ...base, step: 4, action: 'Changed database search filters', entityType: 'search_filter', entityId: 'search-filters', entityLabel: 'Search filters', previousValue: JSON.stringify(state.searchFilters), newValue: JSON.stringify(action.filters) }
     case 'ADD_SEARCH_RESULTS':
       return action.results.length
         ? { ...base, step: 4, action: action.results[0]?.origin === 'snowball' ? 'Added citation-snowball results' : 'Ran database search', entityType: 'query', entityId: action.identifiedFor?.queryId ?? action.results[0]?.queryId ?? 'search', entityLabel: `${action.results.length} paper${action.results.length === 1 ? '' : 's'} added` }
         : null
+    case 'IMPORT_RECORDS':
+      return { ...base, step: 4, action: `Imported records from ${action.search.database}`, entityType: 'query', entityId: action.search.id, entityLabel: `${action.papers.length} record${action.papers.length === 1 ? '' : 's'} in ${action.search.filename}`, details: action.search.queryAsRun }
     case 'ADD_CRITERION':
       return { ...base, step: 5, action: 'Added screening criterion', entityType: 'screening_protocol', entityId: action.criterion.id, entityLabel: action.criterion.label, details: action.criterion.kind }
     case 'REMOVE_CRITERION': {

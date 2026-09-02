@@ -77,7 +77,7 @@ export interface QueryCard {
 }
 
 /** How a paper entered the review — a PRISMA 2020 identification pathway. */
-export type PaperOrigin = 'search' | 'snowball' | 'upload'
+export type PaperOrigin = 'search' | 'snowball' | 'upload' | 'import'
 
 /** Lifecycle of the background AI relevance assessment for one paper. */
 export type ScoreStatus = 'pending' | 'scored' | 'failed'
@@ -107,6 +107,13 @@ export interface ResultCard {
   origin?: PaperOrigin
   /** For origin === 'snowball': the review-list paper this was chased from. */
   snowballFromId?: string
+  /**
+   * For origin === 'import': the database whose export file the record came out
+   * of, as the reviewer named it. Database searching has to be reported per
+   * database, and a record imported from Scopus is not attributable to one
+   * without this — the file itself does not reliably say where it came from.
+   */
+  importedFrom?: string
   scoreStatus?: ScoreStatus
   /** For status === 'excluded': which ScreeningCriterion justified it. */
   exclusionReasonId?: string | null
@@ -133,6 +140,23 @@ export interface ScreeningCriterion {
   id: string
   kind: 'inclusion' | 'exclusion'
   label: string
+}
+
+/** One database this build can search, as reported by the backend. */
+export interface SearchSource {
+  key: string
+  name: string
+  blurb: string
+  default: boolean
+  /** Limits this database has no way to express, so a search cannot apply them. */
+  unsupportedLimits: string[]
+  /**
+   * Whether this database's hit count means "records matching the search".
+   * Where it is false the database ranks by relevance over the terms taken
+   * separately, so its total rises as a query gets more specific and cannot be
+   * read as records identified.
+   */
+  comparableHits: boolean
 }
 
 /** Database limits applied at search time, before any screening happens. */
@@ -165,6 +189,40 @@ export interface ScreeningCounts {
    * `duplicatesRemoved()` falls back to it so their exports do not change.
    */
   duplicatesRemoved?: number
+}
+
+/**
+ * One search run in another database's own interface and brought in as a file.
+ *
+ * The records are only half of what a review has to report. PRISMA 2020 item 7
+ * wants the strategy for *every* database, and for an imported set the tool
+ * never saw the query — so it is asked for at import time and kept here. The
+ * counts are recorded at the same moment because a second import of an
+ * overlapping file cannot be told apart from the first once the records have
+ * been merged and de-duplicated.
+ */
+export interface ImportedSearch {
+  id: string
+  /** The database searched, as the reviewer named it (e.g. "Scopus"). */
+  database: string
+  /** The strategy as run there, copied from that database's search history. */
+  queryAsRun: string
+  /** When it was run there — not the date the file happened to be imported. */
+  searchedAt: string
+  /** Records the file contained, which is this database's "identified" figure. */
+  recordsInFile: number
+  /** How many were new to this review; the rest were already held. */
+  recordsAdded: number
+  /** Entries the file held that carried no title and could not be imported. */
+  recordsUnreadable: number
+  importedAt: string
+  format: 'ris' | 'bibtex'
+  filename: string
+}
+
+/** Records identified through imported files, across every import. */
+export function totalImported(imports: ImportedSearch[]): number {
+  return imports.reduce((n, i) => n + i.recordsInFile, 0)
 }
 
 /** Records identified across every query — the PRISMA identification total. */
@@ -525,8 +583,16 @@ export interface SessionSnapshot {
   results: ResultCard[]
   reviewList: ResultCard[]
   searchFilters: SearchFilters
+  /**
+   * Database keys every search runs against. Which databases a review searched
+   * is a reported part of its method, not a preference, so it is held in the
+   * session rather than in component state or the browser.
+   */
+  searchSources: string[]
   criteria: ScreeningCriterion[]
   screening: ScreeningCounts
+  /** Searches run in other databases and brought in as RIS/BibTeX files. */
+  importedSearches: ImportedSearch[]
   // Step 5
   matrixColumns: string[]
   matrixRows: MatrixRow[]
@@ -604,8 +670,16 @@ export interface AppState {
   results: ResultCard[]
   reviewList: ResultCard[]
   searchFilters: SearchFilters
+  /**
+   * Database keys every search runs against. Which databases a review searched
+   * is a reported part of its method, not a preference, so it is held in the
+   * session rather than in component state or the browser.
+   */
+  searchSources: string[]
   criteria: ScreeningCriterion[]
   screening: ScreeningCounts
+  /** Searches run in other databases and brought in as RIS/BibTeX files. */
+  importedSearches: ImportedSearch[]
   // Step 5
   matrixColumns: string[]
   matrixRows: MatrixRow[]
@@ -722,7 +796,8 @@ export type AppAction =
   | { type: 'RECORD_QUERY_RUN'; queryId: string; runAt: string; filters: SearchFilters; sourceQueries: SourceQuery[] }
   | { type: 'ADD_SEARCH_RESULTS'; results: ResultCard[]; identifiedFor?: { queryId: string; count: number }; retrievedFor?: { queryId: string; page: number; count: number } }
   | { type: 'CLEAR_RESULTS' }
-  | { type: 'SET_SEARCH_FILTERS'; filters: SearchFilters } // @chatbot Set the database search limits (year range, open access, preprints, language) applied to future searches.
+  | { type: 'SET_SEARCH_FILTERS'; filters: SearchFilters }
+  | { type: 'SET_SEARCH_SOURCES'; sources: string[] } // @chatbot Choose which literature databases every search runs against, by key (openalex, pubmed, europepmc, crossref, semanticscholar). // @chatbot Set the database search limits (year range, open access, preprints, language) applied to future searches.
   | { type: 'ADD_CRITERION'; criterion: ScreeningCriterion } // @chatbot Add one inclusion or exclusion criterion to the screening protocol.
   | { type: 'REMOVE_CRITERION'; criterionId: string } // @chatbot Remove a screening criterion from the protocol.
   | { type: 'EXCLUDE_PAPER'; paperId: string; reasonId: string | null; reason?: string; by?: ScreenedBy } // @chatbot Exclude a paper from the review, citing the exclusion criterion id that justifies it.
@@ -764,6 +839,7 @@ export type AppAction =
   | { type: 'REMOVE_SYSTEM_MATRIX_COLUMN'; column: string } // @chatbot Remove a system matrix column (must match exactly).
   | { type: 'SYNC_SYSTEM_MATRIX_ROWS' }
   | { type: 'ADD_UPLOADED_PAPERS'; papers: ResultCard[] }
+  | { type: 'IMPORT_RECORDS'; papers: ResultCard[]; search: Omit<ImportedSearch, 'recordsAdded'> }
   | { type: 'ADD_SYSTEM_WITH_ROW'; item: SystemItem }
   | { type: 'UPDATE_MATRIX_ROW_CELLS'; paperId: string; cells: Record<string, MatrixCell> }
   | { type: 'UPDATE_SYSTEM_MATRIX_ROW_CELLS'; systemId: string; cells: Record<string, MatrixCell> }

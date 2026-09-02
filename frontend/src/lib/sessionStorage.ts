@@ -37,8 +37,10 @@ export function toSnapshot(state: AppState): SessionSnapshot {
     results: state.results,
     reviewList: state.reviewList,
     searchFilters: state.searchFilters,
+    searchSources: state.searchSources,
     criteria: state.criteria,
     screening: state.screening,
+    importedSearches: state.importedSearches,
     // Step 5
     matrixColumns: state.matrixColumns,
     matrixRows: state.matrixRows,

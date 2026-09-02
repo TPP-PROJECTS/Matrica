@@ -1,5 +1,10 @@
-import { totalIdentified, duplicatesRemoved} from '../types'
-import type { AppState, ResultCard, RobTool, SearchFilters } from '../types'
+import { totalIdentified, duplicatesRemoved, totalImported } from '../types'
+import type { AppState, ImportedSearch, ResultCard, RobTool, SearchFilters } from '../types'
+
+/** Imports, defaulting for sessions and review snapshots saved before they existed. */
+function importedSearches(state: AppState): ImportedSearch[] {
+  return state.importedSearches ?? []
+}
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -125,7 +130,16 @@ export function exportMatrixCSV(state: AppState): void {
 export function exportPrismaCSV(state: AppState): void {
   // PRISMA separates the two identification pathways, so database searching and
   // citation chasing are reported as their own lines.
-  const fromSearch = state.results.filter(r => (r.origin ?? 'search') !== 'snowball').length
+  // Imported records are database searching too, but they are counted on their
+  // own lines below: a reader has to be able to tell what this tool retrieved
+  // from what a reviewer searched elsewhere and carried in.
+  const fromSearch = state.results.filter(r => {
+    const origin = r.origin ?? 'search'
+    return origin !== 'snowball' && origin !== 'import'
+  }).length
+  const imports = importedSearches(state)
+  const importIdentified = totalImported(imports)
+  const importAdded = imports.reduce((n, i) => n + i.recordsAdded, 0)
   // Duplicates are derived against the database-search corpus only —
   // snowballed and uploaded papers were never counted as retrieved.
   const searchHeld = state.results.filter(r => (r.origin ?? 'search') === 'search').length
@@ -140,6 +154,9 @@ export function exportPrismaCSV(state: AppState): void {
   const rows: string[][] = [
     ['Records identified — database searching (total hits reported)', String(identifiedTotal)],
     ['Records retrieved into the review tool — database searching', String(fromSearch)],
+    ['Records identified — databases searched outside the tool (imported files)', String(importIdentified)],
+    ['Records added to the review — imported files', String(importAdded)],
+    ['Duplicate records removed — imported files', String(importIdentified - importAdded)],
     ['Records identified — citation searching (snowballing)', String(fromSnowball)],
     ['Duplicate records removed before screening', String(duplicates)],
     ['Records screened', String(retrieved)],
@@ -162,6 +179,20 @@ export function exportPrismaCSV(state: AppState): void {
     rows.push(['Excluded — reason', 'Count'])
     for (const [label, n] of [...byReason].sort((a, b) => b[1] - a[1])) {
       rows.push([`  ${label}`, String(n)])
+    }
+  }
+
+  // Identification has to be reportable per database, and for imported sets the
+  // database is only knowable from what the reviewer said at import time.
+  if (imports.length > 0) {
+    const byDatabase = new Map<string, number>()
+    for (const i of imports) {
+      byDatabase.set(i.database, (byDatabase.get(i.database) ?? 0) + i.recordsInFile)
+    }
+    rows.push(['', ''])
+    rows.push(['Imported — records identified per database', 'Count'])
+    for (const [database, n] of [...byDatabase].sort((a, b) => b[1] - a[1])) {
+      rows.push([`  ${database}`, String(n)])
     }
   }
 
@@ -231,10 +262,29 @@ export function exportSearchStrategyCSV(state: AppState): void {
     rows.push(['', '', '', '', ''])
   }
 
+  // A search run in another database's interface is no less part of the strategy
+  // for having been executed outside this tool — PRISMA item 7 asks for all of
+  // them, and a review whose Scopus arm is undocumented is not reproducible.
+  for (const imported of importedSearches(state)) {
+    rows.push([`Imported — ${imported.database}`, imported.filename, '', '', ''])
+    rows.push(['  Strategy as run in that database', imported.queryAsRun || 'Not recorded', '', '', ''])
+    rows.push(['  Date searched', imported.searchedAt || '—', '', '', ''])
+    rows.push(['  Records in file', String(imported.recordsInFile), 'Format', imported.format.toUpperCase(), ''])
+    rows.push(['  Records new to this review', String(imported.recordsAdded), '', '', ''])
+    if (imported.recordsUnreadable > 0) {
+      rows.push(['  Entries the file carried that could not be read', String(imported.recordsUnreadable), '', '', ''])
+    }
+    rows.push(['', '', '', '', ''])
+  }
+
   if (rows.length === 0) {
     rows.push(['No searches have been run yet.', '', '', '', ''])
   } else {
     rows.push(['Total records identified across all queries', String(totalIdentified(state.screening)), '', '', ''])
+    const imported = totalImported(importedSearches(state))
+    if (imported > 0) {
+      rows.push(['Total records identified in imported files', String(imported), '', '', ''])
+    }
   }
 
   downloadText(

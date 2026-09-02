@@ -120,6 +120,25 @@ describe('exportPrismaCSV', () => {
     expect(out).toContain('Duplicate records removed before screening,7')
   })
 
+  it('reports the imported arm separately from what the tool retrieved itself', () => {
+    exportPrismaCSV(appState({
+      results: [paper({ id: 'a' }), paper({ id: 'b', origin: 'import', importedFrom: 'Scopus' })],
+      screening: { identifiedByQuery: { q1: 4000 }, retrievedByQuery: { q1: 6 } },
+      importedSearches: [
+        { id: 'i1', database: 'Scopus', queryAsRun: 'TITLE-ABS-KEY(x)', searchedAt: '2026-03-01',
+          recordsInFile: 40, recordsAdded: 31, recordsUnreadable: 0,
+          importedAt: '2026-03-02T00:00:00Z', format: 'ris' as const, filename: 'scopus.ris' },
+      ],
+    }))
+    const out = contentOf()
+    expect(out).toContain('imported files),40')
+    expect(out).toContain('Records added to the review — imported files,31')
+    expect(out).toContain('Duplicate records removed — imported files,9')
+    // The imported record must not also be counted as retrieved by the tool.
+    expect(out).toContain('Records retrieved into the review tool — database searching,1')
+    expect(out).toContain('  Scopus,40')
+  })
+
   it('falls back to the stored duplicate counter for a pre-fix session', () => {
     exportPrismaCSV(appState({
       results: [paper({ id: 'a' }), paper({ id: 'b' })],
@@ -222,6 +241,24 @@ describe('exportSearchStrategyCSV', () => {
     expect(out).toContain('2026-03-04')
     expect(out).toContain('Years 2015')
     expect(out).toContain('Open access only')
+  })
+
+  it('reports a search run in another database and imported as a file', () => {
+    exportSearchStrategyCSV(appState({
+      queries: [],
+      topics: [],
+      importedSearches: [
+        { id: 'i1', database: 'Embase', queryAsRun: "'sepsis'/exp AND 'machine learning'",
+          searchedAt: '2026-02-14', recordsInFile: 212, recordsAdded: 180, recordsUnreadable: 3,
+          importedAt: '2026-02-15T00:00:00Z', format: 'ris' as const, filename: 'embase.ris' },
+      ],
+    } as unknown as Partial<AppState>))
+    const out = contentOf()
+    expect(out).toContain('Imported — Embase')
+    expect(out).toContain("'sepsis'/exp AND 'machine learning'")
+    expect(out).toContain('2026-02-14')
+    expect(out).toContain('Records in file,212')
+    expect(out).toContain('could not be read,3')
   })
 
   it('omits queries that were never run, since they have no strategy to report', () => {

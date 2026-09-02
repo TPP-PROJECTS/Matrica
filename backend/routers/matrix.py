@@ -620,6 +620,10 @@ class IngestedPaper(BaseModel):
     abstract: str = ''
     url: str = ''
     source: str = 'upload'
+    # Body text, when the ingested document carried one. An uploaded PDF is the
+    # only route to the full text of a paper no open-access copy exists for, so
+    # it travels with the metadata rather than being read and discarded.
+    fullText: str = ''
 
 
 PAPER_METADATA_PROMPT = """You are a bibliographic metadata extraction specialist.
@@ -782,27 +786,43 @@ async def _extract_paper_metadata(text: str, hint: str = '') -> dict:
     return data
 
 
-@router.post("/matrix/ingest-paper-file", response_model=IngestedPaper)
-async def ingest_paper_file(file: UploadFile = File(...)):
+# The opening slice of a document the metadata extractor sees. Title, authors
+# and abstract are all in the first pages, so sending the whole body would add
+# cost and noise without adding evidence.
+METADATA_MAX_CHARS = 15000
+
+
+async def _text_from_upload(file: UploadFile) -> str:
+    """Plain text of an uploaded PDF or text file, up to the full-text budget.
+
+    Read once and used twice: the opening slice identifies the paper, and the
+    whole of it becomes the full text later steps extract from. A researcher
+    holds a PDF for precisely the papers no open-access route can reach, so
+    reading this body for metadata and then discarding it — as ingestion once
+    did — left the tool on abstracts for the papers it could least afford to.
+    """
     raw = await file.read()
     filename = file.filename or 'upload'
-    text = ''
 
     if filename.lower().endswith('.pdf') or raw[:5] == b'%PDF-':
         try:
-            from pypdf import PdfReader
-            reader = PdfReader(io.BytesIO(raw))
-            text = '\n'.join((p.extract_text() or '') for p in reader.pages[:8])
+            text = _extract_pdf_bytes(raw)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Could not read PDF: {str(e)}")
     else:
-        text = raw.decode('utf-8', errors='ignore')
+        text = re.sub(r"[ \t]+", " ", raw.decode('utf-8', errors='ignore')).strip()
 
-    text = text.strip()[:15000]
+    return text[:FULL_TEXT_MAX_CHARS]
+
+
+@router.post("/matrix/ingest-paper-file", response_model=IngestedPaper)
+async def ingest_paper_file(file: UploadFile = File(...)):
+    filename = file.filename or 'upload'
+    text = await _text_from_upload(file)
     if len(text) < 40:
         raise HTTPException(status_code=422, detail="No extractable text found (scanned PDF without OCR?)")
 
-    data = await _extract_paper_metadata(text, hint=f"FILENAME: {filename}")
+    data = await _extract_paper_metadata(text[:METADATA_MAX_CHARS], hint=f"FILENAME: {filename}")
     year = data.get("year")
     return IngestedPaper(
         title=str(data.get("title", "")).strip(),
@@ -811,6 +831,37 @@ async def ingest_paper_file(file: UploadFile = File(...)):
         abstract=str(data.get("abstract", "") or ""),
         url='',
         source='upload',
+        # Held only when there is materially more here than an abstract. Below
+        # that threshold the extraction failed, and calling the remains a full
+        # text would put a FULL TEXT badge on a row that has nothing behind it.
+        fullText=text if len(text) >= FULL_TEXT_MIN_CHARS else '',
+    )
+
+
+class ExtractedFullText(BaseModel):
+    fullText: str
+    chars: int
+    truncated: bool
+
+
+@router.post("/matrix/paper-full-text", response_model=ExtractedFullText)
+async def extract_paper_full_text(file: UploadFile = File(...)):
+    """Full text of a PDF supplied for a paper already in the review.
+
+    No model is called and no metadata is inferred — the row already knows which
+    paper it is. This is the manual counterpart to `_get_paper_full_text`, for
+    the paywalled papers that function cannot reach and the user can.
+    """
+    text = await _text_from_upload(file)
+    if len(text) < FULL_TEXT_MIN_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail="No extractable text found — a scanned PDF needs OCR before it can be read.",
+        )
+    return ExtractedFullText(
+        fullText=text,
+        chars=len(text),
+        truncated=len(text) >= FULL_TEXT_MAX_CHARS,
     )
 
 

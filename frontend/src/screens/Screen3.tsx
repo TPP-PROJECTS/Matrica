@@ -1,8 +1,8 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useApp } from '../store/AppContext'
 import { QuestionButton } from '../components/shared/QuestionButton'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
-import type { TopicCard, QueryCard, ResultCard, SearchFilters } from '../types'
+import type { TopicCard, QueryCard, ResultCard, SearchFilters, SearchSource } from '../types'
 import { duplicatesRemoved } from '../types'
 import { API, apiFetch } from '../lib/api'
 import { scorePaperRelevance } from '../lib/scorePaper'
@@ -407,6 +407,7 @@ function QueryCardItem({ query }: { query: QueryCard }) {
           limit: PAGE_SIZE,
           page,
           filters: state.searchFilters,
+          sources: state.searchSources,
         }),
       })
       if (!res.ok) {
@@ -599,6 +600,109 @@ const LANGUAGES: { code: string; label: string }[] = [
   { code: 'ru', label: 'Russian' },
 ]
 
+/**
+ * Which databases every search runs against.
+ *
+ * PRISMA 2020 requires reporting the databases searched, and this tool shipped
+ * with two, both biomedical-leaning — a review in education or engineering was
+ * searching a corpus that could not answer it and had no way to say so. The
+ * list comes from the backend rather than being written here, so a database
+ * added there appears without a frontend change.
+ */
+function SourcePicker() {
+  const { state, dispatch } = useApp()
+  const [sources, setSources] = useState<SearchSource[]>([])
+  const [open, setOpen] = useState(false)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    apiFetch(`${API}/search/sources`)
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error())))
+      .then((data: SearchSource[]) => { if (!cancelled) setSources(data) })
+      .catch(() => { if (!cancelled) setFailed(true) })
+    return () => { cancelled = true }
+  }, [])
+
+  const selected = new Set(state.searchSources)
+  const chosen = sources.filter(s => selected.has(s.key))
+  const label = chosen.length > 0
+    ? chosen.map(s => s.name).join(' · ')
+    : state.searchSources.join(' · ')
+
+  function toggle(key: string) {
+    const next = selected.has(key)
+      ? state.searchSources.filter(k => k !== key)
+      : [...state.searchSources, key]
+    dispatch({ type: 'SET_SEARCH_SOURCES', sources: next })
+  }
+
+  // The limits in force, so the picker can say where each one will not hold.
+  const limitsInForce = new Set<string>()
+  if (state.searchFilters.openAccessOnly) limitsInForce.add('open access only')
+  if (state.searchFilters.language) limitsInForce.add('language')
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(v => !v)}
+        title="Choose which literature databases every search runs against"
+        className="h-5 flex items-center gap-1 border border-zinc-300 rounded px-1.5 text-[10px] text-zinc-700 bg-white hover:border-zinc-500"
+      >
+        <span className="text-zinc-400">Databases</span>
+        <span className="font-medium max-w-[220px] truncate">{label || 'none'}</span>
+        <span className="text-zinc-400">{open ? '▴' : '▾'}</span>
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+          <div className="absolute z-40 top-6 left-0 w-[320px] bg-white border border-zinc-200 rounded-lg shadow-xl p-2">
+            {failed && <p className="text-[10px] text-red-500 px-1 py-2">Could not reach the backend for the database list.</p>}
+            {sources.map(source => {
+              const unapplied = source.unsupportedLimits.filter(l => limitsInForce.has(l))
+              const isLast = selected.has(source.key) && state.searchSources.length === 1
+              return (
+                <label
+                  key={source.key}
+                  title={isLast ? 'At least one database must stay selected' : undefined}
+                  className={`flex items-start gap-2 px-1.5 py-1.5 rounded ${isLast ? 'opacity-60' : 'hover:bg-zinc-50 cursor-pointer'}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected.has(source.key)}
+                    disabled={isLast}
+                    onChange={() => toggle(source.key)}
+                    className="mt-0.5 w-3 h-3 accent-zinc-900"
+                  />
+                  <span className="min-w-0">
+                    <span className="text-[11px] font-medium text-zinc-800">{source.name}</span>
+                    <span className="block text-[9px] text-zinc-400 leading-tight">{source.blurb}</span>
+                    {unapplied.length > 0 && (
+                      <span className="block text-[9px] text-amber-700 leading-tight">
+                        Cannot apply your {unapplied.join(' or ')} limit — records that miss it may come back from here.
+                      </span>
+                    )}
+                    {source.comparableHits === false && (
+                      <span className="block text-[9px] text-amber-700 leading-tight">
+                        Ranks by relevance on each term, so its hit count is not a record count and is left out of the identification total. The papers it finds are still screened.
+                      </span>
+                    )}
+                  </span>
+                </label>
+              )
+            })}
+            <p className="text-[9px] text-zinc-400 px-1.5 pt-1.5 border-t border-zinc-100 mt-1">
+              Every database searched is recorded per query and reported in the search-strategy appendix.
+              For databases with no free API — Scopus, Web of Science, Embase — search there and use ⬆ Import on the next step.
+            </p>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 function SearchFilterBar() {
   const { state, dispatch } = useApp()
   const f = state.searchFilters
@@ -618,9 +722,11 @@ function SearchFilterBar() {
 
   return (
     <div className="border-b border-zinc-200 bg-zinc-50 px-2 py-1.5 flex items-center gap-2 flex-wrap shrink-0">
+      <SourcePicker />
+
       <span
         className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide"
-        title="Limits are filters applied by OpenAlex and PubMed before papers are returned."
+        title="Limits are applied by each database before papers are returned. A database that cannot express one is marked in the database picker."
       >
         Search limits
       </span>
@@ -825,7 +931,7 @@ export function Screen3() {
           text: '',
           qualityScore: 0,
           priority: 'med',
-          databases: ['OpenAlex', 'PubMed'],
+          databases: [],
           resultCount: 0,
           stale: false,
         },
@@ -872,6 +978,9 @@ export function Screen3() {
           topics: selectedTopics.map(t => ({ id: t.id, title: t.title, description: t.description, tags: t.tags })),
           profile: state.profile,
           custom_system_prompt: prompt ?? null,
+          // A query for PubMed's MeSH syntax is not the query for a
+          // relevance-ranked index, so the librarian is told what it writes for.
+          sources: state.searchSources,
         }),
       })
       if (!res.ok) {

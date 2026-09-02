@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 from config import MODEL
+from routers.search import DEFAULT_SOURCE_KEYS, SOURCES
 
 load_dotenv()
 
@@ -14,7 +15,7 @@ client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 QUERIES_SYSTEM_PROMPT = """You are an expert academic librarian generating structured database search queries for a systematic literature review.
 
-This tool executes every query against two free databases: PubMed (Boolean/MeSH-style syntax) and OpenAlex (relevance search — Boolean operators are stripped automatically). Write queries that work well across both.
+{databases}
 
 For each research topic provided, generate 1-2 Boolean search queries.
 
@@ -36,10 +37,35 @@ Respond ONLY with valid JSON:
   ]
 }"""
 
-# The databases each query is actually executed against. Search always runs both
-# and ignores any per-query hint, so we label deterministically rather than let
-# the model invent databases the tool does not search (e.g. Scopus/CINAHL).
-SEARCHED_DATABASES = ["OpenAlex", "PubMed"]
+# How each database reads a query. A query written for PubMed's MeSH syntax and
+# a query written for a relevance-ranked index are not the same string, so the
+# librarian has to be told which ones it is writing for — telling it about a
+# fixed pair while the search ran against five would produce queries tuned for
+# databases the review is not using.
+_QUERY_SYNTAX = {
+    "openalex": "OpenAlex (relevance search — Boolean operators are stripped automatically)",
+    "pubmed": "PubMed (Boolean and MeSH-style syntax, fully supported)",
+    "europepmc": "Europe PMC (full Boolean syntax with field prefixes)",
+    "crossref": "Crossref (bibliographic relevance search — Boolean operators are stripped)",
+    "semanticscholar": "Semantic Scholar (relevance search — Boolean operators are stripped)",
+}
+
+
+def databases_brief(keys: list[str]) -> str:
+    """The paragraph telling the model which databases the query must serve."""
+    known = [k for k in keys if k in SOURCES] or DEFAULT_SOURCE_KEYS
+    lines = "\n".join(f"- {_QUERY_SYNTAX.get(k, SOURCES[k].name)}" for k in known)
+    return (
+        "This tool executes every query against the following databases:\n"
+        f"{lines}\n"
+        "Write queries that work well across all of them."
+    )
+
+
+def searched_database_names(keys: list[str]) -> list[str]:
+    """Display names for the selected databases, for the query card's label."""
+    known = [k for k in keys if k in SOURCES] or DEFAULT_SOURCE_KEYS
+    return [SOURCES[k].name for k in known]
 
 
 class TopicInput(BaseModel):
@@ -61,6 +87,8 @@ class QueryGenerateRequest(BaseModel):
     topics: list[TopicInput]
     profile: ProfileContext
     custom_system_prompt: str | None = None
+    # Database keys the review searches. None keeps the historical pair.
+    sources: list[str] | None = None
 
 
 class QueryCardResponse(BaseModel):
@@ -101,10 +129,16 @@ async def generate_queries(req: QueryGenerateRequest):
         f"Selected Topics:\n{topics_text}"
     )
 
+    keys = req.sources if req.sources is not None else DEFAULT_SOURCE_KEYS
+    instructions = (
+        req.custom_system_prompt
+        or QUERIES_SYSTEM_PROMPT.format(databases=databases_brief(keys))
+    )
+
     try:
         response = await client.responses.create(
             model=MODEL,
-            instructions=req.custom_system_prompt or QUERIES_SYSTEM_PROMPT,
+            instructions=instructions,
             input=user_content,
         )
     except Exception as e:
@@ -123,7 +157,7 @@ async def generate_queries(req: QueryGenerateRequest):
             text=q.get("text", ""),
             qualityScore=int(q.get("qualityScore", 70)),
             priority=q.get("priority", "med"),
-            databases=SEARCHED_DATABASES,
+            databases=searched_database_names(keys),
             resultCount=0,
             stale=False,
         ))
