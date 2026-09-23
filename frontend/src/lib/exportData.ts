@@ -135,8 +135,12 @@ export function exportPrismaCSV(state: AppState): void {
   // from what a reviewer searched elsewhere and carried in.
   const fromSearch = state.results.filter(r => {
     const origin = r.origin ?? 'search'
-    return origin !== 'snowball' && origin !== 'import'
+    return origin !== 'snowball' && origin !== 'import' && origin !== 'web'
   }).length
+  // PRISMA's second identification pathway. A page found by web search is not a
+  // database record, and adding it to the database line would misstate both
+  // that line and the duplicate figure derived against it.
+  const fromWeb = state.results.filter(r => r.origin === 'web').length
   const imports = importedSearches(state)
   const importIdentified = totalImported(imports)
   const importAdded = imports.reduce((n, i) => n + i.recordsAdded, 0)
@@ -158,6 +162,7 @@ export function exportPrismaCSV(state: AppState): void {
     ['Records added to the review — imported files', String(importAdded)],
     ['Duplicate records removed — imported files', String(importIdentified - importAdded)],
     ['Records identified — citation searching (snowballing)', String(fromSnowball)],
+    ['Records identified — websites and organisations (grey literature)', String(fromWeb)],
     ['Duplicate records removed before screening', String(duplicates)],
     ['Records screened', String(retrieved)],
     ['Records excluded (with reasons, itemised below)', String(excludedPapers.length)],

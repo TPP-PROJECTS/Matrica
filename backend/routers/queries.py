@@ -13,23 +13,33 @@ load_dotenv()
 router = APIRouter()
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# The prompt is assembled with a plain substitution rather than str.format:
+# it ends in a literal JSON example, and every brace in that example would have
+# to be doubled for format() — which it was not, so every default-prompt request
+# raised KeyError and the endpoint answered 500.
+DATABASES_PLACEHOLDER = "{databases}"
+
 QUERIES_SYSTEM_PROMPT = """You are an expert academic librarian generating structured database search queries for a systematic literature review.
 
 {databases}
 
 For each research topic provided, generate 1-2 Boolean search queries.
 
+A topic may be a research theme or a named system the review appraises. For a
+system, write queries that retrieve its published evaluations, validation
+studies, implementation reports and official documentation.
+
 Each query must have:
 - text: a well-formed Boolean query using AND/OR with parentheses and double-quoted phrases
 - qualityScore: integer 0-100 rating the query's expected precision/recall balance
 - priority: "high" for the most important query per topic, "med" for secondary
-- topicId: the id of the topic this query belongs to
+- topicId: copied EXACTLY from the id in square brackets before the topic it belongs to
 
-Respond ONLY with valid JSON:
+Respond ONLY with valid JSON (the topicId below is an example — use the real ids):
 {
   "queries": [
     {
-      "topicId": "ai-t1",
+      "topicId": "<id from the list above>",
       "text": "...",
       "qualityScore": 78,
       "priority": "high"
@@ -132,7 +142,7 @@ async def generate_queries(req: QueryGenerateRequest):
     keys = req.sources if req.sources is not None else DEFAULT_SOURCE_KEYS
     instructions = (
         req.custom_system_prompt
-        or QUERIES_SYSTEM_PROMPT.format(databases=databases_brief(keys))
+        or QUERIES_SYSTEM_PROMPT.replace(DATABASES_PLACEHOLDER, databases_brief(keys))
     )
 
     try:
@@ -148,12 +158,25 @@ async def generate_queries(req: QueryGenerateRequest):
     if data is None:
         raise HTTPException(status_code=502, detail="Invalid JSON from OpenAI")
 
+    # A query whose topicId is not one of the ids we sent belongs to no topic
+    # the caller knows about, and the UI — which lists queries under their topic
+    # or system — would simply not show it. Models do copy the id out of the
+    # example, so the id is checked and, failing that, attributed to the first
+    # subject rather than dropped.
+    known_ids = [t.id for t in req.topics]
+
+    def resolve_topic_id(raw: object) -> str:
+        candidate = raw if isinstance(raw, str) else ""
+        if candidate in known_ids:
+            return candidate
+        return known_ids[0] if known_ids else candidate
+
     queries = []
     for i, q in enumerate(data.get("queries", [])):
         queries.append(QueryCardResponse(
             id=f"q-ai-{i + 1}",
             queryN=i + 1,
-            topicId=q.get("topicId", ""),
+            topicId=resolve_topic_id(q.get("topicId")),
             text=q.get("text", ""),
             qualityScore=int(q.get("qualityScore", 70)),
             priority=q.get("priority", "med"),

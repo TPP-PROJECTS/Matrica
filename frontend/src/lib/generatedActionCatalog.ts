@@ -20,7 +20,7 @@ export interface CatalogEntry {
 export const ACTION_CATALOG: CatalogEntry[] = [
   {
     "type": "SET_STEP",
-    "doc": "Jump forward to a workflow step (1-9).",
+    "doc": "Jump to a workflow step (1-7).",
     "fields": [
       {
         "name": "step",
@@ -111,12 +111,12 @@ export const ACTION_CATALOG: CatalogEntry[] = [
     ]
   },
   {
-    "type": "SET_SEARCH_FILTERS",
-    "doc": "Set the database search limits (year range, open access, preprints, language) applied to future searches.",
+    "type": "SET_SEARCH_SOURCES",
+    "doc": "Choose which literature databases every search runs against, by key (openalex, pubmed, europepmc, crossref, semanticscholar). // @chatbot Set the database search limits (year range, open access, preprints, language) applied to future searches.",
     "fields": [
       {
-        "name": "filters",
-        "tsType": "SearchFilters",
+        "name": "sources",
+        "tsType": "string[]",
         "optional": false
       }
     ]
@@ -440,6 +440,44 @@ export const ACTION_CATALOG: CatalogEntry[] = [
     "fields": []
   },
   {
+    "type": "ADD_THEME",
+    "doc": "Add a new synthesis theme (give it an id, name, source columns and empty blocks).",
+    "fields": [
+      {
+        "name": "theme",
+        "tsType": "Theme",
+        "optional": false
+      }
+    ]
+  },
+  {
+    "type": "RENAME_THEME",
+    "doc": "Rename a synthesis theme.",
+    "fields": [
+      {
+        "name": "themeId",
+        "tsType": "string",
+        "optional": false
+      },
+      {
+        "name": "name",
+        "tsType": "string",
+        "optional": false
+      }
+    ]
+  },
+  {
+    "type": "REMOVE_THEME",
+    "doc": "Delete a synthesis theme.",
+    "fields": [
+      {
+        "name": "themeId",
+        "tsType": "string",
+        "optional": false
+      }
+    ]
+  },
+  {
     "type": "UPDATE_SYNTHESIS_BLOCK",
     "doc": "Rewrite a synthesis block's content (full new text).",
     "fields": [
@@ -457,6 +495,11 @@ export const ACTION_CATALOG: CatalogEntry[] = [
         "name": "content",
         "tsType": "string",
         "optional": false
+      },
+      {
+        "name": "stats",
+        "tsType": "{ paperCount: number; avgConfidence: number; isLowConfidence: boolean }",
+        "optional": true
       }
     ]
   },

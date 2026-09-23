@@ -1,16 +1,5 @@
 import { useApp } from '../../store/AppContext'
-
-const STEP_NAMES: Record<number, string> = {
-  1: 'Chat & Define Topic',
-  2: 'Matrix Initial',
-  3: 'System Review',
-  4: 'Explore & Search',
-  5: 'Select Paper',
-  6: 'Matrix Table',
-  7: 'Synthesis',
-  8: 'Gap & Statement',
-  9: 'Final Question',
-}
+import { STEP_NAMES } from '../../lib/steps'
 
 export function BackNavModal() {
   const { state, dispatch } = useApp()
@@ -18,7 +7,7 @@ export function BackNavModal() {
   if (!state.pendingBackStep) return null
 
   const target = state.pendingBackStep
-  const current = state.currentStep
+  const current = Math.max(state.currentStep, state.maxStepReached)
   const targetName = STEP_NAMES[target] ?? `Step ${target}`
 
   // Steps that will be marked stale (between target and current, exclusive of target)
@@ -52,7 +41,7 @@ export function BackNavModal() {
 
             {/* Explanation */}
             <p className="text-[11px] text-zinc-600 mb-3">
-              You are on Step {current}. The following steps were built from current data and will be marked as outdated:
+              You are on Step {state.currentStep}. The following steps were built from current data and will be marked as outdated:
             </p>
 
             {/* Affected steps */}

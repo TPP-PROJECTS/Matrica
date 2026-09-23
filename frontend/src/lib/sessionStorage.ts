@@ -1,5 +1,6 @@
 import type { AppState, SessionMeta, SessionSnapshot, VersionEntry } from '../types'
 import { API, apiFetch } from './api'
+import { STEP_SCHEMA } from './steps'
 
 const PREFIX = 'tpp'
 const INDEX_KEY = `${PREFIX}:sessions`
@@ -20,6 +21,8 @@ export function toSnapshot(state: AppState): SessionSnapshot {
     updatedAt: new Date().toISOString(),
     currentStep: state.currentStep,
     staleSteps: state.staleSteps,
+    maxStepReached: state.maxStepReached,
+    stepSchema: STEP_SCHEMA,
     // Step 1
     profile: state.profile,
     chatMessages: state.chatMessages,
@@ -30,6 +33,7 @@ export function toSnapshot(state: AppState): SessionSnapshot {
     columnDescriptions: state.columnDescriptions,
     systemColumnDescriptions: state.systemColumnDescriptions,
     systemItems: state.systemItems,
+    systemTopicLinks: state.systemTopicLinks,
     // Step 3
     topics: state.topics,
     queries: state.queries,
@@ -77,6 +81,7 @@ function buildMeta(state: AppState, updatedAt: string): SessionMeta {
     createdAt: state.createdAt,
     updatedAt,
     currentStep: state.currentStep,
+    stepSchema: STEP_SCHEMA,
     topicPreview: selectedTopic?.title || state.profile.domain || '',
   }
 }

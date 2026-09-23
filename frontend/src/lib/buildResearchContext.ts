@@ -8,7 +8,7 @@ import type { AppState } from '../types'
  * (see lib/actionRegistry), so it must be able to reference entities by id.
  */
 export function buildResearchContext(state: AppState) {
-  // Step 2: all systems (with selection state) and selected systems
+  // Step 3 (Systems tab): all systems, with selection state
   const all_systems = state.systemItems.map(s => ({
     id: s.id,
     name: s.name,
@@ -73,7 +73,7 @@ export function buildResearchContext(state: AppState) {
     })),
   }))
 
-  // Step 7: gaps, gap statement, selected RQ
+  // Step 6: gaps, gap statement, selected RQ
   const all_gaps = state.gaps.map(g => ({
     id: g.id,
     label: g.label,
@@ -97,7 +97,7 @@ export function buildResearchContext(state: AppState) {
   const selected_rq = selectedRQ?.text ?? null
   const all_rqs = state.rqOptions.map(r => ({ id: r.id, text: r.text }))
 
-  // Step 8: final topic, study design, paper structure
+  // Step 7: final topic, study design, paper structure
   const selectedFinalTopic = state.finalTopicOptions.find(
     t => t.id === state.selectedFinalTopicId
   )

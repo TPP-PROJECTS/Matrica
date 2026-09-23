@@ -9,6 +9,7 @@ import type {
   SessionSnapshot, ScreeningCriterion, SearchFilters, DecisionJournalEntry,
 } from '../types'
 import { BASE_MATRIX_COLUMNS, WELCOME_MESSAGES } from '../data/initialData'
+import { STEPS, LAST_STEP, clampStep, migrateStep, migrateSteps } from '../lib/steps'
 import {
   generateSessionId, saveSession, loadSession, getMostRecentSessionId,
   migrateLocalSessionsToRemote, flushSessionLocal, createVersion, type SaveOutcome,
@@ -18,11 +19,9 @@ import {
 type SaveStatus = 'saving' | SaveOutcome
 
 
-const initialStepStates: Record<number, StepState> = {
-  1: 'active', 2: 'locked', 3: 'locked', 4: 'locked', 5: 'locked', 6: 'locked', 7: 'locked', 8: 'locked', 9: 'locked',
-}
-
-const LAST_STEP = 9
+const initialStepStates: Record<number, StepState> = Object.fromEntries(
+  STEPS.map(step => [step.id, step.id === 1 ? 'active' : 'locked'] as const),
+)
 
 const NO_SEARCH_FILTERS: SearchFilters = {
   yearFrom: null,
@@ -72,6 +71,7 @@ function freshState(): AppState {
     systemColumnDescriptions: {},
     topics: [],
     systemItems: [],
+    systemTopicLinks: [],
     queries: [],
     results: [],
     reviewList: [],
@@ -108,6 +108,8 @@ function freshState(): AppState {
     pendingBackStep: null,
     editMode: false,
     staleSteps: [],
+    maxStepReached: 1,
+    reviewMode: false,
   }
 }
 
@@ -118,9 +120,21 @@ function snapshotToState(snap: SessionSnapshot): AppState {
     sessionId: snap.sessionId,
     sessionTitle: snap.sessionTitle,
     createdAt: snap.createdAt,
-    currentStep: snap.currentStep,
-    staleSteps: snap.staleSteps ?? [],
-    stepStates: computeStepStates(snap.currentStep, snap.staleSteps ?? []),
+    ...(() => {
+      const currentStep = migrateStep(snap.currentStep, snap.stepSchema)
+      const staleSteps = migrateSteps(snap.staleSteps ?? [], snap.stepSchema)
+      const maxStepReached = Math.max(
+        currentStep,
+        migrateStep(snap.maxStepReached ?? snap.currentStep, snap.stepSchema),
+        ...staleSteps,
+      )
+      return {
+        currentStep,
+        staleSteps,
+        maxStepReached,
+        stepStates: computeStepStates(currentStep, staleSteps, maxStepReached),
+      }
+    })(),
     profileCompleteness: computeCompleteness(snap.profile),
     profile: snap.profile,
     systemMatrixEnabled: snap.systemMatrixEnabled ?? base.systemMatrixEnabled,
@@ -130,6 +144,7 @@ function snapshotToState(snap: SessionSnapshot): AppState {
     systemColumnDescriptions: snap.systemColumnDescriptions ?? base.systemColumnDescriptions,
     chatMessages: snap.chatMessages ?? base.chatMessages,
     systemItems: snap.systemItems ?? [],
+    systemTopicLinks: snap.systemTopicLinks ?? [],
     topics: snap.topics ?? base.topics,
     queries: snap.queries ?? [],
     results: snap.results ?? [],
@@ -172,12 +187,22 @@ function getInitialState(): AppState {
   return freshState()
 }
 
-function computeStepStates(current: number, stale: number[]): Record<number, StepState> {
+/**
+ * Per-step badge state.
+ *
+ * `reached` is the furthest step the review has ever been on, and everything up
+ * to it stays navigable. It used to be derived from `current` alone, so going
+ * back to revise an early step re-locked every step past the one being revised
+ * — the only way forward again was to re-run each step's AI generation, even
+ * though the work was still in the session.
+ */
+function computeStepStates(current: number, stale: number[], reached: number): Record<number, StepState> {
   const states: Record<number, StepState> = {}
+  const furthest = Math.max(reached, current)
   for (let i = 1; i <= LAST_STEP; i++) {
     if (i === current) states[i] = 'active'
     else if (stale.includes(i)) states[i] = 'stale'
-    else if (i < current) states[i] = 'done'
+    else if (i <= furthest) states[i] = 'done'
     else states[i] = 'locked'
   }
   return states
@@ -244,36 +269,76 @@ function dropKey(map: Record<string, string>, key: string): Record<string, strin
 // reducer too costs nothing beyond what the hook export already does.
 export function reducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
+    case 'SET_REVIEW_MODE': {
+      // Review mode is a way of reading the review, not of changing it: turning
+      // it on leaves edit mode and the pending back-nav prompt behind, and the
+      // stale markers are kept in state but not acted on while it is on.
+      if (state.reviewMode === action.enabled) return state
+      return {
+        ...state,
+        reviewMode: action.enabled,
+        editMode: false,
+        showBackNavModal: false,
+        pendingBackStep: null,
+      }
+    }
+
     case 'SET_STEP': {
-      const step = action.step
-      const newStale = state.staleSteps.filter(s => s !== step)
+      const step = clampStep(action.step)
+      const reached = Math.max(state.maxStepReached, step)
+      // Reading a step in review mode must not clear its "outdated" marker —
+      // the marker is about the work, and review mode changes no work.
+      const newStale = state.reviewMode ? state.staleSteps : state.staleSteps.filter(s => s !== step)
       return {
         ...state,
         currentStep: step,
+        maxStepReached: reached,
         editMode: false,
-        stepStates: computeStepStates(step, newStale),
+        stepStates: computeStepStates(step, newStale, reached),
         staleSteps: newStale,
       }
     }
 
     case 'ADVANCE_STEP': {
       const next = Math.min(state.currentStep + 1, LAST_STEP)
-      return { ...state, currentStep: next, stepStates: computeStepStates(next, state.staleSteps), editMode: false }
+      const reached = Math.max(state.maxStepReached, next)
+      // Moving onto a step is the same act of review as clicking it in the nav,
+      // so it clears the same marker. Leaving it set meant a step could be
+      // walked through and still be shown as outdated afterwards.
+      const newStale = state.reviewMode ? state.staleSteps : state.staleSteps.filter(s => s !== next)
+      return {
+        ...state,
+        currentStep: next,
+        maxStepReached: reached,
+        staleSteps: newStale,
+        stepStates: computeStepStates(next, newStale, reached),
+        editMode: false,
+      }
     }
 
     case 'BACK_NAV_REQUEST': {
       if (action.step >= state.currentStep) return state
+      if (state.reviewMode) return state
       return { ...state, showBackNavModal: true, pendingBackStep: action.step }
     }
 
     case 'BACK_NAV_CONFIRM': {
       if (state.pendingBackStep === null) return state
       const target = state.pendingBackStep
-      const newStale = Array.from({ length: state.currentStep - target }, (_, i) => target + i + 1)
+      // Everything downstream of the step being revised is outdated — as far as
+      // the review has ever got, not just as far as the current step. Marking
+      // only up to `currentStep` dropped the markers for steps beyond it, and
+      // replacing the list (rather than merging) lost markers set earlier.
+      const reached = Math.max(state.maxStepReached, state.currentStep)
+      const downstream = Array.from({ length: reached - target }, (_, i) => target + i + 1)
+      const newStale = Array.from(new Set([...state.staleSteps, ...downstream]))
+        .filter(s => s > target)
+        .sort((a, b) => a - b)
       return {
         ...state,
         currentStep: target,
-        stepStates: computeStepStates(target, newStale),
+        maxStepReached: reached,
+        stepStates: computeStepStates(target, newStale, reached),
         staleSteps: newStale,
         editMode: true,
         showBackNavModal: false,
@@ -305,10 +370,10 @@ export function reducer(state: AppState, action: AppAction): AppState {
       return { ...state, saveStatus: action.status }
 
     case 'NEW_SESSION':
-      return { ...freshState(), showVersionHistory: false }
+      return { ...freshState(), showVersionHistory: false, reviewMode: state.reviewMode }
 
     case 'LOAD_SESSION':
-      return { ...snapshotToState(action.snapshot), showVersionHistory: false }
+      return { ...snapshotToState(action.snapshot), showVersionHistory: false, reviewMode: state.reviewMode }
 
     case 'TOGGLE_TOPIC':
       return { ...state, topics: state.topics.map(t => t.id === action.topicId ? { ...t, selected: !t.selected } : t) }
@@ -319,11 +384,28 @@ export function reducer(state: AppState, action: AppAction): AppState {
     case 'ADD_TOPIC':
       return { ...state, topics: [...state.topics, action.topic] }
 
-    case 'SET_TOPICS':
-      return { ...state, topics: action.topics }
+    case 'SET_TOPICS': {
+      const liveIds = new Set(action.topics.map(t => t.id))
+      return {
+        ...state,
+        topics: action.topics,
+        systemTopicLinks: (state.systemTopicLinks ?? []).filter(l => liveIds.has(l.topicId)),
+      }
+    }
 
-    case 'SET_SYSTEM_ITEMS':
-      return { ...state, systemItems: action.items }
+    case 'SET_SYSTEM_ITEMS': {
+      // A link to a system that is no longer listed points at nothing the UI
+      // can draw, so replacing the list prunes the links with it.
+      const liveIds = new Set(action.items.map(item => item.id))
+      return {
+        ...state,
+        systemItems: action.items,
+        systemTopicLinks: (state.systemTopicLinks ?? []).filter(l => liveIds.has(l.systemId)),
+      }
+    }
+
+    case 'SET_SYSTEM_TOPIC_LINKS':
+      return { ...state, systemTopicLinks: action.links }
 
     case 'TOGGLE_SYSTEM_ITEM':
       return { ...state, systemItems: state.systemItems.map(s => s.id === action.itemId ? { ...s, selected: !s.selected } : s) }
@@ -955,11 +1037,53 @@ export function reducer(state: AppState, action: AppAction): AppState {
     case 'CLEAR_ROB_ASSESSMENTS':
       return { ...state, robAssessments: [] }
 
-    case 'SET_THEMES':
+    case 'SET_THEMES': {
+      // Regenerating the synthesis replaces the model's themes, never the
+      // reviewer's own: those are kept, after the new generated ones.
+      const generated = action.themes.map(t => ({ ...t, systemSourceColumns: t.systemSourceColumns ?? [] }))
+      const kept = state.themes.filter(t => t.userDefined && !generated.some(g => g.id === t.id))
+      const themes = [...generated, ...kept]
       return {
         ...state,
-        themes: action.themes.map(t => ({ ...t, systemSourceColumns: t.systemSourceColumns ?? [] })),
-        activeThemeId: action.themes[0]?.id ?? state.activeThemeId,
+        themes,
+        activeThemeId: themes[0]?.id ?? state.activeThemeId,
+      }
+    }
+
+    case 'ADD_THEME': {
+      const name = action.theme.name.trim()
+      if (!name) return state
+      return {
+        ...state,
+        themes: [...state.themes, { ...action.theme, name, systemSourceColumns: action.theme.systemSourceColumns ?? [] }],
+        activeThemeId: action.theme.id,
+      }
+    }
+
+    case 'RENAME_THEME': {
+      const name = action.name.trim()
+      if (!name) return state
+      return { ...state, themes: state.themes.map(t => t.id === action.themeId ? { ...t, name } : t) }
+    }
+
+    case 'REMOVE_THEME': {
+      const themes = state.themes.filter(t => t.id !== action.themeId)
+      return {
+        ...state,
+        themes,
+        activeThemeId: state.activeThemeId === action.themeId ? (themes[0]?.id ?? '') : state.activeThemeId,
+      }
+    }
+
+    case 'SET_ACTIVE_THEME':
+      return { ...state, activeThemeId: action.themeId }
+
+    case 'REMOVE_SYNTHESIS_BLOCK':
+      return {
+        ...state,
+        themes: state.themes.map(t =>
+          t.id === action.themeId ? { ...t, blocks: t.blocks.filter(b => b.id !== action.blockId) } : t
+        ),
       }
 
     case 'ADD_SYNTHESIS_BLOCK':
@@ -970,7 +1094,9 @@ export function reducer(state: AppState, action: AppAction): AppState {
         ...state,
         themes: state.themes.map(t =>
           t.id === action.themeId
-            ? { ...t, blocks: t.blocks.map(b => b.id === action.blockId ? { ...b, content: action.content } : b) }
+            // A regenerated block brings its own evidence figures; a hand edit
+            // does not, and keeps the figures the block already had.
+            ? { ...t, blocks: t.blocks.map(b => b.id === action.blockId ? { ...b, content: action.content, ...(action.stats ?? {}) } : b) }
             : t
         ),
       }
@@ -1080,72 +1206,84 @@ function automaticAuditEntry(state: AppState, action: AppAction): DecisionJourna
     }
     case 'ADD_CUSTOM_SYSTEM':
       return { ...base, step: 3, action: 'Added custom system', entityType: 'system', entityId: action.name, entityLabel: action.name }
+    case 'SET_SYSTEM_TOPIC_LINKS':
+      return { ...base, step: 3, action: 'Mapped systems onto topics', entityType: 'system', entityId: 'topic-system-links', entityLabel: `${action.links.length} link${action.links.length === 1 ? '' : 's'}` }
     case 'TOGGLE_TOPIC': {
       const topic = state.topics.find(t => t.id === action.topicId)
-      return { ...base, step: 4, action: topic?.selected ? 'Deselected topic' : 'Selected topic', entityType: 'topic', entityId: action.topicId, entityLabel: topic?.title ?? action.topicId }
+      return { ...base, step: 3, action: topic?.selected ? 'Deselected topic' : 'Selected topic', entityType: 'topic', entityId: action.topicId, entityLabel: topic?.title ?? action.topicId }
     }
     case 'ADD_TOPIC':
-      return { ...base, step: 4, action: 'Added custom topic', entityType: 'topic', entityId: action.topic.id, entityLabel: action.topic.title, details: action.topic.description }
+      return { ...base, step: 3, action: 'Added custom topic', entityType: 'topic', entityId: action.topic.id, entityLabel: action.topic.title, details: action.topic.description }
     case 'SET_SEARCH_SOURCES':
-      return { ...base, step: 4, action: 'Changed which databases are searched', entityType: 'search_filter', entityId: 'search-sources', entityLabel: 'Databases searched', previousValue: state.searchSources.join(', '), newValue: action.sources.join(', ') }
+      return { ...base, step: 3, action: 'Changed which databases are searched', entityType: 'search_filter', entityId: 'search-sources', entityLabel: 'Databases searched', previousValue: state.searchSources.join(', '), newValue: action.sources.join(', ') }
     case 'SET_SEARCH_FILTERS':
-      return { ...base, step: 4, action: 'Changed database search filters', entityType: 'search_filter', entityId: 'search-filters', entityLabel: 'Search filters', previousValue: JSON.stringify(state.searchFilters), newValue: JSON.stringify(action.filters) }
+      return { ...base, step: 3, action: 'Changed database search filters', entityType: 'search_filter', entityId: 'search-filters', entityLabel: 'Search filters', previousValue: JSON.stringify(state.searchFilters), newValue: JSON.stringify(action.filters) }
     case 'ADD_SEARCH_RESULTS':
       return action.results.length
-        ? { ...base, step: 4, action: action.results[0]?.origin === 'snowball' ? 'Added citation-snowball results' : 'Ran database search', entityType: 'query', entityId: action.identifiedFor?.queryId ?? action.results[0]?.queryId ?? 'search', entityLabel: `${action.results.length} paper${action.results.length === 1 ? '' : 's'} added` }
+        ? { ...base, step: 3, action: action.results[0]?.origin === 'snowball' ? 'Added citation-snowball results' : 'Ran database search', entityType: 'query', entityId: action.identifiedFor?.queryId ?? action.results[0]?.queryId ?? 'search', entityLabel: `${action.results.length} paper${action.results.length === 1 ? '' : 's'} added` }
         : null
     case 'IMPORT_RECORDS':
-      return { ...base, step: 4, action: `Imported records from ${action.search.database}`, entityType: 'query', entityId: action.search.id, entityLabel: `${action.papers.length} record${action.papers.length === 1 ? '' : 's'} in ${action.search.filename}`, details: action.search.queryAsRun }
+      return { ...base, step: 3, action: `Imported records from ${action.search.database}`, entityType: 'query', entityId: action.search.id, entityLabel: `${action.papers.length} record${action.papers.length === 1 ? '' : 's'} in ${action.search.filename}`, details: action.search.queryAsRun }
     case 'ADD_CRITERION':
-      return { ...base, step: 5, action: 'Added screening criterion', entityType: 'screening_protocol', entityId: action.criterion.id, entityLabel: action.criterion.label, details: action.criterion.kind }
+      return { ...base, step: 4, action: 'Added screening criterion', entityType: 'screening_protocol', entityId: action.criterion.id, entityLabel: action.criterion.label, details: action.criterion.kind }
     case 'REMOVE_CRITERION': {
       const criterion = state.criteria.find(c => c.id === action.criterionId)
-      return { ...base, step: 5, action: 'Removed screening criterion', entityType: 'screening_protocol', entityId: action.criterionId, entityLabel: criterion?.label ?? action.criterionId }
+      return { ...base, step: 4, action: 'Removed screening criterion', entityType: 'screening_protocol', entityId: action.criterionId, entityLabel: criterion?.label ?? action.criterionId }
     }
     case 'ADD_TO_REVIEW': {
       if (action.by === 'ai') return null
       const paper = state.results.find(p => p.id === action.paperId)
-      return { ...base, step: 5, action: action.status === 'maybe' ? 'Marked paper as pending' : 'Included paper', entityType: 'paper', entityId: action.paperId, entityLabel: paper?.title ?? action.paperId, justification: action.reason }
+      return { ...base, step: 4, action: action.status === 'maybe' ? 'Marked paper as pending' : 'Included paper', entityType: 'paper', entityId: action.paperId, entityLabel: paper?.title ?? action.paperId, justification: action.reason }
     }
     case 'EXCLUDE_PAPER': {
       if (action.by === 'ai') return null
       const paper = state.results.find(p => p.id === action.paperId)
       const criterion = state.criteria.find(c => c.id === action.reasonId)
-      return { ...base, step: 5, action: 'Excluded paper', entityType: 'paper', entityId: action.paperId, entityLabel: paper?.title ?? action.paperId, justification: action.reason, details: criterion?.label }
+      return { ...base, step: 4, action: 'Excluded paper', entityType: 'paper', entityId: action.paperId, entityLabel: paper?.title ?? action.paperId, justification: action.reason, details: criterion?.label }
     }
     case 'REMOVE_FROM_REVIEW': {
       const paper = state.reviewList.find(p => p.id === action.paperId)
-      return { ...base, step: 5, action: 'Removed paper from review list', entityType: 'paper', entityId: action.paperId, entityLabel: paper?.title ?? action.paperId }
+      return { ...base, step: 4, action: 'Removed paper from review list', entityType: 'paper', entityId: action.paperId, entityLabel: paper?.title ?? action.paperId }
     }
     case 'UPDATE_REVIEW_STATUS': {
       const paper = state.reviewList.find(p => p.id === action.paperId)
-      return { ...base, step: 5, action: 'Changed paper review status', entityType: 'paper', entityId: action.paperId, entityLabel: paper?.title ?? action.paperId, previousValue: paper?.status ?? '', newValue: action.status ?? '' }
+      return { ...base, step: 4, action: 'Changed paper review status', entityType: 'paper', entityId: action.paperId, entityLabel: paper?.title ?? action.paperId, previousValue: paper?.status ?? '', newValue: action.status ?? '' }
     }
     case 'SET_ROB_TOOL':
-      return { ...base, step: 6, action: action.toolId ? 'Chose a risk-of-bias instrument' : 'Turned off risk-of-bias appraisal', entityType: 'quality_appraisal', entityId: action.toolId ?? 'none', entityLabel: action.toolId ?? 'None', previousValue: state.robToolId ?? '', newValue: action.toolId ?? '' }
+      return { ...base, step: 5, action: action.toolId ? 'Chose a risk-of-bias instrument' : 'Turned off risk-of-bias appraisal', entityType: 'quality_appraisal', entityId: action.toolId ?? 'none', entityLabel: action.toolId ?? 'None', previousValue: state.robToolId ?? '', newValue: action.toolId ?? '' }
     case 'UPDATE_ROB_DOMAIN': {
       const paper = state.reviewList.find(p => p.id === action.paperId)
-      return { ...base, step: 6, action: 'Confirmed a risk-of-bias judgement', entityType: 'quality_appraisal', entityId: `${action.paperId}:${action.domainId}`, entityLabel: `${paper?.title ?? action.paperId} — ${action.domainId}`, newValue: action.judgement ?? '', justification: action.rationale }
+      return { ...base, step: 5, action: 'Confirmed a risk-of-bias judgement', entityType: 'quality_appraisal', entityId: `${action.paperId}:${action.domainId}`, entityLabel: `${paper?.title ?? action.paperId} — ${action.domainId}`, newValue: action.judgement ?? '', justification: action.rationale }
     }
     case 'UPDATE_THEME_COLUMNS': {
       const theme = state.themes.find(t => t.id === action.themeId)
-      return { ...base, step: 7, action: 'Changed synthesis evidence columns', entityType: 'theme', entityId: action.themeId, entityLabel: theme?.name ?? action.themeId, previousValue: theme?.sourceColumns.join(', '), newValue: action.columns.join(', ') }
+      return { ...base, step: 6, action: 'Changed synthesis evidence columns', entityType: 'theme', entityId: action.themeId, entityLabel: theme?.name ?? action.themeId, previousValue: theme?.sourceColumns.join(', '), newValue: action.columns.join(', ') }
+    }
+    case 'ADD_THEME':
+      return { ...base, step: 6, action: 'Added a synthesis theme', entityType: 'theme', entityId: action.theme.id, entityLabel: action.theme.name, details: action.theme.sourceColumns.join(', ') }
+    case 'RENAME_THEME': {
+      const theme = state.themes.find(t => t.id === action.themeId)
+      return { ...base, step: 6, action: 'Renamed a synthesis theme', entityType: 'theme', entityId: action.themeId, entityLabel: action.name, previousValue: theme?.name, newValue: action.name }
+    }
+    case 'REMOVE_THEME': {
+      const theme = state.themes.find(t => t.id === action.themeId)
+      return { ...base, step: 6, action: 'Deleted a synthesis theme', entityType: 'theme', entityId: action.themeId, entityLabel: theme?.name ?? action.themeId }
     }
     case 'UPDATE_THEME_SYSTEM_COLUMNS': {
       const theme = state.themes.find(t => t.id === action.themeId)
-      return { ...base, step: 7, action: 'Changed synthesis system-evidence columns', entityType: 'theme', entityId: action.themeId, entityLabel: theme?.name ?? action.themeId, previousValue: theme?.systemSourceColumns.join(', '), newValue: action.columns.join(', ') }
+      return { ...base, step: 6, action: 'Changed synthesis system-evidence columns', entityType: 'theme', entityId: action.themeId, entityLabel: theme?.name ?? action.themeId, previousValue: theme?.systemSourceColumns.join(', '), newValue: action.columns.join(', ') }
     }
     case 'SELECT_RQ': {
       const rq = state.rqOptions.find(item => item.id === action.rqId)
-      return { ...base, step: 9, action: 'Selected research question', entityType: 'research_question', entityId: action.rqId, entityLabel: rq?.text ?? action.rqId }
+      return { ...base, step: 7, action: 'Selected research question', entityType: 'research_question', entityId: action.rqId, entityLabel: rq?.text ?? action.rqId }
     }
     case 'SELECT_STUDY_DESIGN': {
       const design = state.studyDesignOptions.find(item => item.id === action.designId)
-      return { ...base, step: 9, action: 'Selected study design', entityType: 'study_design', entityId: action.designId, entityLabel: design?.name ?? action.designId }
+      return { ...base, step: 7, action: 'Selected study design', entityType: 'study_design', entityId: action.designId, entityLabel: design?.name ?? action.designId }
     }
     case 'SELECT_FINAL_TOPIC': {
       const topic = state.finalTopicOptions.find(item => item.id === action.topicId)
-      return { ...base, step: 9, action: 'Selected final topic', entityType: 'final_topic', entityId: action.topicId, entityLabel: topic?.title ?? action.topicId }
+      return { ...base, step: 7, action: 'Selected final topic', entityType: 'final_topic', entityId: action.topicId, entityLabel: topic?.title ?? action.topicId }
     }
     default:
       return null
@@ -1154,9 +1292,11 @@ function automaticAuditEntry(state: AppState, action: AppAction): DecisionJourna
 
 // Actions that only change UI state — do NOT trigger a save or undo entry
 const UI_ONLY_ACTIONS = new Set([
-  'TOGGLE_HISTORY', 'SET_SAVE_STATUS',
+  'TOGGLE_HISTORY', 'SET_SAVE_STATUS', 'SET_ACTIVE_THEME',
   'DISMISS_BACK_NAV_MODAL',
   'BACK_NAV_CANCEL', 'BACK_NAV_REQUEST',
+  // Review mode is a way of looking at the session, not part of it.
+  'SET_REVIEW_MODE',
 ])
 
 /**

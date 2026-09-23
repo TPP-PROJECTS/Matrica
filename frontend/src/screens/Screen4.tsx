@@ -421,18 +421,38 @@ function ScreeningReason({ paper }: { paper: ResultCard }) {
 }
 
 // ── Topic · Query hover chip ──────────────────────────────────────────────────
+/**
+ * What a result came from.
+ *
+ * A search subject is either a topic or one of the systems under review — the
+ * search step generates queries for both — so the chip resolves the id against
+ * both lists rather than assuming a topic and printing a bare id when it is a
+ * system's paper or documentation page.
+ */
+function useSearchSubject(subjectId: string) {
+  const { state } = useApp()
+  const system = (state.systemItems ?? []).find(s => s.id === subjectId)
+  if (system) return { kind: 'system' as const, label: system.name, short: 'SYS' }
+  const topic = state.topics.find(t => t.id === subjectId)
+  const num = subjectId.replace(/\D/g, '')
+  return { kind: 'topic' as const, label: topic?.title ?? subjectId, short: `T${num || subjectId}` }
+}
+
 function TopicQueryChip({ paper }: { paper: ResultCard }) {
   const { state } = useApp()
-  const topic = state.topics.find(t => t.id === paper.topicId)
+  const subject = useSearchSubject(paper.topicId)
   const query = state.queries.find(q => q.id === paper.queryId)
-  const tNum = paper.topicId.replace('t', '')
   const qNum = paper.queryId.replace('q', '')
 
   return (
     <div className="relative group inline-block">
       <div className="flex gap-1">
-        <span className="px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded text-[9px] cursor-default">
-          T{tNum}
+        <span className={`px-1.5 py-0.5 border rounded text-[9px] cursor-default ${
+          subject.kind === 'system'
+            ? 'bg-violet-50 text-violet-700 border-violet-200'
+            : 'bg-blue-50 text-blue-700 border-blue-200'
+        }`}>
+          {subject.short}
         </span>
         <span className="px-1.5 py-0.5 bg-zinc-100 text-zinc-600 border border-zinc-200 rounded text-[9px] cursor-default">
           Q{qNum}
@@ -441,7 +461,7 @@ function TopicQueryChip({ paper }: { paper: ResultCard }) {
       {/* Tooltip */}
       <div className="absolute z-30 left-0 top-full mt-1.5 w-64 bg-white border border-zinc-200 rounded-lg shadow-xl p-3 invisible group-hover:visible pointer-events-none">
         <p className="text-[10px] font-semibold text-zinc-700 mb-1">
-          Topic {tNum}: {topic?.title ?? '—'}
+          {subject.kind === 'system' ? 'System' : 'Topic'}: {subject.label}
         </p>
         <p className="text-[10px] text-zinc-500 leading-relaxed">
           Query {qNum}: {query?.text ?? '—'}
@@ -798,7 +818,7 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
                 { label: 'Confidence',      value: paper.confidence },
                 { label: 'Relevance',       value: `${paper.relevanceScore}%` },
                 { label: 'Duplicate',       value: paper.isDuplicate ? 'Yes — overlaps with another result' : 'No' },
-                { label: 'Topic ID',        value: paper.topicId },
+                { label: 'Search subject',  value: (state.systemItems ?? []).find(item => item.id === paper.topicId)?.name ?? state.topics.find(t => t.id === paper.topicId)?.title ?? paper.topicId },
                 { label: 'Query ID',        value: paper.queryId },
               ].map(({ label, value }) => (
                 <div key={label} className="flex gap-3 py-1.5 border-b border-zinc-100 last:border-0">
@@ -868,6 +888,7 @@ function PaperCard({ paper, onViewDetails, onSnowball }: {
 }) {
   const { dispatch, state } = useApp()
   const inReview = state.reviewList.some(r => r.id === paper.id)
+  const sourceSubject = useSearchSubject(paper.topicId)
   const [excludeOpen, setExcludeOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
 
@@ -953,8 +974,20 @@ function PaperCard({ paper, onViewDetails, onSnowball }: {
           ? 'via citation snowballing'
           : paper.origin === 'upload'
             ? 'via manual upload'
-            : `via Topic ${paper.topicId.replace('t', '')} · Query ${paper.queryId.replace('q', '')}`}
+            : `via ${sourceSubject.kind === 'system' ? 'System' : 'Topic'} ${sourceSubject.label} · Query ${paper.queryId.replace('q', '')}`}
       </p>
+
+      {/* Grey literature is marked wherever it appears: a vendor's own page can
+          be the best evidence about a system and still is not a peer-reviewed
+          study, and the reviewer has to see which one they are reading. */}
+      {paper.origin === 'web' && (
+        <p
+          title="Found by web search — documentation, a white paper, a regulatory filing or a report. Not peer-reviewed; reported on PRISMA's websites/organisations pathway."
+          className="text-[9px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5 inline-block"
+        >
+          ⬤ Grey literature — web source, not peer-reviewed
+        </p>
+      )}
 
       {/* Action row */}
       <div className="flex items-center gap-2 pt-0.5">
@@ -1153,7 +1186,7 @@ export function Screen4() {
       type: 'ADD_DECISION_JOURNAL_ENTRY',
       entry: journalEntry({
         kind: 'ai_explanation_view',
-        step: 5,
+        step: 4,
         action: 'Viewed paper details before screening decision',
         entityType: 'paper',
         entityId: paper.id,
@@ -1247,8 +1280,9 @@ export function Screen4() {
 
         {showProtocol && <ProtocolPanel onClose={() => setShowProtocol(false)} auto={auto} />}
 
-        {/* Sort + Filter bar */}
-        <div className="h-[34px] bg-zinc-50 border-b border-zinc-200 flex items-center px-3 gap-2 shrink-0">
+        {/* Sort + Filter bar — changes what is shown, never what is stored, so
+            review mode leaves it working. */}
+        <div data-review-allow className="h-[34px] bg-zinc-50 border-b border-zinc-200 flex items-center px-3 gap-2 shrink-0">
           {/* Sort */}
           <span className="text-[9px] text-zinc-400 font-semibold shrink-0">Sort</span>
           <select
@@ -1265,13 +1299,14 @@ export function Screen4() {
           <span className="text-[9px] text-zinc-400 font-semibold shrink-0">Filter</span>
           <div className="flex items-center gap-1 flex-wrap">
             {resultTopicIds.map(tid => {
+              const system = (state.systemItems ?? []).find(item => item.id === tid)
               const topic = state.topics.find(t => t.id === tid)
               const num = tid.replace(/\D/g, '') || tid
               return (
                 <FilterChip
                   key={tid}
-                  label={`T${num}`}
-                  tooltip={topic?.title ?? tid}
+                  label={system ? `⚙ ${system.name.slice(0, 12)}` : `T${num}`}
+                  tooltip={system?.name ?? topic?.title ?? tid}
                   active={filterTopicId === tid}
                   onClick={() => setFilterTopicId(filterTopicId === tid ? null : tid)}
                 />

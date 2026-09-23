@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { API } from '../lib/api'
+import { STEP_NAMES, LAST_STEP, stepName } from '../lib/steps'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -71,17 +72,7 @@ interface SessionEvent {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const STEP_LABELS: Record<number, string> = {
-  1: 'Chat & Define',
-  2: 'Matrix Initial',
-  3: 'System Review',
-  4: 'Explore & Search',
-  5: 'Select Papers',
-  6: 'Matrix Table',
-  7: 'Synthesis',
-  8: 'Gap & Statement',
-  9: 'Final Question',
-}
+const STEP_LABELS: Record<number, string> = STEP_NAMES
 
 function tsToTime(ts: number) {
   return new Date(ts * 1000).toLocaleString()
@@ -335,7 +326,7 @@ export function AnalyticsDashboard() {
                 {funnel.length === 0 ? (
                   <p className="text-zinc-500 text-sm">No data yet</p>
                 ) : (
-                  Array.from({ length: 8 }, (_, i) => i + 1).map(step => {
+                  Array.from({ length: LAST_STEP }, (_, i) => i + 1).map(step => {
                     const row = funnel.find(f => f.step === step)
                     const reached = row?.sessions_reached ?? 0
                     const stopped = row?.sessions_stopped_here ?? 0
@@ -382,7 +373,7 @@ export function AnalyticsDashboard() {
                       {timings.map(t => (
                         <tr key={t.step} className="border-b border-zinc-700/50 hover:bg-zinc-700/30">
                           <td className="px-3 py-2 text-zinc-300">
-                            {t.step} · {STEP_LABELS[t.step] ?? `Step ${t.step}`}
+                            {t.step} · {stepName(t.step)}
                           </td>
                           <td className="px-3 py-2 text-white font-medium">{fmtDuration(t.avg_seconds)}</td>
                           <td className="px-3 py-2 text-zinc-400">{fmtDuration(t.min_seconds)}</td>
@@ -431,7 +422,7 @@ export function AnalyticsDashboard() {
                         <td className="px-3 py-2 text-zinc-400">{s.domain || '—'}</td>
                         <td className="px-3 py-2">
                           <span className="px-1.5 py-0.5 bg-amber-900/40 text-amber-300 rounded">
-                            Step {s.max_step} · {STEP_LABELS[s.max_step]}
+                            Step {s.max_step} · {stepName(s.max_step)}
                           </span>
                         </td>
                         <td className="px-3 py-2 text-amber-400">{s.idle_minutes}m</td>

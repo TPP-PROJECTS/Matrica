@@ -1,17 +1,6 @@
 import { useApp } from '../../store/AppContext'
 import type { StepState } from '../../types'
-
-const STEPS = [
-  { id: 1, label: 'Chat & Define Topic' },
-  { id: 2, label: 'Matrix Initial' },
-  { id: 3, label: 'System Review' },
-  { id: 4, label: 'Explore & Search' },
-  { id: 5, label: 'Select Paper' },
-  { id: 6, label: 'Matrix Table' },
-  { id: 7, label: 'Synthesis' },
-  { id: 8, label: 'Gap & Statement' },
-  { id: 9, label: 'Final Question' },
-]
+import { STEPS } from '../../lib/steps'
 
 function badgeBorderColor(state: StepState) {
   switch (state) {
@@ -62,21 +51,38 @@ export function LeftNav() {
   function handleStepClick(stepId: number) {
     const stepState = state.stepStates[stepId]
     if (stepState === 'locked') return
-    if (stepState === 'done') {
-      dispatch({ type: 'BACK_NAV_REQUEST', step: stepId })
-    } else if (stepState === 'stale' || stepState === 'active') {
+    // Review mode is pure navigation: no warning, no marker changes.
+    if (state.reviewMode) {
       dispatch({ type: 'SET_STEP', step: stepId })
+      return
     }
+    // Only going *back* revises earlier work, so only that asks for
+    // confirmation. Returning forward to a step already reached is just
+    // navigation — it used to fall through the back-nav guard and do nothing,
+    // which left a step reachable only by re-running its AI generation.
+    if (stepId < state.currentStep && stepState === 'done') {
+      dispatch({ type: 'BACK_NAV_REQUEST', step: stepId })
+      return
+    }
+    dispatch({ type: 'SET_STEP', step: stepId })
   }
 
   return (
     <nav className="w-[196px] bg-zinc-900 flex flex-col shrink-0 overflow-y-auto">
       <div className="px-3 pt-4 pb-2">
-        <span className="text-zinc-600 text-[9px] font-semibold tracking-[0.1em] uppercase">Workflow</span>
+        <span className="text-zinc-600 text-[9px] font-semibold tracking-[0.1em] uppercase">
+          {state.reviewMode ? 'Workflow · Review' : 'Workflow'}
+        </span>
       </div>
 
       {STEPS.map(step => {
-        const stepState = state.stepStates[step.id]
+        const rawState = state.stepStates[step.id]
+        // In review mode the stale/edit markers are not shown at all — the point
+        // of the mode is to read the review as it stands, without the workflow
+        // nagging about what should be regenerated.
+        const stepState: StepState = state.reviewMode
+          ? (rawState === 'active' ? 'active' : rawState === 'locked' ? 'locked' : 'done')
+          : rawState
         const isLocked = stepState === 'locked'
 
         return (
@@ -84,6 +90,7 @@ export function LeftNav() {
             key={step.id}
             onClick={() => handleStepClick(step.id)}
             disabled={isLocked}
+            title={isLocked ? 'Not reached yet' : step.label}
             className={`
               flex items-center gap-3 px-2 py-0 h-[54px] w-full text-left
               ${leftBorderColor(stepState)} ${rowBg(stepState)}

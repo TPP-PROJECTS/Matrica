@@ -30,6 +30,9 @@ class ProjectMeta(BaseModel):
     createdAt: str
     updatedAt: str
     currentStep: int
+    # Which step numbering `currentStep` was written under. Absent on projects
+    # saved before the workflow was renumbered; the client maps those forward.
+    stepSchema: int | None = None
     topicPreview: str
 
 
@@ -51,6 +54,7 @@ def list_projects() -> list[dict]:
             "createdAt": r["created_at"] or "",
             "updatedAt": r["updated_at"] or "",
             "currentStep": r["current_step"] or 1,
+            "stepSchema": r.get("step_schema"),
             "topicPreview": r["topic_preview"] or "",
         }
         for r in rows

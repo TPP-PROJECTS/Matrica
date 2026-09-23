@@ -76,8 +76,16 @@ export interface QueryCard {
   sourceQueries?: SourceQuery[]
 }
 
-/** How a paper entered the review — a PRISMA 2020 identification pathway. */
-export type PaperOrigin = 'search' | 'snowball' | 'upload' | 'import'
+/**
+ * How a paper entered the review — a PRISMA 2020 identification pathway.
+ *
+ * `web` is the flow diagram's second column, "websites and organisations": a
+ * record found by web search rather than in a bibliographic database. It is
+ * kept distinct from `search` everywhere the two would be summed, because a
+ * vendor's documentation page is not a peer-reviewed record and counting it as
+ * one would misstate both the identification total and the duplicate figure.
+ */
+export type PaperOrigin = 'search' | 'snowball' | 'upload' | 'import' | 'web'
 
 /** Lifecycle of the background AI relevance assessment for one paper. */
 export type ScoreStatus = 'pending' | 'scored' | 'failed'
@@ -157,6 +165,12 @@ export interface SearchSource {
    * read as records identified.
    */
   comparableHits: boolean
+  /**
+   * True where the source returns grey literature — documentation, white
+   * papers, regulatory filings — rather than peer-reviewed work. PRISMA counts
+   * those on the websites/organisations pathway, not with database searching.
+   */
+  greyLiterature?: boolean
 }
 
 /** Database limits applied at search time, before any screening happens. */
@@ -259,6 +273,24 @@ export interface SystemItem {
   vendor: string
   aiGenerated: boolean
   selected: boolean
+}
+
+/**
+ * One system's bearing on one topic, as the model reads it.
+ *
+ * A review that appraises systems alongside the literature has to bring the two
+ * back together eventually — a theme about diagnostic accuracy is answered
+ * partly by studies and partly by what a named platform actually does. Holding
+ * the links in the session makes that relationship visible while the searches
+ * are still being planned, and lets the assistant reason about it.
+ */
+export interface SystemTopicLink {
+  systemId: string
+  topicId: string
+  /** 'strong' when the system is squarely about the topic; 'possible' when partial. */
+  strength: 'strong' | 'possible'
+  /** One sentence naming the actual connection. */
+  reason: string
 }
 
 export interface MatrixCell {
@@ -402,6 +434,12 @@ export interface Theme {
   blocks: SynthesisBlock[]
   sourceColumns: string[]        // literature matrix columns driving this theme
   systemSourceColumns: string[]  // system matrix columns driving this theme
+  /**
+   * Defined by the reviewer rather than generated. Such a theme survives an AI
+   * regeneration of the synthesis, and its coverage is computed live from the
+   * columns it draws on instead of being reported by the model.
+   */
+  userDefined?: boolean
 }
 
 export interface GapDimension {
@@ -555,6 +593,8 @@ export interface SessionMeta {
   createdAt: string
   updatedAt: string
   currentStep: number
+  /** Step numbering `currentStep` was written under. See lib/steps.ts. */
+  stepSchema?: number
   topicPreview: string
 }
 
@@ -565,6 +605,14 @@ export interface SessionSnapshot {
   updatedAt: string
   currentStep: number
   staleSteps: number[]
+  /**
+   * The furthest step this review has ever reached. Navigation is allowed
+   * anywhere up to it, so revisiting an earlier step can never strand a later
+   * one behind a "locked" badge that only an AI regeneration could lift.
+   */
+  maxStepReached?: number
+  /** Which step numbering this snapshot was written under. See lib/steps.ts. */
+  stepSchema?: number
   // Step 1
   profile: ResearchProfile
   chatMessages: ChatMessage[]
@@ -576,6 +624,7 @@ export interface SessionSnapshot {
   systemColumnDescriptions: Record<string, string>
   // System Review
   systemItems: SystemItem[]
+  systemTopicLinks?: SystemTopicLink[]
   // Step 3
   topics: TopicCard[]
   queries: QueryCard[]
@@ -651,6 +700,13 @@ export interface AppState {
   pendingBackStep: number | null
   editMode: boolean
   staleSteps: number[]
+  /** Furthest step ever reached — every step up to it stays navigable. */
+  maxStepReached: number
+  /**
+   * Read-only browsing. Every step is reachable and nothing can be edited;
+   * the stale/edit machinery is silent while it is on.
+   */
+  reviewMode: boolean
   paperSections: PaperSection[]
   // Step 1
   profile: ResearchProfile
@@ -661,8 +717,10 @@ export interface AppState {
   systemMatrixColumnSuggestions: string[]
   columnDescriptions: Record<string, string>
   systemColumnDescriptions: Record<string, string>
-  // Step 2b — System Review
+  // Step 3 (Systems tab) — System Review
   systemItems: SystemItem[]
+  /** Topic ↔ system relevance, computed on demand in the search step. */
+  systemTopicLinks: SystemTopicLink[]
   // Step 3
   topics: TopicCard[]
   queries: QueryCard[]
@@ -779,7 +837,9 @@ export interface AppState {
 // have I named every hidden semantic, and is it phrased the way a user speaks?
 
 export type AppAction =
-  | { type: 'SET_STEP'; step: number } // @chatbot Jump forward to a workflow step (1-9).
+  | { type: 'SET_STEP'; step: number } // @chatbot Jump to a workflow step (1-7).
+  | { type: 'SET_REVIEW_MODE'; enabled: boolean }
+  | { type: 'SET_SYSTEM_TOPIC_LINKS'; links: SystemTopicLink[] }
   | { type: 'ADVANCE_STEP' }
   | { type: 'BACK_NAV_CONFIRM' }
   | { type: 'BACK_NAV_REQUEST'; step: number } // @chatbot Go back to an earlier workflow step (1-9); asks the user to confirm.
@@ -849,8 +909,13 @@ export type AppAction =
   | { type: 'UPDATE_ROB_DOMAIN'; paperId: string; domainId: string; judgement?: string; rationale?: string; verifiedByStudent?: boolean }
   | { type: 'CLEAR_ROB_ASSESSMENTS' } // @chatbot Discard every risk-of-bias assessment, including ones a human confirmed.
   | { type: 'SET_THEMES'; themes: Theme[] }
+  | { type: 'ADD_THEME'; theme: Theme } // @chatbot Add a new synthesis theme (give it an id, name, source columns and empty blocks).
+  | { type: 'RENAME_THEME'; themeId: string; name: string } // @chatbot Rename a synthesis theme.
+  | { type: 'REMOVE_THEME'; themeId: string } // @chatbot Delete a synthesis theme.
+  | { type: 'SET_ACTIVE_THEME'; themeId: string }
+  | { type: 'REMOVE_SYNTHESIS_BLOCK'; themeId: string; blockId: string }
   | { type: 'ADD_SYNTHESIS_BLOCK'; themeId: string; block: SynthesisBlock }
-  | { type: 'UPDATE_SYNTHESIS_BLOCK'; themeId: string; blockId: string; content: string } // @chatbot Rewrite a synthesis block's content (full new text).
+  | { type: 'UPDATE_SYNTHESIS_BLOCK'; themeId: string; blockId: string; content: string; stats?: { paperCount: number; avgConfidence: number; isLowConfidence: boolean } } // @chatbot Rewrite a synthesis block's content (full new text).
   | { type: 'UPDATE_THEME_SYSTEM_COLUMNS'; themeId: string; columns: string[] } // @chatbot Set which system-matrix columns a theme draws on.
   | { type: 'REMOVE_RESULTS'; paperIds: string[] }
   | { type: 'SET_RQ_OPTIONS'; options: RQOption[] }

@@ -3,11 +3,7 @@ import { useApp } from '../../store/AppContext'
 import { deleteSession, fetchSessionsRemote, fetchSessionRemote } from '../../lib/sessionStorage'
 import type { SessionMeta } from '../../types'
 import { CheckpointList } from './CheckpointList'
-
-const STEP_LABELS = [
-  '', 'Chat & Define Topic', 'Matrix Initial', 'System Review', 'Explore & Search', 'Select Paper',
-  'Matrix Table', 'Synthesis', 'Gap & Statement', 'Final Question',
-]
+import { LAST_STEP, migrateStep, stepName } from '../../lib/steps'
 
 function formatDate(iso: string): string {
   const d = new Date(iso)
@@ -24,7 +20,7 @@ function formatDate(iso: string): string {
 }
 
 function stepDots(currentStep: number) {
-  return Array.from({ length: 9 }, (_, i) => i + 1).map(s => (
+  return Array.from({ length: LAST_STEP }, (_, i) => i + 1).map(s => (
     <div
       key={s}
       className={`w-1.5 h-1.5 rounded-full ${
@@ -74,9 +70,9 @@ function SessionCard({
 
         {/* Step progress dots */}
         <div className="flex items-center gap-1 mt-2">
-          {stepDots(meta.currentStep)}
+          {stepDots(migrateStep(meta.currentStep, meta.stepSchema))}
           <span className="text-[9px] text-zinc-400 ml-1">
-            Step {meta.currentStep} · {STEP_LABELS[meta.currentStep]}
+            Step {migrateStep(meta.currentStep, meta.stepSchema)} · {stepName(migrateStep(meta.currentStep, meta.stepSchema))}
           </span>
         </div>
 

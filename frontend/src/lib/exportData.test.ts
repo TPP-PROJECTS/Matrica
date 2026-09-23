@@ -139,6 +139,26 @@ describe('exportPrismaCSV', () => {
     expect(out).toContain('  Scopus,40')
   })
 
+  it('reports web records on their own PRISMA pathway, not as database records', () => {
+    exportPrismaCSV(appState({
+      results: [
+        paper({ id: 'a' }),
+        paper({ id: 'b' }),
+        paper({ id: 'w1', origin: 'web' }),
+        paper({ id: 'w2', origin: 'web' }),
+      ],
+      screening: { identifiedByQuery: { q1: 4000 }, retrievedByQuery: { q1: 6 } },
+    }))
+    const out = contentOf()
+    expect(out).toContain('websites and organisations (grey literature),2')
+    // The two web pages are neither database records…
+    expect(out).toContain('Records retrieved into the review tool — database searching,2')
+    // …nor duplicates: 6 retrieved against 2 unique database papers held.
+    expect(out).toContain('Duplicate records removed before screening,4')
+    // They are still screened.
+    expect(out).toContain('Records screened,4')
+  })
+
   it('falls back to the stored duplicate counter for a pre-fix session', () => {
     exportPrismaCSV(appState({
       results: [paper({ id: 'a' }), paper({ id: 'b' })],

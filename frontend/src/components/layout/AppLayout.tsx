@@ -4,11 +4,13 @@ import { useApp } from '../../store/AppContext'
 import { TopBar } from './TopBar'
 import { LeftNav } from './LeftNav'
 import { RightPanel } from './RightPanel'
+import { ReadOnlyGuard } from './ReadOnlyGuard'
 import { VersionHistoryDrawer } from '../overlays/VersionHistoryDrawer'
 import { BackNavModal } from '../overlays/BackNavModal'
 import { StaleStepBanner } from '../overlays/StaleStepBanner'
 import { EditModeBanner } from '../overlays/EditModeBanner'
 import { SaveTroubleBanner } from '../overlays/SaveTroubleBanner'
+import { ReviewModeBanner } from '../overlays/ReviewModeBanner'
 
 interface Props {
   children: ReactNode
@@ -28,7 +30,10 @@ export function AppLayout({ children }: Props) {
   }
 
   const showRightPanel = state.currentStep > 1
-  const isStale = state.stepStates[state.currentStep] === 'stale'
+  // Review mode silences the whole stale/edit apparatus: no outdated banner, no
+  // dimmed step, no edit outline — just the review as it stands.
+  const isStale = !state.reviewMode && state.stepStates[state.currentStep] === 'stale'
+  const showEditMode = !state.reviewMode && state.editMode
 
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-white">
@@ -37,7 +42,8 @@ export function AppLayout({ children }: Props) {
 
       {/* Banners below top bar */}
       <SaveTroubleBanner />
-      {state.editMode && <EditModeBanner />}
+      {state.reviewMode && <ReviewModeBanner />}
+      {showEditMode && <EditModeBanner />}
       {/* Main body */}
       <div className="flex flex-1 overflow-hidden">
         {/* Left nav */}
@@ -45,11 +51,11 @@ export function AppLayout({ children }: Props) {
 
         {/* Main content */}
         <main
-          className={`flex-1 overflow-hidden flex flex-col ${state.editMode ? 'outline outline-[3px] outline-red-500 outline-offset-[-3px]' : ''}`}
+          className={`flex-1 overflow-hidden flex flex-col ${showEditMode ? 'outline outline-[3px] outline-red-500 outline-offset-[-3px]' : ''}`}
         >
           {isStale && <StaleStepBanner />}
           <div className={`flex-1 min-h-0 ${isStale ? 'opacity-55 pointer-events-none' : ''}`}>
-            {children}
+            <ReadOnlyGuard enabled={state.reviewMode}>{children}</ReadOnlyGuard>
           </div>
         </main>
 
@@ -64,7 +70,7 @@ export function AppLayout({ children }: Props) {
               ❯
             </button>
             <div className={`flex-1 min-h-0 flex flex-col ${state.showVersionHistory ? 'opacity-40 pointer-events-none' : ''}`}>
-              <RightPanel />
+              <ReadOnlyGuard enabled={state.reviewMode}><RightPanel /></ReadOnlyGuard>
             </div>
           </div>
         )}
@@ -84,7 +90,7 @@ export function AppLayout({ children }: Props) {
 
       {/* Overlays */}
       {state.showVersionHistory && <VersionHistoryDrawer />}
-      {state.showBackNavModal && <BackNavModal />}
+      {state.showBackNavModal && !state.reviewMode && <BackNavModal />}
     </div>
   )
 }

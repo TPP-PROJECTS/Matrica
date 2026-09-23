@@ -90,7 +90,7 @@ function EvidencePopover({
           type: 'ADD_DECISION_JOURNAL_ENTRY',
           entry: journalEntry({
             kind: 'ai_explanation_view',
-            step: 6,
+            step: 5,
             action: 'Viewed matrix evidence and reasoning',
             entityType: 'matrix_cell',
             entityId: `${target.paperTitle || target.systemName || 'row'}:${target.column}`,
@@ -1155,7 +1155,7 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
                 type: 'ADD_DECISION_JOURNAL_ENTRY',
                 entry: journalEntry({
                   kind: 'justification',
-                  step: 6,
+                  step: 5,
                   action: added.length ? 'Added literature matrix column' : 'Removed literature matrix column',
                   entityType: 'matrix_column',
                   entityId: [...added, ...removed].join('|'),
@@ -1483,7 +1483,7 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
                 type: 'ADD_DECISION_JOURNAL_ENTRY',
                 entry: journalEntry({
                   kind: 'justification',
-                  step: 6,
+                  step: 5,
                   action: added.length ? 'Added system matrix column' : 'Removed system matrix column',
                   entityType: 'matrix_column',
                   entityId: `system:${[...added, ...removed].join('|')}`,
@@ -1519,7 +1519,20 @@ export function Screen5() {
   const [showSynthModal, setShowSynthModal] = useState(false)
   const [customSynthPrompt, setCustomSynthPrompt] = useState<string | null>(null)
 
-  async function handleContinue(prompt?: string | null) {
+  /**
+   * Build the synthesis and move on.
+   *
+   * Moving on used to *require* the model call to succeed, so a review that had
+   * already been synthesised could not get back to its own synthesis step
+   * without regenerating it — losing any hand-edited block in the process. The
+   * generation now runs only when there is nothing to go back to, and is
+   * available on its own button when there is.
+   */
+  async function handleContinue(prompt?: string | null, { regenerate = false } = {}) {
+    if (state.themes.length > 0 && !regenerate) {
+      dispatch({ type: 'ADVANCE_STEP' })
+      return
+    }
     setSynthesising(true)
     setSynthError(null)
     try {
@@ -1577,7 +1590,7 @@ export function Screen5() {
       const data = await res.json()
       if (!data.themes?.length) throw new Error('Synthesis generation returned no themes.')
       dispatch({ type: 'SET_THEMES', themes: data.themes })
-      dispatch({ type: 'ADVANCE_STEP' })
+      if (!regenerate) dispatch({ type: 'ADVANCE_STEP' })
     } catch (error) {
       setSynthError(error instanceof Error ? error.message : 'Synthesis generation failed.')
     } finally {
@@ -1587,8 +1600,8 @@ export function Screen5() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Tab bar */}
-      <div className="h-10 border-b border-zinc-200 bg-white flex items-end px-4 gap-1 shrink-0">
+      {/* Tab bar — plain navigation between the three views, allowed in review mode */}
+      <div data-review-allow className="h-10 border-b border-zinc-200 bg-white flex items-end px-4 gap-1 shrink-0">
         <button onClick={() => setActiveTab('literature')}
           className={`px-4 h-8 text-[12px] font-medium border-b-2 transition-colors ${activeTab === 'literature' ? 'border-zinc-900 text-zinc-900' : 'border-transparent text-zinc-400 hover:text-zinc-700'}`}>
           Literature Review Matrix
@@ -1616,7 +1629,7 @@ export function Screen5() {
           )}
         </button>
         <div className="flex-1" />
-        <span className="text-[10px] text-zinc-400 pb-2">Step 6 · Matrix Table</span>
+        <span className="text-[10px] text-zinc-400 pb-2">Step 5 · Matrix Table</span>
       </div>
 
       {/* Active matrix */}
@@ -1639,13 +1652,22 @@ export function Screen5() {
               : <>Hover a cell to reveal <span className="font-bold">?</span> — click to see the supporting quote in the abstract</>
           }
         </p>
+        {state.themes.length > 0 && (
+          <button
+            onClick={() => handleContinue(customSynthPrompt, { regenerate: true })}
+            disabled={synthesising}
+            title="Rebuild the themes from the matrix as it stands now — this replaces the existing synthesis"
+            className="px-2.5 h-6 border border-zinc-300 rounded text-[10px] text-zinc-600 hover:bg-zinc-100 disabled:opacity-50 transition-colors">
+            ↺ Regenerate synthesis
+          </button>
+        )}
         <div className="flex rounded overflow-hidden">
           <button
             onClick={() => handleContinue(customSynthPrompt)}
             disabled={synthesising}
             className="px-4 h-6 bg-zinc-900 text-white rounded-l text-[11px] font-semibold hover:bg-zinc-700 disabled:opacity-50 transition-colors flex items-center gap-1.5">
             {customSynthPrompt && <span className="w-1 h-1 rounded-full bg-amber-400 shrink-0" />}
-            {synthesising ? 'Synthesising…' : 'Continue to Synthesis →'}
+            {synthesising ? 'Synthesising…' : state.themes.length > 0 ? 'Continue to Synthesis & Gap →' : 'Continue to Synthesis →'}
           </button>
           <button
             onClick={() => setShowSynthModal(true)}

@@ -6,12 +6,10 @@ const AnalyticsDashboard = lazy(() => import('./screens/AnalyticsDashboard').the
 const ReviewerWorkspace = lazy(() => import('./screens/ReviewerWorkspace').then(module => ({ default: module.ReviewerWorkspace })))
 const Screen1 = lazy(() => import('./screens/Screen1').then(module => ({ default: module.Screen1 })))
 const ScreenMatrixInit = lazy(() => import('./screens/ScreenMatrixInit').then(module => ({ default: module.ScreenMatrixInit })))
-const Screen2 = lazy(() => import('./screens/Screen2').then(module => ({ default: module.Screen2 })))
 const Screen3 = lazy(() => import('./screens/Screen3').then(module => ({ default: module.Screen3 })))
 const Screen4 = lazy(() => import('./screens/Screen4').then(module => ({ default: module.Screen4 })))
 const Screen5 = lazy(() => import('./screens/Screen5').then(module => ({ default: module.Screen5 })))
-const Screen6 = lazy(() => import('./screens/Screen6').then(module => ({ default: module.Screen6 })))
-const Screen7 = lazy(() => import('./screens/Screen7').then(module => ({ default: module.Screen7 })))
+const ScreenSynthesisGap = lazy(() => import('./screens/ScreenSynthesisGap').then(module => ({ default: module.ScreenSynthesisGap })))
 const Screen8 = lazy(() => import('./screens/Screen8').then(module => ({ default: module.Screen8 })))
 
 function LoadingScreen() {
@@ -27,16 +25,15 @@ function WorkflowRouter() {
   const { state } = useApp()
 
   function renderScreen() {
+    // Kept in step with src/lib/steps.ts, which names these same steps.
     switch (state.currentStep) {
       case 1: return <Screen1 />
       case 2: return <ScreenMatrixInit />
-      case 3: return <Screen2 />
-      case 4: return <Screen3 />
-      case 5: return <Screen4 />
-      case 6: return <Screen5 />
-      case 7: return <Screen6 />
-      case 8: return <Screen7 />
-      case 9: return <Screen8 />
+      case 3: return <Screen3 />            // Explore & search — topics and systems
+      case 4: return <Screen4 />            // Select paper
+      case 5: return <Screen5 />            // Matrix table
+      case 6: return <ScreenSynthesisGap /> // Synthesis & gap
+      case 7: return <Screen8 />            // Final question
       default: return <Screen1 />
     }
   }

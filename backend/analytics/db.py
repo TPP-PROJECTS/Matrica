@@ -253,13 +253,27 @@ def upsert_project(
 
 
 def list_projects() -> list[dict]:
-    """Project-list metadata, most recently updated first."""
+    """Project-list metadata, most recently updated first.
+
+    `step_schema` is read out of the stored snapshot rather than kept in its own
+    column: it says which step numbering `current_step` was written under, and a
+    project saved before the workflow was renumbered simply does not carry one.
+    The client needs it to label the step correctly, and pulling it from the
+    JSON avoids a schema migration for a field that is only ever displayed.
+    """
     conn = get_conn()
-    rows = conn.execute(
-        """SELECT id, title, created_at, updated_at, current_step, topic_preview
-           FROM projects
-           ORDER BY updated_at DESC"""
-    ).fetchall()
+    base = """SELECT id, title, created_at, updated_at, current_step, topic_preview
+              {extra}
+              FROM projects
+              ORDER BY updated_at DESC"""
+    try:
+        rows = conn.execute(
+            base.format(extra=", json_extract(snapshot, '$.stepSchema') AS step_schema")
+        ).fetchall()
+    except sqlite3.OperationalError:
+        # SQLite built without the JSON1 extension. The list still works; the
+        # client falls back to treating the step number as the old numbering.
+        rows = conn.execute(base.format(extra="")).fetchall()
     return [dict(r) for r in rows]
 
 

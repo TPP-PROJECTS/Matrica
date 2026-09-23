@@ -1,14 +1,24 @@
 import asyncio
+import os
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Callable
 
 import httpx
+from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException
+from openai import AsyncOpenAI
 from pydantic import BaseModel
 
+from config import MODEL
+from routers.json_utils import extract_json
+
+load_dotenv()
+
 router = APIRouter()
+
+_openai = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 OPENALEX_URL = "https://api.openalex.org/works"
 PUBMED_SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
@@ -79,6 +89,13 @@ class SearchRequest(BaseModel):
     # Which databases to search, by key (see SOURCES). None keeps the historical
     # pair, so a caller that predates the setting searches what it always did.
     sources: list[str] | None = None
+    #: What the search is *about*, in plain language — typically a system's name
+    #: and vendor. A Boolean query written for a bibliographic database is a poor
+    #: web search: run verbatim it surfaces the journal articles it was written
+    #: to find, which is exactly what the grey-literature source must not return.
+    #: Sources that are not bibliographic databases search this instead when it
+    #: is given; everything else ignores it.
+    subject: str = ""
 
 
 class PaperResult(BaseModel):
@@ -499,6 +516,277 @@ async def search_semantic_scholar(
     return papers, int(data.get("total") or 0)
 
 
+# ── Web & documentation (grey literature) ─────────────────────────────────────
+# Systems under review are the case this exists for. A commercial platform's
+# evaluation record is often a vendor white paper, a regulatory filing, an
+# implementation report or the product documentation itself — none of which is
+# indexed by a bibliographic database, so a literature-only search for it comes
+# back empty and the system looks unstudied when it is merely unindexed.
+#
+# PRISMA 2020 treats this as the *other* identification pathway ("websites,
+# organisations, citation searching"), counted and reported separately from
+# database searching, and that is exactly how the records are labelled here:
+# `source="web"` travels with every one of them so nothing downstream can mix a
+# vendor page into the peer-reviewed count.
+
+WEB_SEARCH_PROMPT = """You are a research librarian retrieving GREY LITERATURE with web search.
+
+Find real, currently reachable web pages that document or evaluate the subject of the query:
+official product documentation, vendor white papers, technical reports, regulatory filings and
+clearances, standards documents, government or health-service evaluations, implementation reports,
+and reputable news or industry analyses.
+
+How to search: run SEVERAL web searches, not one. Search the subject on its own; search it with
+"documentation", "user guide", "white paper", "technical brief"; search it with the name of its
+regulator or of the agencies that deploy it. The query you are given was written for a
+bibliographic database, so searching it verbatim mostly surfaces journal articles, which are not
+what this task wants.
+
+Rules:
+- Use web search. Every record MUST be a page you actually found, with its real URL.
+- Never return a peer-reviewed journal article, and never link to a journal, publisher or
+  bibliographic index (jamanetwork.com, sciencedirect.com, springer.com, nature.com, wiley.com,
+  bmj.com, thelancet.com, nejm.org, pubmed.ncbi.nlm.nih.gov, pmc.ncbi.nlm.nih.gov, doi.org,
+  arxiv.org, medrxiv.org, researchgate.net, …). The bibliographic databases already cover those,
+  and a record from one of them is not grey literature. Such a record will be discarded.
+- Never invent a page, a publisher or a date. Omit a field you cannot establish.
+- Prefer primary sources: the vendor's own site, the regulator, the standards body, the health
+  service or agency that deployed the system.
+
+The publisher must be the system's vendor, a regulator, a standards body, a government agency or
+health service, a professional body, or a news / industry outlet — never an academic journal.
+
+For each record return:
+- title: the page or document title
+- publisher: the organisation responsible for the page
+- year: four-digit year of publication, or null if the page does not state one
+- url: the page's real URL
+- summary: 2-3 sentences on what the document says about the subject
+- kind: one of "documentation", "white_paper", "regulatory", "report", "standard", "news", "other"
+- peer_reviewed: true if this page is an article published in an academic journal or in conference
+  proceedings, false otherwise. Answer this honestly for every record; a record marked true is
+  discarded, because the bibliographic databases already cover it.
+
+Respond ONLY with valid JSON:
+{
+  "records": [
+    {
+      "title": "...",
+      "publisher": "...",
+      "year": 2023,
+      "url": "https://...",
+      "summary": "...",
+      "kind": "documentation",
+      "peer_reviewed": false
+    }
+  ]
+}
+Your entire reply must be that JSON object and nothing else. If every page you found is a journal
+article, or you found nothing at all, reply with exactly {"records": []} — never explain in prose,
+never apologise, never describe what you could not find. Prose is unreadable to the caller and is
+reported to the user as a failed search."""
+
+#: How long the model is given to run its web search and answer. Longer than an
+#: HTTP database because it is doing several searches and reading pages; still
+#: bounded, so one slow source cannot hold up the databases that already
+#: answered.
+WEB_SEARCH_TIMEOUT_SECONDS = 90.0
+
+#: Labels for the `kind` field, used in the record's authorship line so a
+#: reviewer can see what sort of document it is without opening it.
+_WEB_KINDS = {
+    "documentation": "Product documentation",
+    "white_paper": "White paper",
+    "regulatory": "Regulatory document",
+    "report": "Report",
+    "standard": "Standard",
+    "news": "News / industry analysis",
+    "other": "Web page",
+}
+
+
+#: Hosts whose pages are peer-reviewed literature, a publisher's copy of it, or
+#: a bibliographic index of it. A record from one of these is not grey
+#: literature, it is a database record arriving by the wrong door — counted on
+#: the wrong PRISMA pathway, labelled "not peer-reviewed" when it is, and often
+#: a second copy of something the databases already returned. The model is told
+#: not to return them and they are dropped here when it does anyway.
+_NON_GREY_HOSTS = frozenset({
+    "doi.org", "dx.doi.org",
+    "pubmed.ncbi.nlm.nih.gov", "pmc.ncbi.nlm.nih.gov", "ncbi.nlm.nih.gov",
+    "jamanetwork.com", "nejm.org", "bmj.com", "thelancet.com", "acpjournals.org",
+    "sciencedirect.com", "elsevier.com", "springer.com", "link.springer.com",
+    "springeropen.com", "nature.com", "wiley.com", "onlinelibrary.wiley.com",
+    "tandfonline.com", "sagepub.com", "journals.sagepub.com", "frontiersin.org",
+    "mdpi.com", "plos.org", "journals.plos.org", "biomedcentral.com",
+    "academic.oup.com", "oup.com", "cambridge.org", "jmir.org", "ahajournals.org",
+    "atsjournals.org", "annualreviews.org", "karger.com", "liebertpub.com",
+    "ieee.org", "ieeexplore.ieee.org", "dl.acm.org", "acm.org",
+    "arxiv.org", "medrxiv.org", "biorxiv.org", "ssrn.com", "papers.ssrn.com",
+    "researchgate.net", "semanticscholar.org", "scholar.google.com",
+    "europepmc.org", "openalex.org", "scopus.com", "webofscience.com",
+})
+
+
+def _is_non_grey(url: str) -> bool:
+    """True for a journal, publisher or bibliographic-index address."""
+    host = re.sub(r"^https?://", "", url).split("/")[0].split("?")[0].lower()
+    host = host.split("@")[-1].split(":")[0]
+    if host.startswith("www."):
+        host = host[4:]
+    if host in _NON_GREY_HOSTS:
+        return True
+    # Subdomains of a blocked host are blocked with it.
+    return any(host.endswith("." + blocked) for blocked in _NON_GREY_HOSTS)
+
+
+#: Words that appear in the name of a journal or a proceedings, and essentially
+#: never in the name of a vendor, a regulator or an agency. There are far more
+#: journal hosts than any list can hold, so the publisher's own name is checked
+#: as well as the address.
+_JOURNAL_NAME_MARKERS = (
+    "journal", "proceedings", "annals", "review of", "quarterly",
+    "jama", "lancet", "bmj", "nejm", "new england journal",
+    "arxiv", "medrxiv", "biorxiv", "preprint",
+    "elsevier", "springer", "wiley", "taylor & francis", "sage publications",
+    "frontiers in", "plos", "biomed central", "oxford university press",
+)
+
+
+def _is_journal_publisher(publisher: str) -> bool:
+    """True when the named publisher is an academic journal or its press."""
+    name = publisher.lower()
+    return any(marker in name for marker in _JOURNAL_NAME_MARKERS)
+
+
+def _web_page_size(limit: int) -> int:
+    return min(max(limit, 1), 10)
+
+
+def _web_as_run(query_text: str, f: SearchFilters | None) -> str:
+    parts = [f'web search: {query_text}']
+    if f is not None and (f.yearFrom is not None or f.yearTo is not None):
+        parts.append(f"published {f.yearFrom or 'any'}–{f.yearTo or 'any'}")
+    return "  ".join(parts)
+
+
+def _web_record_year(raw: object) -> int | None:
+    """A four-digit year, or None. The model is told to omit what it cannot establish."""
+    if isinstance(raw, int) and 1000 <= raw <= 9999:
+        return raw
+    if isinstance(raw, str):
+        match = re.search(r"\b(1\d{3}|2\d{3})\b", raw)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _web_in_year_range(year: int | None, f: SearchFilters | None) -> bool:
+    """Year limits are applied here — the model is asked for them, not trusted with them."""
+    if f is None:
+        return True
+    if year is None:
+        # A page with no stated date cannot be shown to meet a year limit, but
+        # dropping it would silently lose most product documentation, which is
+        # undated by nature. It is kept, and its missing year is visible.
+        return True
+    if f.yearFrom is not None and year < f.yearFrom:
+        return False
+    if f.yearTo is not None and year > f.yearTo:
+        return False
+    return True
+
+
+async def search_web(
+    query_text: str, limit: int, client: httpx.AsyncClient,
+    page: int = 1, filters: SearchFilters | None = None,
+) -> tuple[list[PaperResult], int]:
+    """Grey literature for one query, via the model's web search.
+
+    `client` is unused: this source is not an HTTP API. It keeps the signature
+    every source shares so the dispatch loop needs no special case.
+    """
+    if page > 1:
+        # Web search has no stable paging — asking again returns the same pages
+        # in a different order. One page is what this source offers, and
+        # reporting a total equal to what came back keeps "load more" off.
+        return [], 0
+
+    size = _web_page_size(limit)
+    ask = [f"Subject of the search:\n{query_text}", f"Return at most {size} records."]
+    if filters is not None and (filters.yearFrom is not None or filters.yearTo is not None):
+        ask.append(
+            f"Prefer documents published between {filters.yearFrom or 'any year'} and "
+            f"{filters.yearTo or 'any year'}."
+        )
+
+    try:
+        response = await asyncio.wait_for(
+            _openai.responses.create(
+                model=MODEL,
+                instructions=WEB_SEARCH_PROMPT,
+                input="\n\n".join(ask),
+                tools=[{"type": "web_search_preview"}],
+            ),
+            timeout=WEB_SEARCH_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as error:
+        raise SourceSearchError(
+            "Web & documentation", f"no answer within {int(WEB_SEARCH_TIMEOUT_SECONDS)}s"
+        ) from error
+    except Exception as error:
+        raise SourceSearchError("Web & documentation", str(error)) from error
+
+    data = extract_json(response.output_text or "")
+    if data is None:
+        raise SourceSearchError("Web & documentation", "the model did not return readable JSON")
+
+    papers: list[PaperResult] = []
+    seen: set[str] = set()
+    for record in data.get("records") or []:
+        title = (record.get("title") or "").strip()
+        url = (record.get("url") or "").strip()
+        # A record without a reachable address cannot be checked by a reader, so
+        # it has no place in a review's evidence.
+        if not title or not url.startswith(("http://", "https://")):
+            continue
+        # Peer-reviewed work belongs to the databases, and arriving here it
+        # would be counted on the wrong PRISMA pathway and labelled as grey
+        # literature when it is not. Three independent checks, because none of
+        # them is sufficient on its own: the model is asked outright, its answer
+        # is checked against the address, and against the publisher's name —
+        # there are more journal hosts than any list can hold, and a small
+        # publisher's own domain passes an address check untouched.
+        publisher_raw = (record.get("publisher") or "").strip()
+        if record.get("peer_reviewed") is True:
+            continue
+        if _is_non_grey(url) or _is_journal_publisher(publisher_raw):
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        year = _web_record_year(record.get("year"))
+        if not _web_in_year_range(year, filters):
+            continue
+        publisher = publisher_raw
+        kind = _WEB_KINDS.get((record.get("kind") or "").strip(), _WEB_KINDS["other"])
+        papers.append(PaperResult(
+            title=title,
+            # There is no author list for a vendor page; who published it and
+            # what sort of document it is are what a reviewer needs instead.
+            authors=f"{publisher} · {kind}" if publisher else kind,
+            year=year,
+            url=url,
+            openAccessUrl=url,
+            abstract=(record.get("summary") or "").strip(),
+            source="web",
+        ))
+        if len(papers) >= size:
+            break
+
+    return papers, len(papers)
+
+
 # ── Europe PMC ────────────────────────────────────────────────────────────────
 # Life sciences, plus the preprint servers and theses PubMed does not index. It
 # takes a full boolean query, so unlike OpenAlex it needs no rewriting.
@@ -726,6 +1014,19 @@ class SourceSpec:
     #: wherever it appears.
     comparable_hits: bool
     blurb: str
+    #: True where the source searches `SearchRequest.subject` in preference to
+    #: the database query — see that field.
+    prefers_subject: bool = False
+    #: True where this source is not peer-reviewed literature. PRISMA 2020 counts
+    #: it on the other identification pathway — websites and organisations — so
+    #: it is flagged here and kept apart from the database corpus downstream.
+    grey_literature: bool = False
+    #: What to say in the strategy record when `comparable_hits` is False. The
+    #: default describes a relevance-ranked index; a web search needs its own.
+    hits_note: str = (
+        "hits are a relevance match on the terms individually, not records"
+        " meeting the whole query; excluded from the identification total"
+    )
 
 
 SOURCES: dict[str, SourceSpec] = {
@@ -765,6 +1066,25 @@ SOURCES: dict[str, SourceSpec] = {
         comparable_hits=False, share=_half_share,
         unsupported=("language",),
         blurb="Computer science, engineering and the social sciences (throttled without an API key)",
+    ),
+    "web": SourceSpec(
+        key="web", name="Web & documentation", fetch="search_web",
+        # The boolean operators mean nothing to a web search and read as noise.
+        needs_clean_query=True, describe=_web_as_run,
+        page_size=_web_page_size,
+        comparable_hits=False, share=_web_page_size,
+        prefers_subject=True,
+        unsupported=("openAccessOnly", "excludePreprints", "language"),
+        grey_literature=True,
+        blurb=(
+            "Vendor documentation, white papers, regulatory filings and reports — grey"
+            " literature, for systems the bibliographic databases do not index"
+        ),
+        hits_note=(
+            "grey literature found by web search: a count of pages retrieved, not of records"
+            " matching a database query; reported on the PRISMA websites/organisations pathway"
+            " rather than in the database identification total"
+        ),
     ),
 }
 
@@ -811,10 +1131,7 @@ def describe_source(spec: SourceSpec, query_text: str, f: SearchFilters | None) 
     if missed:
         as_run += f"  [limit not supported by this database, not applied: {', '.join(missed)}]"
     if not spec.comparable_hits:
-        as_run += (
-            "  [hits are a relevance match on the terms individually, not records"
-            " meeting the whole query; excluded from the identification total]"
-        )
+        as_run += f"  [{spec.hits_note}]"
     return as_run
 
 
@@ -826,6 +1143,8 @@ class SourceInfo(BaseModel):
     unsupportedLimits: list[str] = []
     #: False where the database's hit count cannot be read as records identified.
     comparableHits: bool = True
+    #: True where the source returns grey literature rather than peer-reviewed work.
+    greyLiterature: bool = False
 
 
 @router.get("/search/sources", response_model=list[SourceInfo])
@@ -839,6 +1158,7 @@ def list_sources() -> list[dict]:
             "default": spec.key in DEFAULT_SOURCE_KEYS,
             "unsupportedLimits": [_LIMIT_LABELS[f] for f in spec.unsupported],
             "comparableHits": spec.comparable_hits,
+            "greyLiterature": spec.grey_literature,
         }
         for spec in SOURCES.values()
     ]
@@ -861,8 +1181,14 @@ async def search_papers(req: SearchRequest):
     page = max(req.page, 1)
     # Each source's own page size and query form, settled before dispatch so the
     # figures reported below are the ones the requests actually used.
+    subject = req.subject.strip()
     plans = [
-        (spec, spec.share(req.limit), cleaned_query if spec.needs_clean_query else req.query)
+        (
+            spec,
+            spec.share(req.limit),
+            subject if (spec.prefers_subject and subject)
+            else (cleaned_query if spec.needs_clean_query else req.query),
+        )
         for spec in specs
     ]
 

@@ -11,6 +11,7 @@ export function TopBar() {
   const [showExport, setShowExport] = useState(false)
   const [showPeerReview, setShowPeerReview] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const reviewMode = state.reviewMode
 
   function startEdit() {
     setDraft(state.sessionTitle || '')
@@ -30,6 +31,7 @@ export function TopBar() {
   // Keyboard shortcuts: Ctrl/Cmd+Z for undo, Ctrl/Cmd+Shift+Z for redo
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
+      if (reviewMode) return
       const mod = e.metaKey || e.ctrlKey
       if (!mod) return
       if (e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo() }
@@ -37,7 +39,7 @@ export function TopBar() {
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [undo, redo])
+  }, [undo, redo, reviewMode])
 
   return (
     <>
@@ -49,7 +51,7 @@ export function TopBar() {
         </div>
 
         {/* Session title — click to edit */}
-        {editing ? (
+        {editing && !state.reviewMode ? (
           <input
             ref={inputRef}
             value={draft}
@@ -64,8 +66,8 @@ export function TopBar() {
           />
         ) : (
           <button
-            onClick={startEdit}
-            title="Click to rename"
+            onClick={() => { if (!state.reviewMode) startEdit() }}
+            title={state.reviewMode ? state.sessionTitle || 'Untitled Session' : 'Click to rename'}
             className="text-[11px] text-zinc-400 hover:text-zinc-200 truncate max-w-[200px] transition-colors"
           >
             {state.sessionTitle || 'Untitled Session'}
@@ -78,7 +80,7 @@ export function TopBar() {
         <div className="flex items-center gap-0.5">
           <button
             onClick={undo}
-            disabled={!canUndo}
+            disabled={!canUndo || state.reviewMode}
             title="Undo (⌘Z)"
             className="w-7 h-7 flex items-center justify-center rounded text-zinc-400 hover:text-white hover:bg-zinc-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
@@ -89,7 +91,7 @@ export function TopBar() {
           </button>
           <button
             onClick={redo}
-            disabled={!canRedo}
+            disabled={!canRedo || state.reviewMode}
             title="Redo (⌘⇧Z)"
             className="w-7 h-7 flex items-center justify-center rounded text-zinc-400 hover:text-white hover:bg-zinc-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
           >
@@ -117,6 +119,25 @@ export function TopBar() {
             </span>
           )}
         </span>
+
+        {/* Review mode — read the whole review without changing it */}
+        <button
+          onClick={() => dispatch({ type: 'SET_REVIEW_MODE', enabled: !state.reviewMode })}
+          title={state.reviewMode
+            ? 'Leave review mode and edit again'
+            : 'Browse every step read-only — no editing, no outdated-step warnings'}
+          className={`px-3 py-1 rounded text-[11px] transition-colors flex items-center gap-1.5 border ${
+            state.reviewMode
+              ? 'bg-sky-600 border-sky-500 text-white hover:bg-sky-500'
+              : 'border-zinc-600 text-zinc-300 hover:border-zinc-400 hover:text-white'
+          }`}
+        >
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+            <path d="M1 6s1.8-3.2 5-3.2S11 6 11 6s-1.8 3.2-5 3.2S1 6 1 6Z" stroke="currentColor" strokeWidth="1.2"/>
+            <circle cx="6" cy="6" r="1.4" stroke="currentColor" strokeWidth="1.2"/>
+          </svg>
+          {state.reviewMode ? 'Review mode: on' : 'Review Mode'}
+        </button>
 
         {/* Export button */}
         <button

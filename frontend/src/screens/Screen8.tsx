@@ -711,7 +711,7 @@ export function Screen8() {
         <span className="text-[11px] text-zinc-500">Session:</span>
         <span className="text-[13px] text-white font-bold">{state.sessionTitle || "Untitled Session"}</span>
         <div className="flex-1" />
-        <span className="text-[11px] text-zinc-500">Step 8 · Final Question</span>
+        <span className="text-[11px] text-zinc-500">Step 7 · Final Question</span>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
@@ -972,10 +972,10 @@ export function Screen8() {
       {/* Footer */}
       <div className="h-12 border-t border-zinc-200 bg-white flex items-center px-4 justify-between shrink-0">
         <button
-          onClick={() => dispatch({ type: "SET_STEP", step: 7 })}
+          onClick={() => dispatch({ type: "SET_STEP", step: 6 })}
           className="px-4 h-8 border border-zinc-300 rounded text-[11px] text-zinc-700 hover:bg-zinc-50"
         >
-          ← Back to Gap Statement
+          ← Back to Synthesis & Gap
         </button>
         <div className="flex items-center gap-3">
           {selectedTopic && (

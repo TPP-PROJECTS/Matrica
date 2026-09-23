@@ -2,7 +2,7 @@
 
 Matrica is a research workflow and matrix-analysis tool that walks you through a structured literature review, from defining a topic to drafting a final research question. This manual explains how to use each part of the application.
 
-> **New to Matrica?** Read [Before you start](#before-you-start) and [The interface at a glance](#the-interface-at-a-glance) first, then follow the nine steps in order.
+> **New to Matrica?** Read [Before you start](#before-you-start) and [The interface at a glance](#the-interface-at-a-glance) first, then follow the seven steps in order.
 
 ---
 
@@ -11,16 +11,14 @@ Matrica is a research workflow and matrix-analysis tool that walks you through a
 1. [Before you start](#before-you-start)
 2. [The interface at a glance](#the-interface-at-a-glance)
 3. [Reading the signals: AI badges & confidence dots](#reading-the-signals-ai-badges--confidence-dots)
-4. [The nine-step workflow](#the-nine-step-workflow)
+4. [The seven-step workflow](#the-seven-step-workflow)
    - [Step 1 — Chat & Define Topic](#step-1--chat--define-topic)
    - [Step 2 — Matrix Initial](#step-2--matrix-initial)
-   - [Step 3 — System Review](#step-3--system-review)
-   - [Step 4 — Explore & Search](#step-4--explore--search)
-   - [Step 5 — Select Paper](#step-5--select-paper)
-   - [Step 6 — Matrix Table](#step-6--matrix-table)
-   - [Step 7 — Synthesis](#step-7--synthesis)
-   - [Step 8 — Gap & Statement](#step-8--gap--statement)
-   - [Step 9 — Final Question](#step-9--final-question)
+   - [Step 3 — Explore & Search](#step-3--explore--search)
+   - [Step 4 — Select Paper](#step-4--select-paper)
+   - [Step 5 — Matrix Table](#step-5--matrix-table)
+   - [Step 6 — Synthesis & Gap](#step-6--synthesis--gap)
+   - [Step 7 — Final Question](#step-7--final-question)
 5. [Saving, sessions & version history](#saving-sessions--version-history)
 6. [Exporting your report](#exporting-your-report)
 7. [Peer review](#peer-review)
@@ -43,18 +41,24 @@ The screen has three main areas:
 
 | Area | Location | What it does |
 | --- | --- | --- |
-| **Workflow steps** | Left sidebar | The nine steps of the review. Click any step to jump to it. The current step is highlighted. |
+| **Workflow steps** | Left sidebar | The seven steps of the review. Click any step you have reached to jump to it. The current step is highlighted. |
 | **Main workspace** | Centre | The content for the step you're on — chat, cards, tables, etc. |
 | **Top bar** | Top | Session title, undo/redo, and access to export, version history, and peer review. |
 
 **Top bar controls**
 
 - **Session title** — click the title (top left, "Session title…") to rename the current review. It's filled in automatically the first time you enter a research domain.
+- **Review Mode** — switch the whole app read-only. Every step you have reached stays open for reading
+  and you can move between them freely, but nothing can be edited, and the "outdated step" warnings are
+  hidden. Use it to read a review end to end, or to show it to someone, without risk of changing it.
 - **Undo / Redo** — step backwards or forwards through your changes.
   - Undo: `⌘Z` (Ctrl+Z on Windows)
   - Redo: `⌘⇧Z` (Ctrl+Shift+Z)
 
-You can move between steps freely, but the workflow is designed to be done **in order** — later steps build on the decisions you make earlier.
+You can move between steps freely once you have reached them, but the workflow is designed to be done
+**in order** — later steps build on the decisions you make earlier. Going *back* to revise an earlier
+step marks everything downstream of it as outdated so you know what to re-check; the work itself is
+kept, and you can jump forward to any of those steps again without regenerating anything.
 
 ---
 
@@ -76,7 +80,7 @@ Wherever you see medium or low confidence flagged (for example a banner reading 
 
 ---
 
-## The nine-step workflow
+## The seven-step workflow
 
 ### Step 1 — Chat & Define Topic
 
@@ -101,48 +105,71 @@ Wherever you see medium or low confidence flagged (for example a banner reading 
 **Goal:** decide the shape of your analysis before you collect data.
 
 - Choose whether to **include a system comparison matrix** in addition to the literature matrix. Turn this on if you plan to compare *tools, platforms, or systems* (not just papers) side by side.
-- This choice sets up the matrix structure used later in [Step 6](#step-6--matrix-table).
+- This choice sets up the matrix structure used later in [Step 5](#step-5--matrix-table).
 - If a suggestion fails to load, use **Retry**.
 
 ---
 
-### Step 3 — System Review
+### Step 3 — Explore & Search
 
-**Goal:** choose the databases and tools your review will draw on.
+**Goal:** decide what the review searches for — topics *and* systems — then run the searches.
 
-- Matrica proposes a list of **systems** — literature databases, AI tools, and other sources — each with a name, description, category, and vendor.
-- **Select** the systems you want to include by ticking them.
-- **Add your own** system if something you use isn't listed (your custom additions are kept separate from AI-suggested ones).
-- Use **Generate more** to ask the AI for additional suggestions.
+The screen is organised into **Topics / Systems**, **Queries**, and **Search Results**.
 
-Only the systems you select are carried forward.
-
----
-
-### Step 4 — Explore & Search
-
-**Goal:** get AI-recommended topics and search queries, then run searches.
-
-The screen is organised into **Topics**, **Queries**, and **Search Results**.
-
-**Topics**
+**Topics tab**
 - The AI suggests topic cards grouped by type — **Population**, **Design**, **Risk**, **Review**.
 - Each card shows a title, description, tags, and the AI's **rationale**.
 - A **profile-match** marker tells you whether a topic came directly from your profile or was inferred.
 - **Select** the topics you want to pursue. Add a **New Topic** of your own if needed.
 
+**Systems tab**
+- Matrica proposes the **systems** relevant to your profile — clinical systems, AI platforms, decision
+  support tools and so on — each with a description, category and vendor.
+- **Select** the ones your review appraises, **Generate more** for further suggestions, or add your own
+  by name.
+- A selected system is a search subject, exactly like a topic. Its queries retrieve the published
+  evaluations, implementation reports and official documentation of that system, so the system review
+  rests on retrievable sources rather than on what a model recalls.
+
+**How topics and systems relate**
+- **↔ Map links** works out which systems bear on which topics and draws the relation on both tabs:
+  a topic card lists its **Related systems**, a system card lists its **Related topics**.
+- A filled chip (●) is a strong link, an outlined one (○) a possible link. Hover either to read the
+  one-sentence reason the link was made — the reason is the point, because a link you cannot judge is
+  no use to you.
+- It runs once on its own when both lists are populated. Press the button to redo it after you have
+  added or edited topics or systems. The links are saved with the session.
+
 **Queries**
-- For each selected topic, the AI drafts search **queries**, each with a **quality score**, **priority** (high / med), target **databases**, and an expected result count.
-- Review and refine the query text as needed.
+- **Confirm** drafts search **queries** for every selected topic *and* system, each with a **quality
+  score**, **priority** (high / med) and target **databases**.
+- Review and refine the query text as needed; each card names the topic or system it belongs to.
+
+**Web & documentation (grey literature)**
+- Every query card carries a **+ web & documentation** switch. It is **on by default for a system
+  query** and off for a topic query.
+- It exists because a bibliographic database indexes journal articles, and a commercial platform's
+  evidence is often somewhere else entirely: its own documentation, a vendor white paper, a
+  regulator's clearance, a health service's implementation report, an industry analysis. A
+  literature-only search for a system routinely returns nothing, and the system then reads as
+  unstudied when it is only unindexed.
+- The web search is given the system's **name and description** rather than the Boolean query — a
+  string written for PubMed makes a poor web search — and journal articles are rejected from its
+  results, because the databases already cover those.
+- What it finds is screened like anything else, but it is marked **grey literature — web source, not
+  peer-reviewed** wherever it appears, is left out of the database identification and duplicate
+  figures, and is reported on PRISMA's websites/organisations line. You can also turn the source on
+  for every query from the **Databases** picker.
 
 **Search Results**
-- Click **Search** on any query to fetch papers for it (*"Click Search on any query to find papers"*).
-- Results appear ready for screening in the next step.
-- Filter by **publication year** and other criteria. Use **Dismiss** / **Cancel** to discard suggestions you don't want.
+- Click **Search** on any query to fetch papers for it.
+- Everything found — including the papers and pages about your systems — lands in the same pool and is
+  screened in the next step.
+- Set **search limits** (year, language, open access, preprints) and choose which databases to search.
 
 ---
 
-### Step 5 — Select Paper
+### Step 4 — Select Paper
 
 **Goal:** screen the search results and build your **Review List**.
 
@@ -158,7 +185,7 @@ The papers in your **Review List** are what flow into the matrix.
 
 ---
 
-### Step 6 — Matrix Table
+### Step 5 — Matrix Table
 
 **Goal:** systematically code every paper (and optionally every system) against a common set of columns.
 
@@ -182,35 +209,63 @@ This is the heart of Matrica. There are up to two matrices:
 
 ---
 
-### Step 7 — Synthesis
+### Step 6 — Synthesis & Gap
 
-**Goal:** turn the coded matrix into themed analysis.
+**Goal:** turn the coded matrix into themed analysis, and name the gap it leaves.
 
-- Matrica groups your findings into **Themes**. Each theme shows how many papers it covers and a coverage label — **Dense**, **Moderate**, or **Sparse**.
-- Each theme links to the matrix **columns** it draws from (both **Literature Matrix** and **System Review Matrix** columns).
+Synthesis and gap analysis read the same evidence, so they share one screen — and one rendering of
+the matrix, at the top, rather than one each.
+
+**The evidence matrix**
+- **Every matrix column is shown**, in its original order — not just the ones the synthesis uses. The
+  columns the selected theme draws on are **highlighted**: a solid blue header marked
+  **★ Used by theme · AI-selected** (or **your choice** for a theme you defined), and a blue rail down
+  their cells, so the confidence colouring stays readable underneath.
+- Add or remove highlighted columns with the chips above the table. **Theme columns** narrows the table
+  to just those; **All columns** (the default) brings the rest back.
+- Shown in **Full text** by default: every cell in full, in its own box that scrolls both up/down and
+  left/right, with the header row and the paper column pinned while you move. Drag the box's corner
+  to make it taller.
+- Switch to **Compact** for one line per cell when you want the coverage pattern of a wide schema
+  rather than the wording.
+
+**Themes and analysis blocks**
+- Matrica groups your findings into **Themes**. Each theme shows how many papers it covers and a
+  coverage label — **Dense**, **Moderate**, or **Sparse**.
+- **Define your own** with **+ New theme**: give it a name, pick the matrix columns it draws on, and
+  optionally let the AI draft its four analysis blocks from those columns. Your themes are marked
+  **yours**, their coverage is computed live from the columns you chose, and regenerating the AI
+  synthesis never removes them.
+- Hover any theme to **rename** (✎) or **delete** (×) it. Any block can be removed with its ×, and
+  **✦ Fill empty blocks** drafts whatever a theme still has empty.
+- The chips above the matrix set which **columns** each theme draws from (both **Literature Matrix**
+  and **System Review Matrix** columns); a linked column is marked ● in the matrix header.
 - Within a theme, the AI produces **analysis blocks**:
   - **Focus** — the core focus of the theme
   - **Patterns** — regularities across papers
   - **Unclear** — contested or ambiguous points
   - **Missing** — gaps and blank spots
-- Add your own angle with **New Analyst** (a custom analysis block) — for example a methodological or theoretical lens the default blocks don't cover.
+- Add your own angle with **Add Custom Analyst** — for example a methodological or theoretical lens
+  the default blocks don't cover.
 - Edit any block's text directly; citations link back to the underlying papers.
-- Watch for the notice *"Some underlying data is medium/low confidence"* — it flags themes built on shakier cells.
+- Watch for the notice *"Some underlying data is medium/low confidence"* — it flags themes built on
+  shakier cells.
+- If no themes exist yet, **Generate synthesis** builds them from the matrix. Returning to this step
+  later never regenerates them: your edited blocks are what you come back to.
+
+**Schema gaps**
+- **Click a column header** in the matrix to compare every paper (or system) on that one direction and
+  name the gap their shared pattern, disagreement or incomparability leaves.
+
+**Overall gap statement**
+- Draft the **Overall Gap Statement** — the synthesis of what is missing that your research will
+  address — or generate it from the matrix, the selected systems, the synthesis and the risk-of-bias
+  appraisal, then edit it.
+- Recording *why* you changed a generated statement keeps the decision journal complete.
 
 ---
 
-### Step 8 — Gap & Statement
-
-**Goal:** identify where the literature is thin and articulate the gap.
-
-- Matrica surfaces **gap dimensions** — types of gaps such as *dense*, *thin*, *ignored*, *weak design*, *uncertain*, or *no theory* — each backed by a count of supporting papers.
-- A **Matrix Coverage** view highlights **schema gaps across papers** and **across systems** (columns where evidence is sparse).
-- **Select** the gaps you consider most important.
-- Draft the **Overall Gap Statement** — the synthesis of what's missing that your research will address.
-
----
-
-### Step 9 — Final Question
+### Step 7 — Final Question
 
 **Goal:** produce a research question and a paper structure.
 
@@ -257,7 +312,7 @@ Matrica can share a review with a colleague for feedback — a **critical-thinki
 - **Invest in Step 1.** A precise Research Profile improves every downstream suggestion.
 - **Trust, but verify.** Treat every AI badge as a prompt to check the source — especially cells and themes flagged medium/low confidence.
 - **Use the evidence panels.** In the matrix, hover cells to confirm the AI's extraction before ticking *verified*.
-- **Document your criteria.** Fill in the screening protocol (Step 5) and let it drive consistent include/exclude decisions.
+- **Document your criteria.** Fill in the screening protocol (Step 4) and let it drive consistent include/exclude decisions.
 - **Export regularly.** Since work is browser-local, export a copy at milestones so nothing is lost.
 - **Undo is your friend.** `⌘Z` / `⌘⇧Z` reverse most actions.
 

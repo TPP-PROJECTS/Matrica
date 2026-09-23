@@ -16,15 +16,29 @@ If you use Matrica in your research, please include the following statement in t
 
 Matrica organises the research process across seven sequential stages:
 
-| Step | Stage            | Description                                                                  |
-| ---- | ---------------- | ---------------------------------------------------------------------------- |
-| 1    | Chat & Define    | Conversational topic definition, builds a structured Research Profile        |
-| 2    | System Review    | Select databases and AI tools to include in the review                       |
-| 3    | Explore & Search | AI-recommended topics and search queries with confidence scoring             |
-| 4    | Select Papers    | Screen search results, build a review list with inclusion decisions          |
-| 5    | Matrix           | Literature and system comparison matrices with source traceability           |
-| 6    | Synthesis        | Theme-based synthesis with AI-generated analysis blocks and citation linkage |
-| 7    | Gap & Statement  | Identify research gaps, draft a gap statement and research questions         |
+| Step | Stage            | Description                                                                     |
+| ---- | ---------------- | ------------------------------------------------------------------------------- |
+| 1    | Chat & Define    | Conversational topic definition, builds a structured Research Profile           |
+| 2    | Matrix Initial   | Choose the extraction schema the review will code against                       |
+| 3    | Explore & Search | AI-recommended topics **and systems**, the links between them, search queries, and the searches they run |
+| 4    | Select Paper     | Screen search results, build a review list with inclusion decisions             |
+| 5    | Matrix Table     | Literature and system comparison matrices, plus risk-of-bias appraisal          |
+| 6    | Synthesis & Gap  | Themed synthesis and gap analysis over one shared view of the matrix            |
+| 7    | Final Question   | Research question, study design and paper structure                             |
+
+Systems under review are not a separate stage: they are a tab of **Explore & Search**, so the
+evidence about a system is found by a recorded search — its evaluations, implementation reports and
+documentation — and screened alongside every other paper. Two things follow from that:
+
+- **Topic ↔ system links.** The tool works out which systems bear on which topics and draws the
+  relation on both tabs, with the reason for each link, so the two halves of the review are
+  connected while the searches are still being planned.
+- **A grey-literature source.** A commercial platform's evidence is often its own documentation, a
+  vendor white paper, a regulator's clearance or a health service's implementation report — none of
+  which a bibliographic database indexes. A **Web & documentation** source searches for exactly
+  those, on by default for system queries. What it finds is screened like anything else, marked as
+  grey literature wherever it appears, and reported on PRISMA's websites/organisations pathway
+  rather than counted as database records.
 
 A key design principle of Matrica is **source traceability**: at every stage, entries record not only what was found or decided, but the evidential basis and reasoning behind each entry. In the matrix stage, this is implemented through explicit source reference and extraction method fields at the cell level.
 

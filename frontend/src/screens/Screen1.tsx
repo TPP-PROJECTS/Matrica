@@ -251,7 +251,7 @@ export function Screen1() {
           </div>
         </div>
 
-        {/* Generate Topics button */}
+        {/* Next step — generates the topics and moves on to the matrix schema */}
         <div className="px-2 pb-4 pt-3 shrink-0">
           <div className={`flex rounded overflow-hidden border ${canGenerate && !isGenerating ? 'border-zinc-700' : 'border-zinc-200'}`}>
             <button
@@ -271,7 +271,7 @@ export function Screen1() {
               ) : (
                 <>
                   {customPrompt && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />}
-                  → Generate Topics
+                  Next step →
                 </>
               )}
             </button>
