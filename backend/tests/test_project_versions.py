@@ -139,3 +139,24 @@ def test_history_is_capped_so_a_long_review_cannot_grow_without_bound():
     assert len(listed) == db.MAX_VERSIONS_PER_PROJECT
     # The oldest are the ones dropped.
     assert listed[0]["label"] == f"v{db.MAX_VERSIONS_PER_PROJECT + 4}"
+
+
+# ── Out-of-order saves ────────────────────────────────────────────────────────
+
+
+def test_an_older_save_arriving_late_does_not_overwrite_a_newer_one():
+    projects.put_project("p1", snapshot(step=5, updatedAt="2026-09-28T10:00:02.000Z"))
+    projects.put_project("p1", snapshot(step=4, updatedAt="2026-09-28T10:00:01.000Z"))
+    assert projects.get_project("p1")["currentStep"] == 5
+
+
+def test_a_newer_save_replaces_the_stored_one():
+    projects.put_project("p1", snapshot(step=4, updatedAt="2026-09-28T10:00:01.000Z"))
+    projects.put_project("p1", snapshot(step=5, updatedAt="2026-09-28T10:00:02.000Z"))
+    assert projects.get_project("p1")["currentStep"] == 5
+
+
+def test_a_save_without_a_timestamp_is_still_accepted():
+    projects.put_project("p1", snapshot(step=4, updatedAt="2026-09-28T10:00:01.000Z"))
+    projects.put_project("p1", snapshot(step=6))
+    assert projects.get_project("p1")["currentStep"] == 6

@@ -216,7 +216,6 @@ function TopicCardItem({ topic }: { topic: TopicCard }) {
         <div className="mb-1.5 bg-violet-50 border border-violet-200 rounded p-2">
           {loadingTypeExpl ? (
             <div className="flex items-center gap-2">
-              <span className="w-3 h-3 border-2 border-violet-300 border-t-violet-600 rounded-full animate-spin" />
               <span className="text-[10px] text-violet-500">Explaining…</span>
             </div>
           ) : (
@@ -248,7 +247,6 @@ function TopicCardItem({ topic }: { topic: TopicCard }) {
         <div className="mt-1.5 bg-blue-50 border border-blue-200 rounded p-2">
           {loadingReason ? (
             <div className="flex items-center gap-2">
-              <span className="w-3 h-3 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin" />
               <span className="text-[10px] text-blue-500">Analysing…</span>
             </div>
           ) : (
@@ -672,10 +670,7 @@ function QueryCardItem({ query }: { query: QueryCard }) {
           disabled={searching || !text.trim()}
           className="flex items-center gap-1.5 px-3 h-[26px] bg-zinc-900 text-white rounded text-[10px] font-semibold hover:bg-zinc-700 disabled:opacity-50 transition-colors"
         >
-          {searching
-            ? <span className="w-3 h-3 border-2 border-zinc-500 border-t-white rounded-full animate-spin" />
-            : <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><circle cx="5" cy="5" r="3.5" stroke="white" strokeWidth="1.5"/><path d="M8 8l2 2" stroke="white" strokeWidth="1.5" strokeLinecap="round"/></svg>
-          }
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><circle cx="5" cy="5" r="3.5" stroke="white" strokeWidth="1.5"/><path d="M8 8l2 2" stroke="white" strokeWidth="1.5" strokeLinecap="round"/></svg>
           {searching ? 'Searching…' : retrieved > 0 ? 'Search again' : 'Search'}
         </button>
       </div>
@@ -961,7 +956,6 @@ function ResultCardItem({
           </div>
         ) : result.scoreStatus === 'pending' ? (
           <div className="flex items-center gap-1 mt-1">
-            <span className="w-2 h-2 border border-zinc-300 border-t-purple-500 rounded-full animate-spin" />
             <span className="text-[9px] text-zinc-400">assessing…</span>
           </div>
         ) : (
@@ -1234,9 +1228,7 @@ export function Screen3() {
                   disabled={isRegenerating}
                   className="flex items-center gap-1 px-2 h-[20px] rounded bg-zinc-700 text-zinc-200 text-[9px] hover:bg-zinc-600 disabled:opacity-50 transition-colors"
                 >
-                  {isRegenerating
-                    ? <span className="w-2.5 h-2.5 border border-zinc-400 border-t-white rounded-full animate-spin" />
-                    : <span>↺</span>}
+                  <span>↺</span>
                   {customRegenPrompt && <span className="w-1 h-1 rounded-full bg-amber-400 shrink-0" />}
                   Regenerate
                 </button>
@@ -1262,9 +1254,7 @@ export function Screen3() {
               title="Work out which systems bear on which topics, and show the links on both tabs"
               className="flex items-center gap-1 px-2 h-[20px] rounded bg-zinc-700 text-zinc-200 text-[9px] hover:bg-zinc-600 disabled:opacity-40 transition-colors"
             >
-              {isLinking
-                ? <span className="w-2.5 h-2.5 border border-zinc-400 border-t-white rounded-full animate-spin" />
-                : <span>↔</span>}
+              <span>↔</span>
               {isLinking ? 'Mapping…' : linkCount > 0 ? `Links (${linkCount})` : 'Map links'}
             </button>
             <button
@@ -1275,9 +1265,7 @@ export function Screen3() {
                 queriesGenerated ? 'bg-teal-600 text-white hover:bg-teal-500' : 'bg-blue-500 text-white hover:bg-blue-400'
               } disabled:opacity-50`}
             >
-              {isConfirming
-                ? <span className="w-2.5 h-2.5 border border-blue-300 border-t-white rounded-full animate-spin" />
-                : <span>{queriesGenerated ? '✓' : '→'}</span>}
+              <span>{queriesGenerated ? '✓' : '→'}</span>
               {customConfirmPrompt && <span className="w-1 h-1 rounded-full bg-amber-400 shrink-0" />}
               {queriesGenerated ? 'Confirmed' : 'Confirm'}
             </button>

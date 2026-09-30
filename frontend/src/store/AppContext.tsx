@@ -4,9 +4,10 @@ import { buildResearchContext } from '../lib/buildResearchContext'
 import { setAnalyticsSession, trackEvent } from '../lib/api'
 import { partitionNewPapers } from '../lib/dedupe'
 import { newId } from '../lib/ids'
+import { describeAiExtraction, describeEditExplanation, mergeExtractedCells, resetCell, reviewCell } from '../lib/matrixVerification'
 import type {
-  AppState, AppAction, ResearchProfile, StepState, SystemItem, SystemMatrixRow,
-  SessionSnapshot, ScreeningCriterion, SearchFilters, DecisionJournalEntry,
+  AppState, AppAction, ResearchProfile, StepState, SystemItem, SystemMatrixRow, MatrixCell,
+  SessionSnapshot, ScreeningCriterion, SearchFilters, DecisionJournalEntry, MatrixKind,
 } from '../types'
 import { BASE_MATRIX_COLUMNS, WELCOME_MESSAGES } from '../data/initialData'
 import { STEPS, LAST_STEP, clampStep, migrateStep, migrateSteps } from '../lib/steps'
@@ -85,8 +86,10 @@ function freshState(): AppState {
     systemMatrixRows: [],
     systemMatrixColumns: [],
     paperFullTexts: {},
+    integrityChecks: {},
     robToolId: null,
     robAssessments: [],
+    certaintyAssessments: [],
     themes: [],
     activeThemeId: '',
     gaps: [],
@@ -160,8 +163,10 @@ function snapshotToState(snap: SessionSnapshot): AppState {
     systemMatrixColumns: snap.systemMatrixColumns ?? base.systemMatrixColumns,
     systemMatrixRows: snap.systemMatrixRows ?? base.systemMatrixRows,
     paperFullTexts: snap.paperFullTexts ?? base.paperFullTexts,
+    integrityChecks: snap.integrityChecks ?? base.integrityChecks,
     robToolId: snap.robToolId ?? base.robToolId,
     robAssessments: snap.robAssessments ?? base.robAssessments,
+    certaintyAssessments: snap.certaintyAssessments ?? base.certaintyAssessments,
     themes: snap.themes ?? base.themes,
     activeThemeId: snap.activeThemeId ?? base.activeThemeId,
     gaps: snap.gaps ?? base.gaps,
@@ -174,7 +179,9 @@ function snapshotToState(snap: SessionSnapshot): AppState {
     finalTopicOptions: snap.finalTopicOptions ?? [],
     topicFinalData: snap.topicFinalData ?? base.topicFinalData,
     selectedFinalTopicId: snap.selectedFinalTopicId ?? null,
-    decisionJournal: snap.decisionJournal ?? [],
+    // Entries carry the step they were made in, under the layout of the time;
+    // map them forward with the session so they file under the right step.
+    decisionJournal: (snap.decisionJournal ?? []).map(entry => ({ ...entry, step: migrateStep(entry.step, snap.stepSchema) })),
   }
 }
 
@@ -823,11 +830,12 @@ export function reducer(state: AppState, action: AppAction): AppState {
       return same ? state : { ...state, matrixRows: rows }
     }
 
+    // Extraction results never replace a cell the reviewer has verified.
     case 'UPDATE_MATRIX_ROW_CELLS':
       return {
         ...state,
         matrixRows: state.matrixRows.map(row =>
-          row.paperId === action.paperId ? { ...row, cells: { ...row.cells, ...action.cells } } : row
+          row.paperId === action.paperId ? { ...row, cells: mergeExtractedCells(row.cells, action.cells) } : row
         ),
       }
 
@@ -835,9 +843,91 @@ export function reducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         systemMatrixRows: (state.systemMatrixRows ?? []).map(row =>
-          row.systemId === action.systemId ? { ...row, cells: { ...row.cells, ...action.cells } } : row
+          row.systemId === action.systemId ? { ...row, cells: mergeExtractedCells(row.cells, action.cells) } : row
         ),
       }
+
+    case 'REVIEW_MATRIX_CELL': {
+      const now = new Date().toISOString()
+      const apply = (cells: Record<string, MatrixCell>) => {
+        const next = reviewCell(cells[action.column], action.verified, action.value, now, action.explanation)
+        return next ? { ...cells, [action.column]: next } : cells
+      }
+      return action.matrix === 'literature'
+        ? { ...state, matrixRows: state.matrixRows.map(row => row.paperId === action.rowId ? { ...row, cells: apply(row.cells) } : row) }
+        : { ...state, systemMatrixRows: (state.systemMatrixRows ?? []).map(row => row.systemId === action.rowId ? { ...row, cells: apply(row.cells) } : row) }
+    }
+
+    case 'RESET_MATRIX_CELL': {
+      const apply = (cells: Record<string, MatrixCell>) => {
+        const next = resetCell(cells[action.column])
+        return next ? { ...cells, [action.column]: next } : cells
+      }
+      return action.matrix === 'literature'
+        ? { ...state, matrixRows: state.matrixRows.map(row => row.paperId === action.rowId ? { ...row, cells: apply(row.cells) } : row) }
+        : { ...state, systemMatrixRows: (state.systemMatrixRows ?? []).map(row => row.systemId === action.rowId ? { ...row, cells: apply(row.cells) } : row) }
+    }
+
+    case 'SET_CERTAINTY_ASSESSMENT':
+      return {
+        ...state,
+        certaintyAssessments: [
+          ...(state.certaintyAssessments ?? []).filter(a => a.themeId !== action.assessment.themeId),
+          action.assessment,
+        ],
+      }
+
+    case 'UPDATE_CERTAINTY_DOMAIN':
+      return {
+        ...state,
+        certaintyAssessments: (state.certaintyAssessments ?? []).map(a => {
+          if (a.themeId !== action.themeId) return a
+          const current = a.domains[action.domainId] ?? { judgement: '', rationale: '', aiGenerated: false, verifiedByStudent: false }
+          return {
+            ...a,
+            domains: {
+              ...a.domains,
+              [action.domainId]: {
+                ...current,
+                judgement: action.judgement ?? current.judgement,
+                rationale: action.rationale ?? current.rationale,
+                // Changing a judgement is itself the reviewer's sign-off on it.
+                verifiedByStudent: action.verified ?? (action.judgement !== undefined ? true : current.verifiedByStudent),
+              },
+            },
+          }
+        }),
+      }
+
+    case 'UPDATE_CERTAINTY_ASSESSMENT':
+      return {
+        ...state,
+        certaintyAssessments: (state.certaintyAssessments ?? []).map(a => a.themeId !== action.themeId ? a : {
+          ...a,
+          ...(action.finding !== undefined ? { finding: action.finding } : {}),
+          ...(action.startLevel !== undefined ? { startLevel: action.startLevel } : {}),
+          ...(action.override !== undefined ? { override: action.override } : {}),
+        }),
+      }
+
+    case 'REMOVE_CERTAINTY_ASSESSMENT':
+      return { ...state, certaintyAssessments: (state.certaintyAssessments ?? []).filter(a => a.themeId !== action.themeId) }
+
+    case 'SET_INTEGRITY_CHECKS':
+      return { ...state, integrityChecks: { ...(state.integrityChecks ?? {}), ...action.checks } }
+
+    case 'VERIFY_MATRIX_CELLS': {
+      const now = new Date().toISOString()
+      const ids = new Set(action.rowIds)
+      const apply = (id: string, cells: Record<string, MatrixCell>) => {
+        const cell = cells[action.column]
+        if (!ids.has(id) || !cell || cell.verifiedByStudent) return cells
+        return { ...cells, [action.column]: { ...cell, verifiedByStudent: true, verifiedAt: now } }
+      }
+      return action.matrix === 'literature'
+        ? { ...state, matrixRows: state.matrixRows.map(row => ({ ...row, cells: apply(row.paperId, row.cells) })) }
+        : { ...state, systemMatrixRows: (state.systemMatrixRows ?? []).map(row => ({ ...row, cells: apply(row.systemId, row.cells) })) }
+    }
 
     case 'SET_SYSTEM_MATRIX_COLUMNS':
       return { ...state, systemMatrixColumns: action.columns }
@@ -1072,6 +1162,7 @@ export function reducer(state: AppState, action: AppAction): AppState {
         ...state,
         themes,
         activeThemeId: state.activeThemeId === action.themeId ? (themes[0]?.id ?? '') : state.activeThemeId,
+        certaintyAssessments: (state.certaintyAssessments ?? []).filter(a => a.themeId !== action.themeId),
       }
     }
 
@@ -1179,6 +1270,15 @@ export function reducer(state: AppState, action: AppAction): AppState {
   }
 }
 
+/** A matrix cell and its row's display label, for journal entries. */
+function matrixCellContext(state: AppState, matrix: MatrixKind, rowId: string, column: string) {
+  const row = matrix === 'literature'
+    ? state.matrixRows.find(r => r.paperId === rowId)
+    : (state.systemMatrixRows ?? []).find(r => r.systemId === rowId)
+  const label = row ? ('title' in row ? row.title : row.name) : 'Matrix row'
+  return { label, cell: row?.cells[column] }
+}
+
 function automaticAuditEntry(state: AppState, action: AppAction): DecisionJournalEntry | null {
   const base = {
     id: newId('audit'),
@@ -1198,6 +1298,92 @@ function automaticAuditEntry(state: AppState, action: AppAction): DecisionJourna
       return state.currentStep === 2
         ? { ...base, step: 2, action: 'Changed initial system matrix schema', entityType: 'matrix_column', entityId: 'initial-system-schema', entityLabel: 'System matrix schema', previousValue: state.systemMatrixColumns.join(', '), newValue: action.columns.join(', ') }
         : null
+    case 'REVIEW_MATRIX_CELL': {
+      const { label, cell: before } = matrixCellContext(state, action.matrix, action.rowId, action.column)
+      const edited = action.value !== undefined && action.value.trim() !== (before?.value ?? '').trim()
+      const verb = edited
+        ? `${!before || before.evidenceType === 'not_available' ? 'Filled in' : 'Corrected'}${action.verified ? ' and confirmed' : ''}`
+        : action.verified ? 'Confirmed' : 'Withdrew confirmation of'
+      const justification = edited ? describeEditExplanation(action.explanation) : undefined
+      return {
+        ...base, step: 5,
+        ...(justification ? { kind: 'justification' as const, justification } : {}),
+        action: `${verb} ${action.matrix} matrix cell${edited && !action.verified ? ' (saved, not confirmed)' : ''}`,
+        entityType: 'matrix_cell',
+        entityId: `${action.rowId}:${action.column}`,
+        entityLabel: `${label} — ${action.column}`,
+        ...(edited ? { previousValue: before?.value ?? '', newValue: action.value!.trim() } : {}),
+        details: describeAiExtraction(before),
+      }
+    }
+    case 'RESET_MATRIX_CELL': {
+      const { label, cell: before } = matrixCellContext(state, action.matrix, action.rowId, action.column)
+      if (before?.originalValue === undefined) return null
+      return {
+        ...base, step: 5,
+        action: `Reset ${action.matrix} matrix cell to the AI extraction`,
+        entityType: 'matrix_cell',
+        entityId: `${action.rowId}:${action.column}`,
+        entityLabel: `${label} — ${action.column}`,
+        previousValue: before.value, newValue: before.originalValue,
+        details: describeAiExtraction(before),
+      }
+    }
+    case 'UPDATE_CERTAINTY_DOMAIN': {
+      if (action.judgement === undefined && action.verified === undefined) return null
+      const theme = state.themes.find(t => t.id === action.themeId)
+      const before = state.certaintyAssessments?.find(a => a.themeId === action.themeId)?.domains[action.domainId]
+      const changed = action.judgement !== undefined && action.judgement !== before?.judgement
+      return {
+        ...base, step: 6,
+        action: changed ? `Changed certainty judgement: ${action.domainId}` : action.verified ? `Confirmed certainty judgement: ${action.domainId}` : `Withdrew confirmation of certainty judgement: ${action.domainId}`,
+        entityType: 'theme', entityId: `${action.themeId}:${action.domainId}`, entityLabel: theme?.name ?? action.themeId,
+        ...(changed ? { previousValue: before?.judgement ?? '', newValue: action.judgement } : {}),
+      }
+    }
+    case 'UPDATE_CERTAINTY_ASSESSMENT': {
+      if (action.override === undefined && action.startLevel === undefined) return null
+      const theme = state.themes.find(t => t.id === action.themeId)
+      if (action.override !== undefined) {
+        return {
+          ...base, kind: 'justification' as const, step: 6,
+          action: action.override ? 'Overrode certainty rating' : 'Removed certainty override',
+          entityType: 'theme', entityId: action.themeId, entityLabel: theme?.name ?? action.themeId,
+          newValue: action.override?.level, justification: action.override?.reason || undefined,
+        }
+      }
+      return {
+        ...base, step: 6, action: 'Changed GRADE starting level',
+        entityType: 'theme', entityId: action.themeId, entityLabel: theme?.name ?? action.themeId, newValue: action.startLevel,
+      }
+    }
+    case 'SET_INTEGRITY_CHECKS': {
+      // Only a newly found problem is worth a journal line; clear results and
+      // re-checks that change nothing are not decisions.
+      const flagged = Object.entries(action.checks).filter(([id, c]) =>
+        (c.status === 'retracted' || c.status === 'concern') && state.integrityChecks?.[id]?.status !== c.status)
+      if (flagged.length === 0) return null
+      const titles = flagged.map(([id]) => state.reviewList.find(p => p.id === id)?.title ?? id)
+      return {
+        ...base, kind: 'automated_check' as const, step: state.currentStep,
+        action: `Publication integrity check flagged ${flagged.length} included paper${flagged.length === 1 ? '' : 's'}`,
+        entityType: 'paper', entityId: flagged.map(([id]) => id).join('|'), entityLabel: titles.join('; '),
+        details: flagged.map(([, c], i) => `${titles[i]}: ${c.status === 'retracted' ? 'retracted' : 'expression of concern'}`).join('\n'),
+      }
+    }
+    case 'VERIFY_MATRIX_CELLS':
+      return {
+        ...base, step: 5,
+        action: `Verified ${action.rowIds.length} ${action.matrix} matrix cell${action.rowIds.length === 1 ? '' : 's'} in one column`,
+        entityType: 'matrix_cell',
+        entityId: `column:${action.column}`,
+        entityLabel: action.column,
+        details: action.rowIds.map(id => {
+          const { label, cell } = matrixCellContext(state, action.matrix, id, action.column)
+          const ai = cell?.aiGenerated ? ` (AI, ${cell.confidenceScore}% confidence)` : ''
+          return `${label}: ${cell?.value || 'Not reported'}${ai}`
+        }).join('\n'),
+      }
     case 'SET_SYSTEM_MATRIX_ENABLED':
       return { ...base, step: 2, action: action.enabled ? 'Enabled system matrix' : 'Disabled system matrix', entityType: 'matrix_column', entityId: 'system-matrix-enabled', entityLabel: 'System matrix', newValue: String(action.enabled) }
     case 'TOGGLE_SYSTEM_ITEM': {
@@ -1305,7 +1491,9 @@ const UI_ONLY_ACTIONS = new Set([
  * unreachable. It still has to trigger a save: leaving it in UI_ONLY_ACTIONS
  * meant an undone change came back on the next reload.
  */
-const NO_HISTORY_ACTIONS = new Set(['RESTORE_STATE'])
+// A background lookup result is not a user edit: undoing it would only make
+// the next check run again.
+const NO_HISTORY_ACTIONS = new Set(['RESTORE_STATE', 'SET_INTEGRITY_CHECKS'])
 
 const MAX_HISTORY = 30
 

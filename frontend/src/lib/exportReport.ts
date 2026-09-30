@@ -8,6 +8,56 @@ import {
 } from 'docx'
 import type { AppState, SearchFilters } from '../types'
 import { primaryResearchQuestion, reportResearchQuestions } from './researchQuestions'
+import { exportCellValue, unverifiedFootnote, type VerifiableRow } from './matrixVerification'
+import { FLAGGED_STATUSES, INTEGRITY_LABEL } from './integrity'
+import { FRAMEWORKS, LEVEL_LABEL, awaitingReview, downgradeReasons, finalLevel, levelSymbols } from './certainty'
+
+/**
+ * A paper's review status, with any retraction, expression of concern or
+ * correction Crossref records for it. A report citing a retracted paper must
+ * say so where the paper is listed, not leave the reader to find out.
+ */
+function statusWithIntegrity(state: AppState, paperId: string, status: string | null | undefined): string {
+  const check = state.integrityChecks?.[paperId]
+  const flag = check && FLAGGED_STATUSES.includes(check.status) ? INTEGRITY_LABEL[check.status].toUpperCase() : ''
+  return [status ?? '', flag].filter(Boolean).join(' — ')
+}
+
+/**
+ * The summary-of-findings table: one row per rated theme, with the level, the
+ * framework, and the reasons it was moved from its starting point. Ratings
+ * with unconfirmed AI-drafted domains are marked as drafts.
+ */
+function summaryOfFindings(state: AppState): { headers: string[]; rows: string[][]; note: string | null } | null {
+  const rated = state.themes
+    .map(theme => ({ theme, a: (state.certaintyAssessments ?? []).find(x => x.themeId === theme.id) }))
+    .filter((x): x is { theme: typeof x.theme; a: NonNullable<typeof x.a> } => !!x.a)
+  if (rated.length === 0) return null
+  let drafts = 0
+  const rows = rated.map(({ theme, a }) => {
+    const level = finalLevel(a)
+    const draft = awaitingReview(a)
+    if (draft) drafts++
+    const reasons = a.override
+      ? `Reviewer override: ${a.override.reason}`
+      : downgradeReasons(a).length ? `Downgraded for ${downgradeReasons(a).join(', ')}` : 'No serious concerns'
+    return [
+      `${theme.name}: ${a.finding}`,
+      FRAMEWORKS[a.framework].name,
+      `${levelSymbols(level)} ${LEVEL_LABEL[level]}${draft ? ' (draft)' : ''}`,
+      reasons,
+    ]
+  })
+  return {
+    headers: ['Finding', 'Framework', 'Certainty', 'Reasons'],
+    rows,
+    note: drafts ? `${drafts} rating${drafts === 1 ? '' : 's'} marked "draft" still ha${drafts === 1 ? 's' : 've'} AI-drafted judgements the reviewer has not confirmed.` : null,
+  }
+}
+
+function matrixVerifyRows(state: AppState): VerifiableRow[] {
+  return state.matrixRows.map(r => ({ id: r.paperId, cells: r.cells }))
+}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -190,7 +240,7 @@ export async function exportAsDocx(state: AppState): Promise<void> {
     sections.push(h1('4. Included Papers'), spacer())
     sections.push(makeTable(
       ['Title', 'Authors', 'Year', 'Source', 'Status'],
-      included.map(p => [p.title, p.authors, String(p.year), p.source, p.status ?? '']),
+      included.map(p => [p.title, p.authors, String(p.year), p.source, statusWithIntegrity(state, p.id, p.status)]),
     ), spacer(), divider())
   }
 
@@ -201,9 +251,12 @@ export async function exportAsDocx(state: AppState): Promise<void> {
     const rows = state.matrixRows.map(row => [
       row.title,
       String(row.year),
-      ...state.matrixColumns.map(col => row.cells[col]?.value ?? '—'),
+      ...state.matrixColumns.map(col => exportCellValue(row.cells[col])),
     ])
-    sections.push(makeTable(headers, rows), spacer(), divider())
+    sections.push(makeTable(headers, rows), spacer())
+    const footnote = unverifiedFootnote(matrixVerifyRows(state), state.matrixColumns)
+    if (footnote) sections.push(para(footnote), spacer())
+    sections.push(divider())
   }
 
   // ── 6. Synthesis ─────────────────────────────────────────────────────────
@@ -219,6 +272,12 @@ export async function exportAsDocx(state: AppState): Promise<void> {
         sections.push(h3(block.title), para(block.content), spacer())
       }
       sections.push(spacer())
+    }
+    const sof = summaryOfFindings(state)
+    if (sof) {
+      sections.push(h2('Certainty of evidence'))
+      sections.push(makeTable(sof.headers, sof.rows), spacer())
+      if (sof.note) sections.push(para(sof.note, { color: '666666', italic: true }), spacer())
     }
     sections.push(divider())
   }
@@ -352,9 +411,10 @@ export function exportAsPdf(state: AppState): void {
       `<th style="background:#111;color:#fff;padding:4px 6px;font-size:9px;font-weight:600;text-align:left">${h}</th>`
     ).join('')
     const trs = state.matrixRows.map(row =>
-      `<tr><td style="padding:3px 6px;font-size:9px;border-bottom:1px solid #eee">${row.title}</td><td style="padding:3px 6px;font-size:9px;border-bottom:1px solid #eee">${row.year}</td>${state.matrixColumns.map(col => `<td style="padding:3px 6px;font-size:9px;border-bottom:1px solid #eee">${row.cells[col]?.value ?? '—'}</td>`).join('')}</tr>`
+      `<tr><td style="padding:3px 6px;font-size:9px;border-bottom:1px solid #eee">${row.title}</td><td style="padding:3px 6px;font-size:9px;border-bottom:1px solid #eee">${row.year}</td>${state.matrixColumns.map(col => `<td style="padding:3px 6px;font-size:9px;border-bottom:1px solid #eee">${exportCellValue(row.cells[col])}</td>`).join('')}</tr>`
     ).join('')
-    return `<table style="width:100%;border-collapse:collapse;font-size:9px"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`
+    const footnote = unverifiedFootnote(matrixVerifyRows(state), state.matrixColumns)
+    return `<table style="width:100%;border-collapse:collapse;font-size:9px"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>${footnote ? `<p style="font-size:9px;color:#666;margin-top:4px">${footnote}</p>` : ''}`
   })() : ''
 
   const html = `<!DOCTYPE html>
@@ -395,7 +455,7 @@ ${(state.importedSearches ?? []).length > 0 ? section('3b. Searches imported fro
 ).join('')}</tbody></table>`) : ''}
 
 ${included.length > 0 ? section('4. Included Papers', `<table><thead><tr><th>Title</th><th>Authors</th><th>Year</th><th>Source</th><th>Status</th></tr></thead><tbody>${included.map(p =>
-  `<tr><td>${p.title}</td><td>${p.authors}</td><td>${p.year}</td><td>${p.source}</td><td>${p.status ?? ''}</td></tr>`
+  `<tr><td>${p.title}</td><td>${p.authors}</td><td>${p.year}</td><td>${p.source}</td><td>${statusWithIntegrity(state, p.id, p.status)}</td></tr>`
 ).join('')}</tbody></table>`) : ''}
 
 ${matrixTable ? section('5. Literature Matrix', matrixTable) : ''}
@@ -404,7 +464,13 @@ ${state.themes.length > 0 ? section('6. Synthesis', state.themes.map(theme =>
   `<h3>${theme.name} <span style="font-weight:400;color:#666">(${theme.coverageLabel})</span></h3>${theme.blocks.map(b =>
     `<p><strong>${b.title}</strong><br><span style="color:#333">${b.content}</span></p>`
   ).join('')}`
-).join('')) : ''}
+).join('') + (() => {
+  const sof = summaryOfFindings(state)
+  if (!sof) return ''
+  return `<h3>Certainty of evidence</h3><table><thead><tr>${sof.headers.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${
+    sof.rows.map(r => `<tr>${r.map(c => `<td>${c}</td>`).join('')}</tr>`).join('')
+  }</tbody></table>${sof.note ? `<p style="font-size:9px;color:#666">${sof.note}</p>` : ''}`
+})()) : ''}
 
 ${(selectedGaps.length > 0 || state.gapStatement) ? section('7. Gap Analysis', `
   ${state.gapStatement ? `<p><strong>Gap Statement:</strong> ${state.gapStatement}</p>` : ''}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { runPool } from './runPool'
+import { runPool, createLimiter } from './runPool'
 
 function deferred() {
   let resolve!: () => void
@@ -62,5 +62,32 @@ describe('runPool', () => {
     let called = false
     await runPool([], 4, async () => { called = true })
     expect(called).toBe(false)
+  })
+})
+
+describe('createLimiter', () => {
+  it('caps concurrency across independent callers and runs everything', async () => {
+    const gate = createLimiter(3)
+    let inFlight = 0
+    let peak = 0
+    const task = async (n: number) => {
+      inFlight++
+      peak = Math.max(peak, inFlight)
+      await new Promise(r => setTimeout(r, 1))
+      inFlight--
+      return n
+    }
+    // Two "searches" queueing work separately, as scoring does.
+    const a = Array.from({ length: 10 }, (_, i) => gate(() => task(i)))
+    const b = Array.from({ length: 10 }, (_, i) => gate(() => task(i + 10)))
+    const results = await Promise.all([...a, ...b])
+    expect(peak).toBe(3)
+    expect(results).toEqual(Array.from({ length: 20 }, (_, i) => i))
+  })
+
+  it('frees its slot when a task throws', async () => {
+    const gate = createLimiter(1)
+    await expect(gate(async () => { throw new Error('x') })).rejects.toThrow('x')
+    await expect(gate(async () => 'ok')).resolves.toBe('ok')
   })
 })

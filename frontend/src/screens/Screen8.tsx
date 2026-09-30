@@ -734,9 +734,7 @@ export function Screen8() {
                 disabled={generatingTopics}
                 className="flex items-center gap-1 px-2 h-6 text-[9px] text-zinc-500 hover:bg-zinc-50 disabled:opacity-50 transition-colors"
               >
-                {generatingTopics
-                  ? <span className="w-2.5 h-2.5 border border-zinc-300 border-t-zinc-600 rounded-full animate-spin" />
-                  : "↺"}
+                ↺
                 {customTopicsPrompt && <span className="w-1 h-1 rounded-full bg-amber-400 shrink-0" />}
                 {generatingTopics ? "Generating…" : "Regenerate"}
               </button>
@@ -754,7 +752,6 @@ export function Screen8() {
           <div className="flex-1 overflow-y-auto px-2.5 py-2.5">
             {generatingTopics ? (
               <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
-                <span className="w-6 h-6 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin" />
                 <p className="text-[10px] text-zinc-500">Synthesising your research journey<br />into final topic options…</p>
               </div>
             ) : topicError ? (
@@ -801,7 +798,6 @@ export function Screen8() {
               <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide flex-1">Study Design</span>
               {matchingDesign && (
                 <span className="flex items-center gap-1 text-[8px] text-blue-500">
-                  <span className="w-2.5 h-2.5 border border-blue-200 border-t-blue-600 rounded-full animate-spin" />
                   matching…
                 </span>
               )}
@@ -885,9 +881,7 @@ export function Screen8() {
                   disabled={generatingStructure || !selectedDesign}
                   className="flex items-center gap-1 px-2.5 h-6 bg-blue-600 text-white rounded-l text-[9px] font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors shrink-0"
                 >
-                  {generatingStructure
-                    ? <span className="w-2.5 h-2.5 border border-white/40 border-t-white rounded-full animate-spin" />
-                    : "✦"}
+                  ✦
                   {customStructurePrompt && <span className="w-1 h-1 rounded-full bg-amber-300 shrink-0" />}
                   {generatingStructure ? "Generating…" : "Generate Structure"}
                 </button>
@@ -906,7 +900,6 @@ export function Screen8() {
           <div className="flex-1 overflow-y-auto px-3 py-3">
             {generatingStructure ? (
               <div className="flex flex-col items-center justify-center h-full gap-3 text-center py-16">
-                <span className="w-8 h-8 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin" />
                 <p className="text-[11px] text-zinc-500">Building academic paper structure<br />tailored to your topic and design…</p>
               </div>
             ) : structureError ? (

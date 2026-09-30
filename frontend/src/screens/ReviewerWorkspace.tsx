@@ -1,27 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   getWorkspace,
   saveDecisions,
   submitReview,
   type ReviewWorkspace,
 } from '../lib/reviewApi'
-import type { DecisionJournalEntry, SessionSnapshot } from '../types'
-
-const STEPS = [
-  { id: 1, label: 'Chat & Define Topic' },
-  { id: 2, label: 'Matrix Initial' },
-  { id: 3, label: 'System Review' },
-  { id: 4, label: 'Explore & Search' },
-  { id: 5, label: 'Select Paper' },
-  { id: 6, label: 'Matrix Table' },
-  { id: 7, label: 'Synthesis' },
-  { id: 8, label: 'Gap & Statement' },
-  { id: 9, label: 'Final Question' },
-] as const
+import type { DecisionJournalEntry, MatrixCell, SessionSnapshot } from '../types'
+import { STEPS, migrateStep } from '../lib/steps'
+import { EDIT_REASON_LABEL } from '../lib/matrixVerification'
 
 interface ResultGroup {
   label: string
   value: unknown
+  /** A readable rendering in place of the raw JSON. */
+  render?: ReactNode
 }
 
 function resultGroups(snapshot: SessionSnapshot, step: number): ResultGroup[] {
@@ -40,42 +32,46 @@ function resultGroups(snapshot: SessionSnapshot, step: number): ResultGroup[] {
         { label: 'System-column descriptions', value: snapshot.systemColumnDescriptions },
       ]
     case 3:
-      return [{ label: 'Systems found and retained', value: snapshot.systemItems }]
-    case 4:
       return [
         { label: 'Topic candidates and AI rationales', value: snapshot.topics },
         { label: 'Search queries', value: snapshot.queries },
         { label: 'Search limits', value: snapshot.searchFilters },
         { label: 'Search results returned', value: snapshot.results },
+        { label: 'Systems found and retained', value: snapshot.systemItems },
       ]
-    case 5:
+    case 4:
       return [
         { label: 'Screening protocol', value: snapshot.criteria },
         { label: 'All paper decisions, reasons and source metadata', value: snapshot.results },
         { label: 'Papers retained for review', value: snapshot.reviewList },
         { label: 'Screening-flow counts', value: snapshot.screening },
       ]
-    case 6:
+    case 5: {
+      const literature = cellVerificationRows(snapshot.matrixRows.map(r => ({ label: r.title, cells: r.cells })), snapshot.matrixColumns)
+      const system = cellVerificationRows((snapshot.systemMatrixRows ?? []).map(r => ({ label: r.name, cells: r.cells })), snapshot.systemMatrixColumns)
       return [
+        { label: 'Literature matrix: user verification of AI-extracted cells', value: literature, render: <CellVerificationTable rows={literature} /> },
+        ...(system.length > 0
+          ? [{ label: 'System matrix: user verification of AI-extracted cells', value: system, render: <CellVerificationTable rows={system} /> }]
+          : []),
         { label: 'Literature matrix columns', value: snapshot.matrixColumns },
         { label: 'Literature matrix rows, evidence and reasoning', value: snapshot.matrixRows },
         { label: 'System matrix columns', value: snapshot.systemMatrixColumns },
         { label: 'System matrix rows, evidence and reasoning', value: snapshot.systemMatrixRows },
       ]
-    case 7:
+    }
+    case 6:
       return [
         { label: 'Synthesis themes and blocks', value: snapshot.themes },
         { label: 'Theme selected in the workspace', value: snapshot.activeThemeId },
-      ]
-    case 8:
-      return [
+        { label: 'Certainty-of-evidence assessments', value: snapshot.certaintyAssessments },
         { label: 'Gap dimensions', value: snapshot.gaps },
         { label: 'Overall gap statement', value: snapshot.gapStatement },
         { label: 'Per-column gap analyses', value: snapshot.axisGaps },
         { label: 'Research-question options', value: snapshot.rqOptions },
         { label: 'Selected research-question option', value: snapshot.selectedRQId },
       ]
-    case 9:
+    case 7:
       return [
         { label: 'Final topic candidates and research questions', value: snapshot.finalTopicOptions },
         { label: 'Selected final topic', value: snapshot.selectedFinalTopicId },
@@ -86,6 +82,126 @@ function resultGroups(snapshot: SessionSnapshot, step: number): ResultGroup[] {
     default:
       return []
   }
+}
+
+// ── Matrix cell verification ─────────────────────────────────────────────────
+
+type CellStatus = 'confirmed' | 'edited' | 'edited_unconfirmed' | 'filled' | 'unconfirmed'
+
+interface CellVerificationRow {
+  row: string
+  column: string
+  status: CellStatus
+  aiValue: string | null
+  confidence: number | null
+  quote: string
+  finalValue: string
+  reason?: string
+  reference?: string
+}
+
+/** Columns the extractor fills; the identifying ones come from the paper record. */
+const IDENTITY_COLUMNS = new Set(['#', 'Title', 'Authors', 'Year'])
+
+function cellVerificationRows(
+  rows: { label: string; cells: Record<string, MatrixCell> }[],
+  columns: string[],
+): CellVerificationRow[] {
+  const out: CellVerificationRow[] = []
+  for (const row of rows) {
+    for (const column of columns) {
+      if (IDENTITY_COLUMNS.has(column)) continue
+      const cell = row.cells[column]
+      if (!cell) continue
+      const ai = cell.originalCell ?? (cell.aiGenerated ? cell : undefined)
+      const status: CellStatus = cell.originalValue !== undefined
+        ? (cell.verifiedByStudent ? 'edited' : 'edited_unconfirmed')
+        : !cell.verifiedByStudent ? 'unconfirmed'
+        : !ai ? 'filled'
+        : 'confirmed'
+      out.push({
+        row: row.label,
+        column,
+        status,
+        aiValue: ai ? ai.value || 'Not reported' : null,
+        confidence: ai ? ai.confidenceScore : null,
+        quote: ai?.sourceRef ?? '',
+        finalValue: cell.value || 'Not reported',
+        reason: cell.editExplanation?.reason && EDIT_REASON_LABEL[cell.editExplanation.reason],
+        reference: cell.editExplanation?.reference,
+      })
+    }
+  }
+  return out
+}
+
+const STATUS_STYLE: Record<CellStatus, { label: string; className: string }> = {
+  confirmed: { label: 'Confirmed as extracted', className: 'bg-green-50 text-green-700 border-green-200' },
+  edited: { label: 'Edited and confirmed', className: 'bg-amber-50 text-amber-800 border-amber-200' },
+  edited_unconfirmed: { label: 'Edited, not confirmed', className: 'bg-orange-50 text-orange-700 border-orange-200' },
+  filled: { label: 'Filled in by user', className: 'bg-blue-50 text-blue-700 border-blue-200' },
+  unconfirmed: { label: 'Not confirmed', className: 'bg-zinc-50 text-zinc-500 border-zinc-200' },
+}
+
+function CellVerificationTable({ rows }: { rows: CellVerificationRow[] }) {
+  if (rows.length === 0) {
+    return <p className="px-3 py-3 text-[11px] italic text-zinc-400">No extracted cells were recorded.</p>
+  }
+  const count = (s: CellStatus) => rows.filter(r => r.status === s).length
+  return (
+    <div className="px-3 py-3">
+      <p className="mb-2 text-[11px] text-zinc-700">
+        {count('confirmed') + count('edited') + count('filled')} of {rows.length} cells confirmed by the user ·{' '}
+        {count('confirmed')} as extracted · {count('edited') + count('edited_unconfirmed')} edited ({count('edited_unconfirmed')} not confirmed) ·{' '}
+        {count('filled')} filled in · {count('unconfirmed')} untouched and not confirmed
+      </p>
+      <div className="max-h-[420px] overflow-auto rounded border border-zinc-200">
+        <table className="w-full border-collapse text-[10px]">
+          <thead className="sticky top-0 bg-zinc-100 text-left text-zinc-600">
+            <tr>
+              <th className="px-2 py-1.5 font-semibold">Row</th>
+              <th className="px-2 py-1.5 font-semibold">Column</th>
+              <th className="px-2 py-1.5 font-semibold">User action</th>
+              <th className="px-2 py-1.5 font-semibold">AI extracted</th>
+              <th className="px-2 py-1.5 font-semibold">Final value</th>
+              <th className="px-2 py-1.5 font-semibold">User&rsquo;s reason and source</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i} className="border-t border-zinc-100 align-top">
+                <td className="max-w-[180px] px-2 py-1.5 text-zinc-700">{r.row}</td>
+                <td className="px-2 py-1.5 text-zinc-700">{r.column}</td>
+                <td className="px-2 py-1.5">
+                  <span className={`inline-block whitespace-nowrap rounded border px-1.5 py-0.5 text-[9px] font-semibold ${STATUS_STYLE[r.status].className}`}>
+                    {STATUS_STYLE[r.status].label}
+                  </span>
+                </td>
+                <td className="px-2 py-1.5 text-zinc-700">
+                  {r.aiValue === null ? <span className="italic text-zinc-400">—</span> : (
+                    <>
+                      <span className={r.status.startsWith('edited') ? 'line-through decoration-zinc-300' : ''}>{r.aiValue}</span>
+                      <span className="ml-1 text-zinc-400">({r.confidence}%)</span>
+                      {r.quote && <p className="mt-0.5 italic text-zinc-400">“{r.quote}”</p>}
+                    </>
+                  )}
+                </td>
+                <td className="px-2 py-1.5 text-zinc-900">{r.finalValue}</td>
+                <td className="px-2 py-1.5 text-zinc-700">
+                  {!r.reason && !r.reference ? <span className="italic text-zinc-400">—</span> : (
+                    <>
+                      {r.reason && <p>{r.reason}</p>}
+                      {r.reference && <p className="mt-0.5 text-zinc-500">Source: {r.reference}</p>}
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
 }
 
 function isEmpty(value: unknown): boolean {
@@ -111,6 +227,7 @@ function ResultValue({ value }: { value: unknown }) {
 function entryKindLabel(entry: DecisionJournalEntry): string {
   if (entry.kind === 'ai_explanation_view') return 'AI explanation/evidence viewed'
   if (entry.kind === 'justification') return 'User decision with optional justification'
+  if (entry.kind === 'automated_check') return 'Automated check'
   return 'User operation'
 }
 
@@ -257,10 +374,14 @@ export function ReviewerWorkspace({ token }: { token: string }) {
 
   const entriesByStep = useMemo(() => {
     const grouped = new Map<number, DecisionJournalEntry[]>()
+    const schema = workspace?.snapshot.stepSchema
     for (const entry of workspace?.snapshot.decisionJournal ?? []) {
-      const entries = grouped.get(entry.step) ?? []
+      // A project saved under the old 9-step layout still numbers its entries
+      // that way; file them under the step they belong to now.
+      const step = migrateStep(entry.step, schema)
+      const entries = grouped.get(step) ?? []
       entries.push(entry)
-      grouped.set(entry.step, entries)
+      grouped.set(step, entries)
     }
     return grouped
   }, [workspace])
@@ -361,7 +482,7 @@ export function ReviewerWorkspace({ token }: { token: string }) {
                         <summary className="cursor-pointer bg-zinc-50 px-3 py-2 text-[11px] font-semibold text-zinc-800">
                           {group.label}
                         </summary>
-                        <ResultValue value={group.value} />
+                        {group.render ?? <ResultValue value={group.value} />}
                       </details>
                     ))}
                   </div>

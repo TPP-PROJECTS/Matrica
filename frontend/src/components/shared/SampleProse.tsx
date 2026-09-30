@@ -136,7 +136,6 @@ export function SampleProse({
 
       {busy && (
         <p className="text-[10px] text-zinc-400 italic flex items-center gap-1.5 py-1">
-          <span className="w-2.5 h-2.5 border border-blue-200 border-t-blue-600 rounded-full animate-spin inline-block" />
           Drafting from your evidence…
         </p>
       )}

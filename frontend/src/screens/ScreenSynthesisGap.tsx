@@ -7,6 +7,7 @@ import type { MatrixCell, SynthesisBlock, Theme } from '../types'
 import { API, apiFetch } from '../lib/api'
 import { journalEntry } from '../lib/decisionJournal'
 import { buildRobSummaries } from '../lib/robSummaries'
+import { CertaintyChip, CertaintyPanel } from '../components/synthesis/CertaintyPanel'
 
 /**
  * Synthesis and gap analysis, in one step.
@@ -78,6 +79,7 @@ function ThemeCard({ theme, active, onClick }: { theme: Theme; active: boolean; 
     ? liveCoverage(theme, state.matrixRows)
     : { paperCount: theme.paperCount, totalPapers: theme.totalPapers, coverageLabel: theme.coverageLabel }
   const pct = cov.totalPapers > 0 ? Math.round((cov.paperCount / cov.totalPapers) * 100) : 0
+  const certainty = (state.certaintyAssessments ?? []).find(a => a.themeId === theme.id)
 
   function commitRename() {
     const name = draft.trim()
@@ -150,10 +152,11 @@ function ThemeCard({ theme, active, onClick }: { theme: Theme; active: boolean; 
           <div className="h-2 bg-zinc-200 rounded overflow-hidden mb-0.5">
             <div className={`h-full rounded ${active ? 'bg-blue-500' : 'bg-zinc-400'}`} style={{ width: `${pct}%` }} />
           </div>
-          <div className="flex items-center justify-between gap-1">
+          <div className="flex items-center justify-between gap-1 flex-wrap">
             <span className={`text-[9px] font-medium ${coverageColor(cov.coverageLabel)}`}>
               {cov.coverageLabel}{cov.coverageLabel === 'Sparse' ? ' ⚠' : ''}
             </span>
+            {certainty && <CertaintyChip assessment={certainty} />}
             {theme.userDefined ? (
               <span className="text-[8px] px-1.5 py-0.5 rounded-full bg-zinc-800 text-white">yours</span>
             ) : theme.profileMatch && (
@@ -613,7 +616,6 @@ function AxisGapCard({
       <div className="px-3 py-3 border-t border-zinc-100">
         {loading ? (
           <div className="flex items-center gap-2 text-[10px] text-zinc-400">
-            <span className="w-3 h-3 border border-blue-200 border-t-blue-600 rounded-full animate-spin" />
             Comparing on this schema direction…
           </div>
         ) : gap ? (
@@ -708,9 +710,7 @@ function SynthesisBlockCard({
               className="flex items-center gap-1 px-2 h-6 text-[10px] bg-white/70 hover:bg-white text-zinc-600 hover:text-zinc-900 disabled:opacity-50 transition-colors"
               title="Regenerate with AI"
             >
-              {regenerating
-                ? <span className="w-2.5 h-2.5 border border-zinc-400 border-t-zinc-700 rounded-full animate-spin" />
-                : <span>↺</span>}
+              <span>↺</span>
               {customPrompt && <span className="w-1 h-1 rounded-full bg-amber-400 shrink-0" />}
               {regenerating ? 'Regenerating…' : 'Regenerate'}
             </button>
@@ -901,7 +901,6 @@ function AddAnalystForm({ theme, onClose }: { theme: Theme; onClose: () => void 
           disabled={!name.trim() || generating}
           className="flex items-center gap-1.5 px-3 py-0.5 text-[10px] bg-violet-600 text-white rounded hover:bg-violet-700 disabled:opacity-50"
         >
-          {generating && <span className="w-2.5 h-2.5 border border-violet-300 border-t-white rounded-full animate-spin" />}
           {generating ? 'Generating…' : 'Add'}
         </button>
       </div>
@@ -1378,7 +1377,6 @@ export function ScreenSynthesisGap() {
                 </span>
                 {activeTheme && fillingThemeIds.includes(activeTheme.id) ? (
                   <span className="flex items-center gap-1 text-[9px] text-violet-600">
-                    <span className="w-2.5 h-2.5 border border-violet-300 border-t-violet-600 rounded-full animate-spin" />
                     Drafting blocks…
                   </span>
                 ) : activeTheme && activeTheme.blocks.some(b => b.blockType !== 'custom' && !b.content.trim()) && (
@@ -1409,7 +1407,6 @@ export function ScreenSynthesisGap() {
                       disabled={synthesising || state.matrixRows.length === 0}
                       className="px-4 h-8 bg-zinc-900 text-white text-[11px] font-semibold hover:bg-zinc-700 disabled:opacity-50 flex items-center gap-1.5"
                     >
-                      {synthesising && <span className="w-3 h-3 border border-zinc-500 border-t-white rounded-full animate-spin" />}
                       {customSynthPrompt && <span className="w-1 h-1 rounded-full bg-amber-400 shrink-0" />}
                       {synthesising ? 'Synthesising…' : 'Generate synthesis'}
                     </button>
@@ -1448,6 +1445,8 @@ export function ScreenSynthesisGap() {
                       + Add Custom Analyst
                     </button>
                   )}
+
+                  <CertaintyPanel key={activeTheme.id} theme={activeTheme} />
                 </>
               )}
             </section>
@@ -1539,9 +1538,7 @@ export function ScreenSynthesisGap() {
                     disabled={regenerating}
                     className="flex items-center gap-1.5 px-3 h-7 text-[11px] text-zinc-600 hover:bg-zinc-50 disabled:opacity-50 transition-colors"
                   >
-                    {regenerating
-                      ? <span className="w-3 h-3 border border-zinc-300 border-t-zinc-600 rounded-full animate-spin" />
-                      : '↺'}
+                    ↺
                     {customRegenPrompt && <span className="w-1 h-1 rounded-full bg-amber-400 shrink-0" />}
                     {regenerating
                       ? 'Generating overall gap…'

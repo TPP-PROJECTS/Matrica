@@ -11,6 +11,8 @@ import { StaleStepBanner } from '../overlays/StaleStepBanner'
 import { EditModeBanner } from '../overlays/EditModeBanner'
 import { SaveTroubleBanner } from '../overlays/SaveTroubleBanner'
 import { ReviewModeBanner } from '../overlays/ReviewModeBanner'
+import { AiLoadingOverlay } from '../overlays/AiLoadingOverlay'
+import { useIntegrityWatcher } from '../../lib/useIntegrityWatcher'
 
 interface Props {
   children: ReactNode
@@ -18,6 +20,7 @@ interface Props {
 
 export function AppLayout({ children }: Props) {
   const { state } = useApp()
+  useIntegrityWatcher()
   const [rightCollapsed, setRightCollapsed] = useState(
     () => localStorage.getItem('tpp:rightPanelCollapsed') === '1'
   )
@@ -91,6 +94,7 @@ export function AppLayout({ children }: Props) {
       {/* Overlays */}
       {state.showVersionHistory && <VersionHistoryDrawer />}
       {state.showBackNavModal && !state.reviewMode && <BackNavModal />}
+      <AiLoadingOverlay />
     </div>
   )
 }

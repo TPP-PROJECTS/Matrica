@@ -114,13 +114,21 @@ function toCsv(headers: string[], rows: string[][]): string {
 
 export function exportMatrixCSV(state: AppState): void {
   const cols = state.matrixColumns
-  const headers = ['Title', 'Authors', 'Year', ...cols]
-  const rows = state.matrixRows.map(row => [
-    row.title,
-    row.authors,
-    String(row.year || ''),
-    ...cols.map(c => row.cells[c]?.value ?? ''),
-  ])
+  // Values stay clean for analysis; verification gets its own columns so a
+  // reader can filter to what the reviewer has checked.
+  const headers = ['Title', 'Authors', 'Year', ...cols, 'Cells verified', 'Awaiting verification']
+  const rows = state.matrixRows.map(row => {
+    const held = cols.filter(c => row.cells[c])
+    const unverified = held.filter(c => !row.cells[c].verifiedByStudent)
+    return [
+      row.title,
+      row.authors,
+      String(row.year || ''),
+      ...cols.map(c => row.cells[c]?.value ?? ''),
+      `${held.length - unverified.length}/${held.length}`,
+      unverified.join('; '),
+    ]
+  })
   downloadText(`${safeBase(state)}_matrix.csv`, 'text/csv', toCsv(headers, rows))
 }
 

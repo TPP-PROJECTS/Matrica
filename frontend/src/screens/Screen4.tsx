@@ -10,6 +10,7 @@ import { ImportRecordsModal } from '../components/overlays/ImportRecordsModal'
 import { CustomizePromptModal } from '../components/shared/CustomizePromptModal'
 import { journalEntry } from '../lib/decisionJournal'
 import { newId } from '../lib/ids'
+import { IntegrityBadge } from '../components/shared/IntegrityBadge'
 
 // How many screening requests run at once — matched to the matrix auto-fill.
 const SCREEN_CONCURRENCY = 4
@@ -531,6 +532,9 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
       setRecogniseError(null)
       try {
         const res = await apiFetch(`${API}/recognise`, {
+          // Runs by itself when a paper is opened; blocking would hide the
+          // paper the user is trying to read.
+          aiBackground: true,
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -691,9 +695,6 @@ function DetailModal({ paper, onClose, onAdd, onLater }: {
               <div>
                 <div className="flex items-center gap-2 mb-1.5">
                   <p className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide">AI Relevance</p>
-                  {recognising && (
-                    <span className="w-3 h-3 border border-purple-300 border-t-purple-600 rounded-full animate-spin" />
-                  )}
                   {recogniseError && (
                     <span className="text-[9px] text-amber-600">{recogniseError}</span>
                   )}
@@ -917,7 +918,6 @@ function PaperCard({ paper, onViewDetails, onSnowball }: {
 
       {screening && (
         <div className="flex items-center gap-1.5">
-          <span className="w-2.5 h-2.5 border border-purple-300 border-t-purple-600 rounded-full animate-spin" />
           <span className="text-[10px] text-purple-500">AI screening…</span>
         </div>
       )}
@@ -1068,7 +1068,7 @@ function ReviewListItem({ paper, index, onNoteChange }: {
   index: number
   onNoteChange: (id: string, val: string) => void
 }) {
-  const { dispatch } = useApp()
+  const { state, dispatch } = useApp()
 
   function cycleStatus() {
     dispatch({ type: 'UPDATE_REVIEW_STATUS', paperId: paper.id, status: nextStatus(paper.status) })
@@ -1105,6 +1105,7 @@ function ReviewListItem({ paper, index, onNoteChange }: {
         >
           {statusLabel(paper.status)}
         </button>
+        <IntegrityBadge check={state.integrityChecks?.[paper.id]} />
       </div>
 
       {/* Note */}

@@ -242,7 +242,6 @@ export function SystemsPanel() {
         {isLoading ? (
           <>
             <div className="flex items-center gap-2 mb-2">
-              <span className="w-3 h-3 border-2 border-violet-300 border-t-violet-600 rounded-full animate-spin" />
               <span className="text-[10px] text-zinc-500">Searching for relevant systems…</span>
             </div>
             <LoadingSkeleton />
@@ -302,9 +301,7 @@ export function SystemsPanel() {
             disabled={isLoading || addingMore}
             className="flex items-center gap-1.5 px-2 h-7 border border-zinc-300 rounded text-[10px] text-zinc-600 bg-white hover:bg-zinc-100 disabled:opacity-50 transition-colors"
           >
-            {addingMore || isLoading
-              ? <span className="w-2.5 h-2.5 border border-zinc-300 border-t-zinc-600 rounded-full animate-spin" />
-              : <span>↺</span>}
+            <span>↺</span>
             {systemItems.length === 0 ? 'Generate systems' : addingMore ? 'Adding…' : 'Generate more'}
           </button>
         </div>

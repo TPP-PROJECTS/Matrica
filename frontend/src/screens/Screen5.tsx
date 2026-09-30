@@ -5,11 +5,19 @@ import { SchemaBuilder } from '../components/matrix/SchemaBuilder'
 import type { MatrixCell, ConfidenceLevel, SystemMatrixRow, ResultCard, SystemItem } from '../types'
 import { API, apiFetch } from '../lib/api'
 import { runPool } from '../lib/runPool'
+import { getAiCancelEpoch } from '../lib/aiActivity'
 import { partitionNewPapers } from '../lib/dedupe'
 import { journalEntry } from '../lib/decisionJournal'
 import { newId } from '../lib/ids'
 import { SourceProvenance } from '../components/shared/SourceProvenance'
-import { checkProvenance, paperSources, type SourceCandidate } from '../lib/provenance'
+import { paperSources, type SourceCandidate } from '../lib/provenance'
+import { CellDetailsCard } from '../components/matrix/CellDetailsCard'
+import { EditExplanationModal } from '../components/matrix/EditExplanationModal'
+import { Check, HelpCircle, Pencil, RotateCcw } from 'lucide-react'
+import { cellDomId, quoteMissingFor, verificationStats, type VerifiableRow } from '../lib/matrixVerification'
+import { useCellReview } from '../lib/useCellReview'
+import { IntegrityBadge } from '../components/shared/IntegrityBadge'
+import { checkIntegrity } from '../lib/integrity'
 import { RiskOfBiasPanel } from './RiskOfBiasPanel'
 import { buildRobSummaries } from '../lib/robSummaries'
 
@@ -151,7 +159,6 @@ function EvidencePopover({
 
           {loading && (
             <div className="flex items-center gap-2 py-4 justify-center">
-              <span className="w-4 h-4 border-2 border-violet-200 border-t-violet-600 rounded-full animate-spin" />
               <span className="text-[11px] text-zinc-400">Reasoning…</span>
             </div>
           )}
@@ -194,41 +201,76 @@ function EvidencePopover({
   )
 }
 
-// ── Clean cell renderer (no dots, no badges) ──────────────────────────────────
+// ── Cell renderer ─────────────────────────────────────────────────────────────
+// Each cell carries three separate actions under its value: confirm (the
+// reviewer has checked it), edit (correct it in place, or reset it to what the
+// AI extracted), and ? (the source, confidence and the AI's reasoning). A cell
+// still awaiting the reviewer has a violet edge, so what is left to check is
+// visible across the whole grid.
 function CellContent({
   cell,
   sources,
-  onEvidence,
+  domId,
+  focused,
+  editing,
+  disabled,
+  onToggleVerify,
+  onStartEdit,
+  onSaveEdit,
+  onCancelEdit,
+  onReset,
+  onDetails,
 }: {
   cell: MatrixCell | undefined
   column: string
   /** The texts the cell may have been extracted from, for checking its quote. */
   sources: SourceCandidate[]
-  onEvidence?: (rect: DOMRect) => void
+  domId: string
+  /** The keyboard review walk is on this cell, or its details card is open. */
+  focused?: boolean
+  editing?: boolean
+  /** An auto-fill is running; the cell may be overwritten under the reviewer. */
+  disabled?: boolean
+  onToggleVerify: () => void
+  onStartEdit: () => void
+  onSaveEdit: (value: string, confirm: boolean) => void
+  onCancelEdit: () => void
+  onReset: () => void
+  onDetails: () => void
 }) {
   // A cell claiming a quote that is not in the source is the one case worth
   // surfacing on the grid itself. Making the reviewer open every cell to find
   // those defeats the purpose — this is the audit they are here to do.
-  const quoteMissing = Boolean(
-    cell?.sourceRef && sources.some(s => s.text) &&
-    checkProvenance(sources, cell.sourceRef).kind === 'not_found',
-  )
+  const quoteMissing = quoteMissingFor(cell, sources)
+  const verified = !!cell?.verifiedByStudent
+  const edited = cell?.originalValue !== undefined
+  const notReported = !cell || cell.evidenceType === 'not_available' || !cell.value
+  const ring = focused || editing ? 'outline outline-2 outline-violet-500 -outline-offset-2' : ''
+  const edge = cell && !verified ? 'shadow-[inset_2px_0_0_var(--color-violet-300)]' : ''
+  const bg = quoteMissing ? 'border-red-200 bg-red-50/40' : notReported ? 'border-zinc-200 bg-zinc-50' : 'border-zinc-200 bg-white'
 
-  if (!cell || cell.evidenceType === 'not_available') {
+  if (editing) {
     return (
-      <td className="border border-zinc-200 bg-zinc-50 px-2 py-1 min-w-[140px]">
-        <span className="text-[8px] italic text-zinc-300">—</span>
+      <td id={domId} className={`relative border px-2 py-1.5 min-w-[180px] align-top ${bg} ${ring}`}>
+        <CellEditor
+          initial={cell?.value ?? ''}
+          saved={edited}
+          aiValue={edited ? cell?.originalValue : cell?.aiGenerated ? cell.value : undefined}
+          onSave={onSaveEdit}
+          onCancel={onCancelEdit}
+          onReset={onReset}
+        />
       </td>
     )
   }
 
+  const iconBtn = 'w-5 h-5 rounded flex items-center justify-center transition-colors disabled:opacity-30 disabled:cursor-not-allowed'
+
   return (
-    <td
-      className={`relative border px-2 py-1.5 min-w-[140px] group ${
-        quoteMissing ? 'border-red-200 bg-red-50/40' : 'border-zinc-200 bg-white'
-      }`}
-    >
-      <p className="text-[10px] text-zinc-800 leading-snug pr-5">{cell.value}</p>
+    <td id={domId} className={`relative border px-2 pt-1.5 pb-1 min-w-[140px] align-top ${bg} ${edge} ${ring}`}>
+      {notReported
+        ? <p className="text-[9px] italic text-zinc-300">{cell ? 'Not reported' : '—'}</p>
+        : <p className="text-[10px] text-zinc-800 leading-snug">{cell!.value}</p>}
       {quoteMissing && (
         <p
           className="text-[8px] font-bold text-red-600 mt-0.5"
@@ -237,19 +279,149 @@ function CellContent({
           ✕ quote not in source
         </p>
       )}
-      {onEvidence && (
+
+      <div className="flex items-center gap-0.5 mt-1">
         <button
-          onClick={e => {
-            e.stopPropagation()
-            onEvidence(e.currentTarget.getBoundingClientRect())
-          }}
-          className="absolute top-1.5 right-1.5 w-4 h-4 rounded-full bg-zinc-200 text-zinc-500 text-[8px] font-bold flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-violet-600 hover:text-white transition-all"
-          title="Show evidence"
+          type="button"
+          onClick={onToggleVerify}
+          disabled={disabled || !cell}
+          className={`${iconBtn} ${verified
+            ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+            : 'text-zinc-400 hover:bg-emerald-50 hover:text-emerald-600'}`}
+          title={!cell ? 'Nothing to confirm yet — edit to fill it in'
+            : verified ? 'Confirmed by you — click to withdraw' : 'Confirm: I have checked this against the source'}
+          aria-label={verified ? 'Withdraw confirmation' : 'Confirm'}
+          aria-pressed={verified}
         >
-          ?
+          <Check size={12} strokeWidth={2.5} />
+        </button>
+        <button
+          type="button"
+          onClick={onStartEdit}
+          disabled={disabled}
+          className={`${iconBtn} ${edited ? 'text-amber-600 hover:bg-amber-50' : 'text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700'}`}
+          title={edited ? 'Edited by you — click to edit again or reset to the AI value' : cell ? 'Edit this value' : 'Fill in'}
+          aria-label="Edit"
+        >
+          <Pencil size={11} />
+        </button>
+        <button
+          type="button"
+          onClick={onDetails}
+          disabled={!cell}
+          className={`${iconBtn} text-zinc-400 hover:bg-violet-50 hover:text-violet-600`}
+          title="Source, confidence and Ask AI why"
+          aria-label="Source and reasoning"
+        >
+          <HelpCircle size={12} />
+        </button>
+        {edited && <span className="ml-auto text-[8px] text-amber-600">edited</span>}
+      </div>
+    </td>
+  )
+}
+
+/** Wire a cell's three actions to its matrix's review state. */
+function cellReviewProps(
+  review: ReturnType<typeof useCellReview>,
+  ref: { rowId: string; column: string },
+  cell: MatrixCell | undefined,
+  filling: boolean,
+  rowLabel: string,
+) {
+  return {
+    focused: review.isFocused(ref) || (review.target?.ref.rowId === ref.rowId && review.target.ref.column === ref.column),
+    editing: review.isEditing(ref),
+    disabled: filling,
+    onToggleVerify: () => review.setVerified(ref, !cell?.verifiedByStudent),
+    onStartEdit: () => review.startEdit(ref),
+    onSaveEdit: (value: string, confirm: boolean) => review.saveEdit(ref, value, confirm),
+    onCancelEdit: review.cancelEdit,
+    onReset: () => review.reset(ref),
+    onDetails: () => review.openDetails(ref, rowLabel),
+  }
+}
+
+/**
+ * In-place editor for a cell. Save keeps the new value without confirming it;
+ * Save & confirm also marks it checked. ⌘/Ctrl+Enter saves, ⌘/Ctrl+Shift+Enter
+ * saves and confirms, Esc cancels. Reset to AI is
+ * always offered when there is an AI value: before any edit is saved it just
+ * puts the AI value back in the box; after one is saved it restores the AI's
+ * extraction in full (quote and confidence included).
+ */
+function CellEditor({
+  initial,
+  saved,
+  aiValue,
+  onSave,
+  onCancel,
+  onReset,
+}: {
+  initial: string
+  /** The reviewer has already saved an edit over the AI's value. */
+  saved: boolean
+  /** What the AI extracted; undefined for a cell the reviewer filled in. */
+  aiValue?: string
+  onSave: (value: string, confirm: boolean) => void
+  onCancel: () => void
+  onReset: () => void
+}) {
+  const [draft, setDraft] = useState(initial)
+  const ref = useRef<HTMLTextAreaElement>(null)
+  // Selected, so typing replaces the value and arrow keys still allow a tweak.
+  useEffect(() => { ref.current?.select() }, [])
+
+  return (
+    <div>
+      <textarea
+        ref={ref}
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Escape') { e.preventDefault(); onCancel() }
+          else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); onSave(draft, e.shiftKey) }
+        }}
+        rows={3}
+        placeholder="Leave empty if the source does not report this"
+        className="w-full border border-zinc-300 rounded px-1.5 py-1 text-[10px] text-zinc-800 leading-snug outline-none focus:border-violet-500 resize-y bg-white"
+      />
+      <div className="flex flex-wrap items-center gap-1 mt-1">
+        <button
+          type="button"
+          onClick={() => onSave(draft, false)}
+          className="px-2 h-5 rounded border border-zinc-300 bg-white text-zinc-800 text-[9px] font-medium hover:bg-zinc-100"
+          title="Save the new value without confirming it (⌘/Ctrl + Enter)"
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          onClick={() => onSave(draft, true)}
+          className="flex items-center gap-0.5 px-2 h-5 rounded bg-emerald-600 text-white text-[9px] font-medium hover:bg-emerald-700"
+          title="Save the new value and confirm it (⌘/Ctrl + Shift + Enter)"
+        >
+          <Check size={9} strokeWidth={3} /> Save &amp; confirm
+        </button>
+        <button type="button" onClick={onCancel} className="px-1.5 h-5 text-[9px] text-zinc-500 hover:text-zinc-800" title="Esc">
+          Cancel
+        </button>
+      </div>
+      {aiValue !== undefined && (
+        <button
+          type="button"
+          onClick={() => {
+            if (saved) onReset()
+            else { setDraft(aiValue); ref.current?.focus() }
+          }}
+          disabled={!saved && draft === aiValue}
+          className="mt-1 flex items-center gap-1 px-1.5 h-5 rounded border border-amber-200 bg-amber-50 text-[9px] text-amber-700 hover:bg-amber-100 disabled:border-zinc-200 disabled:bg-transparent disabled:text-zinc-300 disabled:cursor-not-allowed"
+          title={`Reset to the AI's value: ${aiValue || 'Not reported'}`}
+        >
+          <RotateCcw size={9} /> Reset to AI
         </button>
       )}
-    </td>
+    </div>
   )
 }
 
@@ -258,7 +430,6 @@ function PendingCell() {
   return (
     <td className="border border-violet-100 bg-violet-50/40 px-2 py-2 min-w-[140px]">
       <div className="flex items-center gap-1.5">
-        <span className="w-2.5 h-2.5 border border-violet-300 border-t-violet-600 rounded-full animate-spin shrink-0" />
         <span className="text-[9px] text-violet-400 italic">filling…</span>
       </div>
     </td>
@@ -266,7 +437,7 @@ function PendingCell() {
 }
 
 // ── Editable column header (rename / delete) ─────────────────────────────────
-function ColumnHeader({ col, borderClass, description, emptyCount, onFill, busy }: {
+function ColumnHeader({ col, borderClass, description, emptyCount, onFill, busy, verifiableCount, onVerify }: {
   col: string
   borderClass: string
   description?: string
@@ -274,9 +445,19 @@ function ColumnHeader({ col, borderClass, description, emptyCount, onFill, busy 
   emptyCount?: number
   onFill?: (col: string) => void
   busy?: boolean
+  /** Unverified cells the column-wide verify would sign off. */
+  verifiableCount?: number
+  onVerify?: (col: string) => void
 }) {
   const ref = useRef<HTMLTableCellElement>(null)
   const [tip, setTip] = useState<{ left: number; top: number } | null>(null)
+  // Verifying a whole column is a bulk sign-off, so it takes a second click.
+  const [armed, setArmed] = useState(false)
+  useEffect(() => {
+    if (!armed) return
+    const t = setTimeout(() => setArmed(false), 3000)
+    return () => clearTimeout(t)
+  }, [armed])
 
   function showTip() {
     if (!description) return
@@ -305,6 +486,19 @@ function ColumnHeader({ col, borderClass, description, emptyCount, onFill, busy 
             className="ml-0.5 px-1 rounded bg-purple-600 text-white text-[8px] font-bold hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             ✦{emptyCount}
+          </button>
+        )}
+        {onVerify && (verifiableCount ?? 0) > 0 && (
+          <button
+            onClick={e => {
+              e.stopPropagation()
+              if (armed) { setArmed(false); onVerify(col) } else setArmed(true)
+            }}
+            disabled={busy}
+            title={`Verify the ${verifiableCount} unverified cell${verifiableCount === 1 ? '' : 's'} in this column. Cells whose quote is not in the source are left for individual review.`}
+            className={`ml-0.5 px-1 rounded text-white text-[8px] font-bold disabled:opacity-40 disabled:cursor-not-allowed ${armed ? 'bg-emerald-500' : 'bg-emerald-700 hover:bg-emerald-600'}`}
+          >
+            {armed ? `Verify ${verifiableCount}?` : `✓${verifiableCount}`}
           </button>
         )}
       </span>
@@ -502,7 +696,9 @@ function AddPapersModal({ onClose, onAdd }: {
     if (parsing) return
     setParsing(true)
     const queue = items.filter(it => it.status === 'pending' || it.status === 'error')
+    const epoch = getAiCancelEpoch()
     for (const it of queue) {
+      if (getAiCancelEpoch() !== epoch) break
       setItems(prev => prev.map(p => p.key === it.key ? { ...p, status: 'parsing', error: undefined } : p))
       try {
         let res: Response
@@ -604,9 +800,6 @@ function AddPapersModal({ onClose, onAdd }: {
                     )}
                     {it.status === 'error' && <p className="text-[9px] text-red-500 truncate">{it.error}</p>}
                   </div>
-                  {it.status === 'parsing' && (
-                    <span className="w-3 h-3 border border-purple-200 border-t-purple-600 rounded-full animate-spin shrink-0 mt-0.5" />
-                  )}
                   {it.status !== 'parsing' && !parsing && (
                     <button
                       onClick={() => setItems(prev => prev.filter(p => p.key !== it.key))}
@@ -628,7 +821,6 @@ function AddPapersModal({ onClose, onAdd }: {
             disabled={!hasQueue || parsing}
             className="px-3 h-7 border border-purple-300 text-purple-700 rounded text-[11px] hover:bg-purple-50 disabled:opacity-40 flex items-center gap-1.5"
           >
-            {parsing && <span className="w-2.5 h-2.5 border border-purple-300 border-t-purple-600 rounded-full animate-spin" />}
             {parsing ? 'Parsing…' : 'Parse all'}
           </button>
           <button
@@ -737,7 +929,6 @@ function AddSystemModal({
               disabled={!name.trim() || loading}
               className="px-3 h-8 bg-violet-600 text-white rounded text-[11px] hover:bg-violet-700 disabled:opacity-40 flex items-center gap-1.5"
             >
-              {loading && <span className="w-2.5 h-2.5 border border-violet-300 border-t-white rounded-full animate-spin" />}
               {loading ? 'Searching…' : 'Search'}
             </button>
           </div>
@@ -775,6 +966,140 @@ function AddSystemModal({
   )
 }
 
+// ── Unconfirmed values at continue ───────────────────────────────────────────
+function unconfirmedCount(rows: VerifiableRow[], columns: string[]): number {
+  const { total, verified } = verificationStats(rows, columns)
+  return total - verified
+}
+
+function UnconfirmedContinueModal({
+  literature,
+  system,
+  onReview,
+  onContinue,
+}: {
+  literature: number
+  /** Null when the system matrix is not in use. */
+  system: number | null
+  onReview: () => void
+  onContinue: () => void
+}) {
+  const total = literature + (system ?? 0)
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') { e.preventDefault(); onReview() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onReview])
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onReview}>
+      <div
+        role="alertdialog"
+        aria-label="Unconfirmed matrix values"
+        className="w-[440px] max-w-[calc(100vw-32px)] overflow-hidden rounded-lg border border-zinc-200 bg-white shadow-2xl"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="h-1.5 bg-amber-400" />
+        <div className="px-5 py-4">
+          <h2 className="text-[14px] font-bold text-zinc-900">
+            {total} value{total === 1 ? ' has' : 's have'} not been confirmed
+          </h2>
+          <p className="mt-1.5 text-[12px] leading-relaxed text-zinc-600">
+            The synthesis is built from the matrix as it stands. Values you have not confirmed are the AI&rsquo;s
+            extraction, unchecked against the source. Continue anyway?
+          </p>
+          <ul className="mt-3 space-y-1 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-[11px] text-zinc-700">
+            <li className="flex justify-between"><span>Literature matrix</span><span className="font-semibold tabular-nums">{literature} unconfirmed</span></li>
+            {system !== null && (
+              <li className="flex justify-between"><span>System matrix</span><span className="font-semibold tabular-nums">{system} unconfirmed</span></li>
+            )}
+          </ul>
+          <p className="mt-2 text-[10px] text-zinc-400">Continuing is recorded in the decision log that peer reviewers read.</p>
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-zinc-100 bg-zinc-50 px-5 py-3">
+          <button onClick={onReview} className="h-8 rounded-md bg-zinc-900 px-4 text-[11px] font-semibold text-white hover:bg-zinc-700" autoFocus>
+            Go back and review
+          </button>
+          <button onClick={onContinue} className="h-8 rounded-md border border-zinc-300 bg-white px-3 text-[11px] text-zinc-700 hover:bg-zinc-100">
+            Continue anyway
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Verification progress (toolbar) ──────────────────────────────────────────
+function VerificationProgress({ verified, total, onReview }: { verified: number; total: number; onReview: () => void }) {
+  if (total === 0) return null
+  const pct = Math.round((verified / total) * 100)
+  const left = total - verified
+  return (
+    <div className="flex items-center gap-1.5" title="Cells the reviewer has checked against the source">
+      <div className="w-16 h-1.5 bg-zinc-200 rounded overflow-hidden">
+        <div className="h-full bg-emerald-500 rounded transition-[width] duration-200" style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-[9px] text-zinc-500 tabular-nums">✓ {verified}/{total} verified</span>
+      {left > 0 && (
+        <button
+          onClick={onReview}
+          className="px-2 h-5 rounded border border-emerald-300 bg-white text-[9px] font-medium text-emerald-700 hover:bg-emerald-50"
+          title="Jump to the next unverified cell. Enter confirms it and moves on, E edits it."
+        >
+          Review {left} →
+        </button>
+      )}
+    </div>
+  )
+}
+
+// ── Publication integrity (toolbar) ──────────────────────────────────────────
+/**
+ * Says so when an included paper has been retracted or carries an expression
+ * of concern — the badge on its row is easy to miss in a wide matrix — and
+ * offers a manual re-check. Silent when there is nothing to report.
+ */
+function IntegritySummary() {
+  const { state, dispatch } = useApp()
+  const [checking, setChecking] = useState(false)
+  const checks = state.integrityChecks ?? {}
+  const papers = state.reviewList
+  const retracted = papers.filter(p => checks[p.id]?.status === 'retracted')
+  const concern = papers.filter(p => checks[p.id]?.status === 'concern')
+  const unresolved = papers.filter(p => checks[p.id]?.status === 'unresolved').length
+  const checked = papers.filter(p => checks[p.id]).length
+  if (papers.length === 0 || checked === 0) return null
+
+  async function recheck() {
+    setChecking(true)
+    try { await checkIntegrity(papers, dispatch) } catch { /* keep the previous results */ } finally { setChecking(false) }
+  }
+
+  const flagged = [...retracted, ...concern]
+  return (
+    <div className="flex items-center gap-1.5">
+      {flagged.length > 0 && (
+        <span
+          className="px-1.5 h-5 inline-flex items-center rounded bg-red-600 text-white text-[9px] font-bold"
+          title={flagged.map(p => `${checks[p.id].status === 'retracted' ? 'Retracted' : 'Expression of concern'}: ${p.title}`).join('\n')}
+        >
+          ⚠ {retracted.length > 0 && `${retracted.length} retracted`}{retracted.length > 0 && concern.length > 0 && ' · '}{concern.length > 0 && `${concern.length} of concern`}
+        </span>
+      )}
+      <button
+        onClick={recheck}
+        disabled={checking}
+        className="text-[9px] text-zinc-400 hover:text-zinc-700 disabled:opacity-50"
+        title={`Checked ${checked}/${papers.length} papers on Crossref for retractions, expressions of concern and corrections.${unresolved ? ` ${unresolved} could not be matched (no DOI and no exact title match).` : ''} Click to check again.`}
+      >
+        {checking ? 'Checking…' : `Integrity ${checked - unresolved}/${papers.length} ↻`}
+      </button>
+    </div>
+  )
+}
+
 // ── Literature matrix ─────────────────────────────────────────────────────────
 function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void }) {
   const { state, dispatch } = useApp()
@@ -798,6 +1123,20 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
   const dataCols = state.matrixColumns.filter(
     c => c !== '#' && c !== 'Title' && c !== 'Authors' && c !== 'Year'
   )
+
+  const verifyRows: VerifiableRow[] = state.matrixRows.map(r => ({ id: r.paperId, cells: r.cells }))
+  const review = useCellReview('literature', verifyRows, dataCols)
+  const vStats = verificationStats(verifyRows, dataCols)
+  function sourcesFor(paperId: string) {
+    const paper = state.reviewList.find(p => p.id === paperId)
+    return paperSources(paper?.abstract, state.paperFullTexts?.[paperId])
+  }
+  /** Rows the column-wide verify signs off: unverified, and not flagged. */
+  function verifiableIn(col: string) {
+    return state.matrixRows
+      .filter(r => { const c = r.cells[col]; return c && !c.verifiedByStudent && !quoteMissingFor(c, sourcesFor(r.paperId)) })
+      .map(r => r.paperId)
+  }
 
   // Re-recommend columns from the *selected papers* (edit context), appended below
   // the existing suggestion pool and deduped against current columns.
@@ -994,7 +1333,6 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
 
   if (generating) return (
     <div className="flex items-center justify-center flex-1 flex-col gap-4">
-      <div className="w-7 h-7 border-2 border-zinc-200 border-t-purple-600 rounded-full animate-spin" />
       <p className="text-[13px] font-semibold text-zinc-700">Generating matrix columns…</p>
     </div>
   )
@@ -1013,6 +1351,8 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
     <div className="flex flex-col flex-1 overflow-hidden">
       <div className="h-8 bg-zinc-50 border-b border-zinc-200 flex items-center px-4 gap-3 shrink-0">
         <span className="text-[9px] text-zinc-400">{filledCount}/{totalCells} cells filled</span>
+        <VerificationProgress verified={vStats.verified} total={vStats.total} onReview={() => review.advance(null)} />
+        <IntegritySummary />
         {filling && (
           <div className="flex items-center gap-1.5 min-w-[140px]">
             <div className="flex-1 h-1.5 bg-zinc-200 rounded overflow-hidden">
@@ -1037,7 +1377,7 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
         <div className="flex rounded overflow-hidden">
           <button onClick={() => handleAutoFill(customAutoFillPrompt)} disabled={filling || dataCols.length === 0}
             className="px-3 h-6 bg-purple-600 text-white rounded-l text-[10px] flex items-center gap-1.5 hover:bg-purple-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors">
-            {filling ? <><span className="w-2.5 h-2.5 border border-purple-300 border-t-white rounded-full animate-spin" />{fillDone}/{fillTotal} rows…</> : <><span>✦</span> {customAutoFillPrompt && <span className="w-1 h-1 rounded-full bg-amber-300 shrink-0" />} Auto-fill All</>}
+            {filling ? <>{fillDone}/{fillTotal} rows…</> : <><span>✦</span> {customAutoFillPrompt && <span className="w-1 h-1 rounded-full bg-amber-300 shrink-0" />} Auto-fill All</>}
           </button>
           <button onClick={() => setShowAutoFillModal(true)} disabled={filling || dataCols.length === 0}
             title="Customize AI prompt"
@@ -1076,6 +1416,8 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
                   emptyCount={state.matrixRows.filter(r => !r.cells[col]?.value).length}
                   onFill={handleFillColumn}
                   busy={filling}
+                  verifiableCount={verifiableIn(col).length}
+                  onVerify={c => dispatch({ type: 'VERIFY_MATRIX_CELLS', matrix: 'literature', column: c, rowIds: verifiableIn(c) })}
                 />
               ))}
             </tr>
@@ -1091,6 +1433,7 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
                     <p className="text-[11px] font-semibold text-zinc-900 leading-tight line-clamp-2">{row.title}</p>
                     <p className="text-[9px] text-zinc-400 mt-0.5">{row.authors}</p>
                     <p className="text-[9px] text-zinc-400">{row.year || '—'}</p>
+                    <div className="mt-0.5"><IntegrityBadge check={state.integrityChecks?.[row.paperId]} /></div>
                     {/* Which text this row was extracted from is the first thing
                         that governs how far a reader can trust it, and it used
                         to be invisible: the backend reported it and the UI threw
@@ -1111,12 +1454,8 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
                           cell={row.cells[col]}
                           column={col}
                           sources={paperSources(paper?.abstract, state.paperFullTexts?.[row.paperId])}
-                          onEvidence={row.cells[col]?.value ? rect => onEvidence({
-                            rect, cell: row.cells[col], column: col,
-                            paperTitle: paper?.title, paperAbstract: paper?.abstract,
-                            paperFullText: state.paperFullTexts?.[row.paperId],
-                            paperAuthors: paper?.authors, paperYear: paper?.year,
-                          }) : undefined}
+                          domId={cellDomId('literature', { rowId: row.paperId, column: col })}
+                          {...cellReviewProps(review, { rowId: row.paperId, column: col }, row.cells[col], filling, row.title)}
                         />
                   )}
                 </tr>
@@ -1127,6 +1466,44 @@ function LiteratureMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => v
       </div>
 
       {showAddPapers && <AddPapersModal onClose={() => setShowAddPapers(false)} onAdd={handleAddPapers} />}
+
+      {review.pendingEdit && (
+        <EditExplanationModal
+          pending={review.pendingEdit}
+          rowLabel={state.matrixRows.find(r => r.paperId === review.pendingEdit!.ref.rowId)?.title ?? ''}
+          onSubmit={review.finishEdit}
+          onSkip={() => review.finishEdit()}
+          onBack={review.backToEditing}
+        />
+      )}
+
+      {review.target && (() => {
+        const target = review.target
+        const { ref } = target
+        const row = state.matrixRows.find(r => r.paperId === ref.rowId)
+        if (!row) return null
+        const paper = state.reviewList.find(p => p.id === ref.rowId)
+        const cell = row.cells[ref.column]
+        return (
+          <CellDetailsCard
+            key={`${ref.rowId}:${ref.column}`}
+            target={target}
+            rowLabel={row.title}
+            cell={cell}
+            sources={sourcesFor(ref.rowId)}
+            onClose={review.closeDetails}
+            onAskAi={cell?.value ? () => {
+              review.closeDetails()
+              onEvidence({
+                rect: target.rect, cell, column: ref.column,
+                paperTitle: paper?.title, paperAbstract: paper?.abstract,
+                paperFullText: state.paperFullTexts?.[ref.rowId],
+                paperAuthors: paper?.authors, paperYear: paper?.year,
+              })
+            } : undefined}
+          />
+        )
+      })()}
 
       {showEditCols && (
         <EditColumnsModal title="Edit literature Matrix" onClose={() => setShowEditCols(false)}>
@@ -1197,6 +1574,15 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
   const systemMatrixRows: SystemMatrixRow[] = state.systemMatrixRows ?? []
   const systemMatrixColumns: string[] = state.systemMatrixColumns ?? []
   const dataCols = systemMatrixColumns.filter(c => c !== 'System Name' && c !== 'Vendor' && c !== 'Category')
+
+  const verifyRows: VerifiableRow[] = systemMatrixRows.map(r => ({ id: r.systemId, cells: r.cells }))
+  const review = useCellReview('system', verifyRows, dataCols)
+  const vStats = verificationStats(verifyRows, dataCols)
+  // System rows have no source text to check a quote against, so nothing is
+  // flagged and every unverified cell is eligible for the column-wide verify.
+  function verifiableIn(col: string) {
+    return systemMatrixRows.filter(r => r.cells[col] && !r.cells[col].verifiedByStudent).map(r => r.systemId)
+  }
 
   // Re-recommend columns from the *selected systems* (edit context), appended below
   // the existing suggestion pool and deduped against current columns.
@@ -1330,6 +1716,7 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
       >
         + Add system
       </button>
+
       {showAddSystem && (
         <AddSystemModal
           domain={state.profile.domain}
@@ -1343,7 +1730,6 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
   )
   if (generating) return (
     <div className="flex items-center justify-center flex-1 flex-col gap-4">
-      <div className="w-7 h-7 border-2 border-zinc-200 border-t-violet-600 rounded-full animate-spin" />
       <p className="text-[13px] font-semibold text-zinc-700">Generating system review columns…</p>
     </div>
   )
@@ -1361,6 +1747,7 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
     <div className="flex flex-col flex-1 overflow-hidden">
       <div className="h-8 bg-violet-50 border-b border-violet-200 flex items-center px-4 gap-3 shrink-0">
         <span className="text-[9px] text-violet-400">{filledCount}/{totalCells} cells filled · {selectedSystems.length} systems</span>
+        <VerificationProgress verified={vStats.verified} total={vStats.total} onReview={() => review.advance(null)} />
         {filling && (
           <div className="flex items-center gap-1.5 min-w-[140px]">
             <div className="flex-1 h-1.5 bg-violet-200 rounded overflow-hidden">
@@ -1384,7 +1771,7 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
         </button>
         <button onClick={handleAutoFill} disabled={filling || dataCols.length === 0}
           className="px-3 h-6 bg-violet-600 text-white rounded text-[10px] flex items-center gap-1.5 hover:bg-violet-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors">
-          {filling ? <><span className="w-2.5 h-2.5 border border-violet-300 border-t-white rounded-full animate-spin" />{fillDone}/{fillTotal} rows…</> : <><span>✦</span> Auto-fill All</>}
+          {filling ? <>{fillDone}/{fillTotal} rows…</> : <><span>✦</span> Auto-fill All</>}
         </button>
         {filling && <button onClick={() => { abortRef.current = true }} className="px-2 h-6 border border-violet-300 rounded text-[10px] text-violet-600 hover:bg-violet-100">Stop</button>}
       </div>
@@ -1404,13 +1791,14 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
                   emptyCount={systemMatrixRows.filter(r => !r.cells[col]?.value).length}
                   onFill={handleFillColumn}
                   busy={filling}
+                  verifiableCount={verifiableIn(col).length}
+                  onVerify={c => dispatch({ type: 'VERIFY_MATRIX_CELLS', matrix: 'system', column: c, rowIds: verifiableIn(c) })}
                 />
               ))}
             </tr>
           </thead>
           <tbody>
             {systemMatrixRows.map((row, idx) => {
-              const sys = selectedSystems.find(s => s.id === row.systemId)
               const isBeingFilled = fillingRowIds.has(row.systemId)
               return (
                 <tr key={row.systemId} className={`${idx % 2 === 0 ? 'bg-violet-50/30' : 'bg-white'} ${isBeingFilled ? 'ring-1 ring-inset ring-violet-400' : ''}`}>
@@ -1433,10 +1821,8 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
                           // rather than a supplied document, so there is no
                           // source text for a quote to be checked against.
                           sources={[]}
-                          onEvidence={row.cells[col]?.value ? rect => onEvidence({
-                            rect, cell: row.cells[col], column: col,
-                            systemName: sys?.name, systemVendor: sys?.vendor, systemDescription: sys?.description,
-                          }) : undefined}
+                          domId={cellDomId('system', { rowId: row.systemId, column: col })}
+                          {...cellReviewProps(review, { rowId: row.systemId, column: col }, row.cells[col], filling, row.name)}
                         />
                   )}
                 </tr>
@@ -1445,6 +1831,42 @@ function SystemMatrix({ onEvidence }: { onEvidence: (t: EvidenceTarget) => void 
           </tbody>
         </table>
       </div>
+
+      {review.pendingEdit && (
+        <EditExplanationModal
+          pending={review.pendingEdit}
+          rowLabel={systemMatrixRows.find(r => r.systemId === review.pendingEdit!.ref.rowId)?.name ?? ''}
+          onSubmit={review.finishEdit}
+          onSkip={() => review.finishEdit()}
+          onBack={review.backToEditing}
+        />
+      )}
+
+      {review.target && (() => {
+        const target = review.target
+        const { ref } = target
+        const row = systemMatrixRows.find(r => r.systemId === ref.rowId)
+        if (!row) return null
+        const sys = selectedSystems.find(s => s.id === ref.rowId)
+        const cell = row.cells[ref.column]
+        return (
+          <CellDetailsCard
+            key={`${ref.rowId}:${ref.column}`}
+            target={target}
+            rowLabel={row.name}
+            cell={cell}
+            sources={[]}
+            onClose={review.closeDetails}
+            onAskAi={cell?.value ? () => {
+              review.closeDetails()
+              onEvidence({
+                rect: target.rect, cell, column: ref.column,
+                systemName: sys?.name, systemVendor: sys?.vendor, systemDescription: sys?.description,
+              })
+            } : undefined}
+          />
+        )
+      })()}
 
       {showAddSystem && (
         <AddSystemModal
@@ -1518,6 +1940,59 @@ export function Screen5() {
   const [synthError, setSynthError] = useState<string | null>(null)
   const [showSynthModal, setShowSynthModal] = useState(false)
   const [customSynthPrompt, setCustomSynthPrompt] = useState<string | null>(null)
+  /** A continue held back while the reviewer decides about unconfirmed cells. */
+  const [pendingContinue, setPendingContinue] = useState<{ prompt: string | null; regenerate: boolean } | null>(null)
+
+  // Extracted values nobody has checked yet, per matrix. The synthesis is
+  // built from them, so moving on with some unchecked is worth a pause.
+  const unconfirmed = {
+    literature: unconfirmedCount(
+      state.matrixRows.map(r => ({ id: r.paperId, cells: r.cells })),
+      state.matrixColumns.filter(c => !['#', 'Title', 'Authors', 'Year'].includes(c)),
+    ),
+    system: state.systemMatrixEnabled
+      ? unconfirmedCount(
+          (state.systemMatrixRows ?? []).map(r => ({ id: r.systemId, cells: r.cells })),
+          (state.systemMatrixColumns ?? []).filter(c => !['System Name', 'Vendor', 'Category'].includes(c)),
+        )
+      : 0,
+  }
+
+  function requestContinue(prompt: string | null, regenerate = false) {
+    if (unconfirmed.literature + unconfirmed.system > 0) {
+      setPendingContinue({ prompt, regenerate })
+      return
+    }
+    handleContinue(prompt, { regenerate })
+  }
+
+  function continueDespiteUnconfirmed() {
+    if (!pendingContinue) return
+    const total = unconfirmed.literature + unconfirmed.system
+    dispatch({
+      type: 'ADD_DECISION_JOURNAL_ENTRY',
+      entry: journalEntry({
+        kind: 'user_action',
+        step: 5,
+        action: `Continued to synthesis with ${total} unconfirmed matrix value${total === 1 ? '' : 's'}`,
+        entityType: 'matrix_cell',
+        entityId: 'unconfirmed-at-continue',
+        entityLabel: 'Matrix verification',
+        details: [
+          `Literature matrix: ${unconfirmed.literature} unconfirmed`,
+          state.systemMatrixEnabled ? `System matrix: ${unconfirmed.system} unconfirmed` : '',
+        ].filter(Boolean).join('\n'),
+      }),
+    })
+    const { prompt, regenerate } = pendingContinue
+    setPendingContinue(null)
+    handleContinue(prompt, { regenerate })
+  }
+
+  function reviewUnconfirmed() {
+    setPendingContinue(null)
+    setActiveTab(unconfirmed.literature > 0 || !state.systemMatrixEnabled ? 'literature' : 'system')
+  }
 
   /**
    * Build the synthesis and move on.
@@ -1646,15 +2121,15 @@ export function Screen5() {
       <div className="h-[30px] border-t border-zinc-200 bg-zinc-50 flex items-center px-4 gap-4 shrink-0">
         <p className="text-[9px] text-zinc-400 flex-1">
           {synthesising
-            ? <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 border border-zinc-400 border-t-zinc-700 rounded-full animate-spin inline-block" /> Generating synthesis…</span>
+            ? <span className="flex items-center gap-1.5">Generating synthesis…</span>
             : synthError
               ? <span className="text-red-600">Synthesis failed: {synthError} Retry before continuing.</span>
-              : <>Hover a cell to reveal <span className="font-bold">?</span> — click to see the supporting quote in the abstract</>
+              : <><span className="font-bold">✓</span> confirm · <span className="font-bold">✎</span> edit or reset to AI · <span className="font-bold">?</span> source, confidence and Ask AI why</>
           }
         </p>
         {state.themes.length > 0 && (
           <button
-            onClick={() => handleContinue(customSynthPrompt, { regenerate: true })}
+            onClick={() => requestContinue(customSynthPrompt, true)}
             disabled={synthesising}
             title="Rebuild the themes from the matrix as it stands now — this replaces the existing synthesis"
             className="px-2.5 h-6 border border-zinc-300 rounded text-[10px] text-zinc-600 hover:bg-zinc-100 disabled:opacity-50 transition-colors">
@@ -1663,7 +2138,7 @@ export function Screen5() {
         )}
         <div className="flex rounded overflow-hidden">
           <button
-            onClick={() => handleContinue(customSynthPrompt)}
+            onClick={() => requestContinue(customSynthPrompt)}
             disabled={synthesising}
             className="px-4 h-6 bg-zinc-900 text-white rounded-l text-[11px] font-semibold hover:bg-zinc-700 disabled:opacity-50 transition-colors flex items-center gap-1.5">
             {customSynthPrompt && <span className="w-1 h-1 rounded-full bg-amber-400 shrink-0" />}
@@ -1688,8 +2163,17 @@ export function Screen5() {
           onGenerate={(prompt) => {
             setCustomSynthPrompt(prompt)
             setShowSynthModal(false)
-            handleContinue(prompt)
+            requestContinue(prompt)
           }}
+        />
+      )}
+
+      {pendingContinue && (
+        <UnconfirmedContinueModal
+          literature={unconfirmed.literature}
+          system={state.systemMatrixEnabled ? unconfirmed.system : null}
+          onReview={reviewUnconfirmed}
+          onContinue={continueDespiteUnconfirmed}
         />
       )}
 

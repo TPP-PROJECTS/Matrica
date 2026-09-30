@@ -265,7 +265,6 @@ export function Screen1() {
             >
               {isGenerating ? (
                 <>
-                  <span className="w-3 h-3 border-2 border-zinc-400 border-t-zinc-600 rounded-full animate-spin" />
                   Generating…
                 </>
               ) : (

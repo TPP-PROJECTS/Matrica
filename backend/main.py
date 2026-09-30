@@ -1,7 +1,7 @@
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import topics, chat, reasoning, queries, search, recognise, matrix, systems, synthesis, gaps, final_question, prompts, assistant, bridge, projects, reviews, screening, rob, rob_catalog
+from routers import topics, chat, reasoning, queries, search, recognise, matrix, systems, synthesis, gaps, final_question, prompts, assistant, bridge, projects, reviews, screening, rob, rob_catalog, integrity, certainty
 from reporter import OrchestrationReporter
 from analytics.middleware import AnalyticsMiddleware
 from analytics.router import router as analytics_router
@@ -56,6 +56,8 @@ app.include_router(reviews.router, prefix="/api")
 app.include_router(screening.router, prefix="/api")
 app.include_router(rob_catalog.router, prefix="/api")
 app.include_router(rob.router, prefix="/api")
+app.include_router(integrity.router, prefix="/api")
+app.include_router(certainty.router, prefix="/api")
 
 
 @app.get("/api/health")

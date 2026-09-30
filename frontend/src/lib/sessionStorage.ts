@@ -51,9 +51,11 @@ export function toSnapshot(state: AppState): SessionSnapshot {
     systemMatrixColumns: state.systemMatrixColumns,
     systemMatrixRows: state.systemMatrixRows,
     paperFullTexts: state.paperFullTexts,
+    integrityChecks: state.integrityChecks,
     // Step 5b — quality appraisal
     robToolId: state.robToolId,
     robAssessments: state.robAssessments,
+    certaintyAssessments: state.certaintyAssessments,
     // Step 6
     themes: state.themes,
     activeThemeId: state.activeThemeId,

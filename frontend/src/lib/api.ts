@@ -1,4 +1,6 @@
-export const API = (import.meta.env.VITE_API_BASE as string | undefined) ?? 'http://localhost:8001/api'
+import { aiLabelFor, beginAiRequest } from './aiActivity'
+
+export const API =(import.meta.env.VITE_API_BASE as string | undefined) ?? 'http://localhost:8001/api'
 
 // ── Session ID singleton ──────────────────────────────────────────────────────
 // Set by AppContext on mount and whenever the session changes.
@@ -12,10 +14,23 @@ export function setAnalyticsSession(id: string): void {
 // ── Instrumented fetch ────────────────────────────────────────────────────────
 // Drop-in replacement for fetch() that injects the session ID header.
 
-export async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  const headers = new Headers(init.headers)
+export async function apiFetch(
+  url: string,
+  init: RequestInit & { aiBackground?: boolean } = {},
+): Promise<Response> {
+  const { aiBackground, ...rest } = init
+  const headers = new Headers(rest.headers)
   if (_sessionId) headers.set('X-Session-Id', _sessionId)
-  return fetch(url, { ...init, headers })
+  const label = aiLabelFor(url, API)
+  if (!label) return fetch(url, { ...rest, headers })
+  // None of the AI endpoints stream: the response only starts once the model
+  // has finished, so the wait is over when the headers arrive.
+  const { signal, end } = beginAiRequest(label, { background: aiBackground, signal: rest.signal })
+  try {
+    return await fetch(url, { ...rest, headers, signal })
+  } finally {
+    end()
+  }
 }
 
 // ── Fire-and-forget event tracker ─────────────────────────────────────────────

@@ -83,7 +83,7 @@ export function SchemaBuilder({
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
             {loading && avail.length === 0 && (
               <div className="flex items-center justify-center h-32 text-[11px] text-zinc-400 gap-2">
-                <span className="w-4 h-4 border-2 border-zinc-200 border-t-zinc-600 rounded-full animate-spin" /> Generating…
+                Generating…
               </div>
             )}
             {!loading && avail.length === 0 && (
@@ -123,7 +123,7 @@ export function SchemaBuilder({
               title="Generate new columns, given the columns you've already selected"
             >
               {loading
-                ? <><span className="w-2.5 h-2.5 border border-white/40 border-t-white rounded-full animate-spin" /> Generating…</>
+                ? <>Generating…</>
                 : <>✦ Generate more</>}
               {customPrompt && <span className="w-1 h-1 rounded-full bg-white/80" />}
             </button>

@@ -246,6 +246,14 @@ def upsert_project(
                current_step  = excluded.current_step,
                topic_preview = excluded.topic_preview,
                snapshot      = excluded.snapshot
+           -- Autosaves are fired without waiting on each other, and the
+           -- one-shot localStorage migration pushes whatever copy the browser
+           -- still holds, so an older snapshot can arrive after a newer one.
+           -- Keep the newer. updatedAt is a JS ISO timestamp (fixed width,
+           -- UTC), so string order is time order.
+           WHERE excluded.updated_at IS NULL
+              OR projects.updated_at IS NULL
+              OR excluded.updated_at >= projects.updated_at
         """,
         (project_id, title, created_at, updated_at, current_step, topic_preview, snapshot),
     )

@@ -134,7 +134,6 @@ export function ScreenMatrixInit() {
                   className="accent-violet-600"
                 />
                 <span className="text-[12px] font-bold text-zinc-900">Include a system comparison matrix</span>
-                {sysLoading && <span className="w-3 h-3 border border-violet-300 border-t-violet-600 rounded-full animate-spin" />}
               </label>
               {rationale && (
                 <p className="text-[11px] text-zinc-500 pl-6">

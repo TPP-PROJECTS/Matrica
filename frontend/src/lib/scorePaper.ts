@@ -1,4 +1,5 @@
 import { API, apiFetch } from './api'
+import { createLimiter } from './runPool'
 import type { AppAction, ResearchProfile, ResultCard, ConfidenceLevel } from '../types'
 
 function levelFor(score: number): ConfidenceLevel {
@@ -7,6 +8,12 @@ function levelFor(score: number): ConfidenceLevel {
   if (score >= 15) return 'low'
   return 'none'
 }
+
+// Every scoring call in the app goes through this one gate, so a 100-result
+// search queues its assessments instead of sending them all to the model at
+// once and tripping the API's rate limit.
+const SCORE_CONCURRENCY = 4
+const scoringGate = createLimiter(SCORE_CONCURRENCY)
 
 /**
  * Assess one paper's relevance in the background and fold the result into the
@@ -21,7 +28,9 @@ export async function scorePaperRelevance(
   dispatch: React.Dispatch<AppAction>,
 ): Promise<void> {
   try {
-    const res = await apiFetch(`${API}/recognise`, {
+    const res = await scoringGate(() => apiFetch(`${API}/recognise`, {
+      // Fired for every result after a search; the card shows its own state.
+      aiBackground: true,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -35,7 +44,7 @@ export async function scorePaperRelevance(
         },
         profile,
       }),
-    })
+    }))
     if (!res.ok) throw new Error(`recognise failed: ${res.status}`)
     const data = await res.json()
     if (!paper.abstract.trim() && data.resolvedAbstract?.trim()) {

@@ -265,7 +265,13 @@ def comparison(review_id: str) -> dict:
         for entry in (snapshot.get("decisionJournal") or [])
         if entry.get("id")
     }
+    # Comment keys carry step numbers in the layout the project was saved
+    # under: 7 steps from stepSchema 2 (frontend/src/lib/steps.ts), 9 before.
     step_names = {
+        1: "Chat & Define Topic", 2: "Matrix Initial", 3: "Explore & Search",
+        4: "Select Paper", 5: "Matrix Table", 6: "Synthesis & Gap",
+        7: "Final Question",
+    } if snapshot.get("stepSchema") == 2 else {
         1: "Chat & Define Topic", 2: "Matrix Initial", 3: "System Review",
         4: "Explore & Search", 5: "Select Paper", 6: "Matrix Table",
         7: "Synthesis", 8: "Gap & Statement", 9: "Final Question",

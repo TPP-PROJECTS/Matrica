@@ -281,3 +281,55 @@ describe('appraisals do not outlive their papers', () => {
     expect(s.robAssessments).toHaveLength(2)
   })
 })
+
+// ── Reviewer verification ─────────────────────────────────────────────────────
+
+function aiCell(value: string, verified = false): MatrixCell {
+  return { ...cell(value), verifiedByStudent: verified }
+}
+
+describe('matrix cell verification', () => {
+  it('verifies a cell and stamps when', () => {
+    const s = reducer(
+      stateWith({ matrixRows: [row('a', { Method: aiCell('RCT') })] }),
+      { type: 'REVIEW_MATRIX_CELL', matrix: 'literature', rowId: 'a', column: 'Method', verified: true },
+    )
+    const c = s.matrixRows[0].cells.Method
+    expect(c.verifiedByStudent).toBe(true)
+    expect(c.verifiedAt).toBeTruthy()
+    expect(c.value).toBe('RCT')
+  })
+
+  it('keeps the AI value when the reviewer corrects it', () => {
+    const s = reducer(
+      stateWith({ matrixRows: [row('a', { Method: aiCell('RCT') })] }),
+      { type: 'REVIEW_MATRIX_CELL', matrix: 'literature', rowId: 'a', column: 'Method', verified: true, value: 'Cluster RCT' },
+    )
+    expect(s.matrixRows[0].cells.Method).toMatchObject({ value: 'Cluster RCT', originalValue: 'RCT', verifiedByStudent: true })
+  })
+
+  it('lets the reviewer fill a cell the extractor left empty', () => {
+    const s = reducer(
+      stateWith({ systemMatrixRows: [{ systemId: 's1', name: 'Sys', vendor: '', category: '', url: null, cells: {} } as unknown as SystemMatrixRow] }),
+      { type: 'REVIEW_MATRIX_CELL', matrix: 'system', rowId: 's1', column: 'Pricing', verified: true, value: 'Free tier' },
+    )
+    expect(s.systemMatrixRows[0].cells.Pricing).toMatchObject({ value: 'Free tier', aiGenerated: false, verifiedByStudent: true })
+  })
+
+  it('does not let a re-run of auto-fill overwrite a verified cell', () => {
+    const s = reducer(
+      stateWith({ matrixRows: [row('a', { Method: aiCell('Cluster RCT', true), Sample: aiCell('40') })] }),
+      { type: 'UPDATE_MATRIX_ROW_CELLS', paperId: 'a', cells: { Method: aiCell('RCT'), Sample: aiCell('42') } },
+    )
+    expect(s.matrixRows[0].cells.Method.value).toBe('Cluster RCT')
+    expect(s.matrixRows[0].cells.Sample.value).toBe('42')
+  })
+
+  it('verifies only the listed rows of a column', () => {
+    const s = reducer(
+      stateWith({ matrixRows: [row('a', { Method: aiCell('RCT') }), row('b', { Method: aiCell('?') })] }),
+      { type: 'VERIFY_MATRIX_CELLS', matrix: 'literature', column: 'Method', rowIds: ['a'] },
+    )
+    expect(s.matrixRows.map(r => r.cells.Method.verifiedByStudent)).toEqual([true, false])
+  })
+})

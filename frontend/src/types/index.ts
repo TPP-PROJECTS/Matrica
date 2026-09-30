@@ -302,7 +302,56 @@ export interface MatrixCell {
   sourceRef: string
   extractionMethod: 'verbatim' | 'summarised' | 'inferred' | 'not_available'
   verifiedByStudent: boolean
+  /** When the reviewer signed the cell off. */
+  verifiedAt?: string
+  /**
+   * The AI's value, kept when the reviewer corrects it, so the audit can show
+   * what was extracted as well as what the review now says.
+   */
+  originalValue?: string
+  /**
+   * The whole AI extraction (quote, confidence, method) as it stood before the
+   * reviewer's first edit, so the cell can be reset to it.
+   */
+  originalCell?: Omit<MatrixCell, 'originalValue' | 'originalCell' | 'editExplanation'>
+  /** Why the reviewer changed the AI's value, if they said. */
+  editExplanation?: CellEditExplanation
 }
+
+/** How far the reviewer disagreed with the AI's extraction when editing it. */
+export type CellEditReason = 'minor_revision' | 'partial_disagreement' | 'full_disagreement'
+
+export interface CellEditExplanation {
+  reason?: CellEditReason
+  /** Where the corrected value comes from: a page, quote, table or other source. */
+  reference?: string
+}
+
+// ── Publication integrity ─────────────────────────────────────────────────────
+/**
+ * Crossref's record of what has happened to a paper since publication.
+ * `unresolved` means it could not be matched (no DOI and no exact title
+ * match, or the lookup failed) — it is never taken to mean clear.
+ */
+export type IntegrityStatus = 'retracted' | 'concern' | 'corrected' | 'clear' | 'unresolved'
+
+export interface IntegrityNotice {
+  type: string
+  label: string
+  doi?: string | null
+  date?: string | null
+  source?: string | null
+}
+
+export interface IntegrityCheck {
+  status: IntegrityStatus
+  doi?: string | null
+  notices: IntegrityNotice[]
+  checkedAt: string
+}
+
+/** Which of the two matrices an action addresses. */
+export type MatrixKind = 'literature' | 'system'
 
 export interface MatrixRow {
   paperId: string
@@ -442,6 +491,32 @@ export interface Theme {
   userDefined?: boolean
 }
 
+// ── Certainty of evidence (GRADE / GRADE-CERQual) ─────────────────────────────
+export type CertaintyFrameworkId = 'grade' | 'cerqual'
+export type CertaintyLevel = 'high' | 'moderate' | 'low' | 'very_low'
+
+export interface CertaintyDomainJudgement {
+  /** An option id from the framework's definition of this domain. */
+  judgement: string
+  rationale: string
+  aiGenerated: boolean
+  verifiedByStudent: boolean
+}
+
+/** The certainty rating of one theme's finding. */
+export interface CertaintyAssessment {
+  themeId: string
+  framework: CertaintyFrameworkId
+  /** The finding being rated, stated in one or two sentences. */
+  finding: string
+  /** GRADE only: where the body of evidence starts before any domain moves it. */
+  startLevel?: 'high' | 'low'
+  domains: Record<string, CertaintyDomainJudgement>
+  /** The reviewer's own level, when they depart from the framework's rule. */
+  override?: { level: CertaintyLevel; reason: string } | null
+  assessedAt: string
+}
+
 export interface GapDimension {
   id: string
   type: 'dense' | 'thin' | 'ignored' | 'weak_design' | 'uncertain' | 'no_theory'
@@ -564,7 +639,8 @@ export interface VersionEntry {
   trigger: 'manual' | 'step_complete'
 }
 
-export type DecisionJournalKind = 'justification' | 'ai_explanation_view' | 'user_action'
+/** `automated_check`: a finding from a lookup the tool ran itself, not a user act. */
+export type DecisionJournalKind = 'justification' | 'ai_explanation_view' | 'user_action' | 'automated_check'
 
 export interface DecisionJournalEntry {
   id: string
@@ -661,9 +737,13 @@ export interface SessionSnapshot {
    * the abstract.
    */
   paperFullTexts: Record<string, string>
+  /** Retraction / concern / correction status per paper id, from Crossref. */
+  integrityChecks?: Record<string, IntegrityCheck>
   // Step 5b — quality appraisal
   robToolId: RobToolId | null
   robAssessments: RobAssessment[]
+  /** Certainty-of-evidence ratings, one per theme. */
+  certaintyAssessments?: CertaintyAssessment[]
   // Step 6
   themes: Theme[]
   activeThemeId: string
@@ -757,9 +837,13 @@ export interface AppState {
    * the abstract.
    */
   paperFullTexts: Record<string, string>
+  /** Retraction / concern / correction status per paper id, from Crossref. */
+  integrityChecks?: Record<string, IntegrityCheck>
   // Step 5b — quality appraisal
   robToolId: RobToolId | null
   robAssessments: RobAssessment[]
+  /** Certainty-of-evidence ratings, one per theme. */
+  certaintyAssessments?: CertaintyAssessment[]
   // Step 6
   themes: Theme[]
   activeThemeId: string
@@ -903,6 +987,16 @@ export type AppAction =
   | { type: 'ADD_SYSTEM_WITH_ROW'; item: SystemItem }
   | { type: 'UPDATE_MATRIX_ROW_CELLS'; paperId: string; cells: Record<string, MatrixCell> }
   | { type: 'UPDATE_SYSTEM_MATRIX_ROW_CELLS'; systemId: string; cells: Record<string, MatrixCell> }
+  // Reviewer sign-off on extracted data. Deliberately not exposed to the chatbot:
+  // a confirmation is only worth anything if a person made it.
+  | { type: 'REVIEW_MATRIX_CELL'; matrix: MatrixKind; rowId: string; column: string; verified: boolean; value?: string; explanation?: CellEditExplanation }
+  | { type: 'RESET_MATRIX_CELL'; matrix: MatrixKind; rowId: string; column: string }
+  | { type: 'SET_CERTAINTY_ASSESSMENT'; assessment: CertaintyAssessment }
+  | { type: 'UPDATE_CERTAINTY_DOMAIN'; themeId: string; domainId: string; judgement?: string; rationale?: string; verified?: boolean }
+  | { type: 'UPDATE_CERTAINTY_ASSESSMENT'; themeId: string; finding?: string; startLevel?: 'high' | 'low'; override?: { level: CertaintyLevel; reason: string } | null }
+  | { type: 'REMOVE_CERTAINTY_ASSESSMENT'; themeId: string }
+  | { type: 'SET_INTEGRITY_CHECKS'; checks: Record<string, IntegrityCheck> }
+  | { type: 'VERIFY_MATRIX_CELLS'; matrix: MatrixKind; column: string; rowIds: string[] }
   | { type: 'SET_PAPER_FULL_TEXT'; paperId: string; text: string }
   | { type: 'SET_ROB_TOOL'; toolId: RobToolId | null } // @chatbot Choose the risk-of-bias appraisal instrument (rob2, robins_i or amstar2), or null for none.
   | { type: 'SET_ROB_ASSESSMENT'; assessment: RobAssessment }
