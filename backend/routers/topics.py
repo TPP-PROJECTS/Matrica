@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
-from config import MODEL
+from config import response_options
 from routers.json_utils import extract_json
 
 load_dotenv()
@@ -107,7 +107,7 @@ async def generate_topics(req: GenerateRequest):
     count = min(max(req.count, 1), 20)
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=KEYWORD_TOPICS_SYSTEM_PROMPT,
             input=(
                 f"Keyword: {keyword}\n"
@@ -156,7 +156,7 @@ async def generate_topics_from_profile(req: ProfileRequest):
 
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=req.custom_system_prompt or TOPICS_SYSTEM_PROMPT,
             input=user_content,
         )

@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
-from config import MODEL
+from config import response_options
 from routers.json_utils import extract_json
 
 load_dotenv()
@@ -77,7 +77,7 @@ async def chat(req: ChatRequest):
 
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=SYSTEM_PROMPT,
             input=input_messages,
         )

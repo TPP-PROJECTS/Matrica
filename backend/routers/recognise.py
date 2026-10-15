@@ -3,7 +3,7 @@ from routers.json_utils import extract_json
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from openai import AsyncOpenAI
-from config import MODEL
+from config import response_options
 
 router = APIRouter()
 client = AsyncOpenAI()
@@ -136,7 +136,7 @@ Respond with JSON in this exact format:
 
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=SYSTEM_PROMPT,
             input=user_content,
         )
@@ -186,7 +186,7 @@ async def paper_insights(req: PaperInsightsRequest):
 
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=PAPER_INSIGHTS_PROMPT,
             input=(
                 f"Title: {req.paper.title}\n"

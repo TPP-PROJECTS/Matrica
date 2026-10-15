@@ -26,3 +26,25 @@ Thumbs.db
 backend/analytics.db
 backend/analytics.db-shm
 backend/analytics.db-wal
+
+# Local Python environments and generated caches
+.venv*/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.deepeval/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local dependencies, settings and OS metadata
+node_modules/
+.env.*
+!.env.example
+!.env.*.example

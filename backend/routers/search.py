@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
-from config import MODEL
+from config import response_options
 from routers.json_utils import extract_json
 
 load_dotenv()
@@ -723,7 +723,7 @@ async def search_web(
     try:
         response = await asyncio.wait_for(
             _openai.responses.create(
-                model=MODEL,
+                **response_options(web_search=True),
                 instructions=WEB_SEARCH_PROMPT,
                 input="\n\n".join(ask),
                 tools=[{"type": "web_search_preview"}],

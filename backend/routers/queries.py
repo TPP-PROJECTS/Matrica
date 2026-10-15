@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
-from config import MODEL
+from config import response_options
 from routers.search import DEFAULT_SOURCE_KEYS, SOURCES
 
 load_dotenv()
@@ -147,7 +147,7 @@ async def generate_queries(req: QueryGenerateRequest):
 
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=instructions,
             input=user_content,
         )

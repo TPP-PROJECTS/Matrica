@@ -4,7 +4,7 @@ import re
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from openai import AsyncOpenAI
-from config import MODEL
+from config import response_options
 from routers.rob_catalog import RobSummaryInfo, TOOLS_BY_ID, concerning_domains
 
 router = APIRouter()
@@ -223,7 +223,7 @@ Respond with JSON:
 
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=req.custom_system_prompt or SYNTHESIS_SYSTEM_PROMPT,
             input=user_content,
         )
@@ -354,7 +354,7 @@ Respond with JSON: {{"content": "...", "paper_count": {paper_count}, "avg_confid
 
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=req.custom_system_prompt or REGEN_SYSTEM_PROMPT,
             input=user_content,
         )

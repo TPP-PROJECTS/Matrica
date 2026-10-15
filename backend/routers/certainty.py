@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
-from config import MODEL
+from config import response_options
 from routers.json_utils import extract_json
 
 router = APIRouter()
@@ -166,7 +166,7 @@ Respond with JSON:
 """
 
     try:
-        response = await client.responses.create(model=MODEL, instructions=PROMPT, input=user_content)
+        response = await client.responses.create(**response_options(), instructions=PROMPT, input=user_content)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Certainty assessment error: {e}")
 

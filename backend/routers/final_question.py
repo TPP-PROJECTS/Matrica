@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Any
 from openai import OpenAI
-from config import MODEL
+from config import response_options
 from routers.study_design_catalog import STUDY_DESIGN_CATALOG, CATALOG_BY_ID
 
 router = APIRouter()
@@ -132,7 +132,7 @@ Rules:
 def generate_topics(ctx: BaseContext):
     user_msg = build_context_text(ctx) + "\n\nGenerate 3–4 refined final research topic options with research questions."
     response = client.responses.create(
-        model=MODEL,
+        **response_options(),
         input=[
             {"role": "system", "content": ctx.custom_system_prompt or TOPICS_SYSTEM},
             {"role": "user", "content": user_msg},
@@ -211,7 +211,7 @@ STUDY DESIGN CATALOG (choose ONLY from these ids):
 Select the 3 best-fitting study designs for this topic, ranked best-first."""
 
     response = client.responses.create(
-        model=MODEL,
+        **response_options(),
         input=[
             {"role": "system", "content": req.custom_system_prompt or MATCH_SYSTEM},
             {"role": "user", "content": user_msg},
@@ -344,7 +344,7 @@ topic-specific content sections a real published paper would have (7–10 sectio
 purpose and real-paper subsections. Everything must be specific to "{req.topic.title}" — not generic."""
 
     response = client.responses.create(
-        model=MODEL,
+        **response_options(),
         input=[
             {"role": "system", "content": req.custom_system_prompt or STRUCTURE_SYSTEM},
             {"role": "user", "content": user_msg},
@@ -546,7 +546,7 @@ Write the prose for the subsection "{req.subsection_title}" in about {target} wo
 
     try:
         response = client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=req.custom_system_prompt or SAMPLE_SYSTEM.replace("{target_words}", str(target)),
             input=user_msg,
         )

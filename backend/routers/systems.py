@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
-from config import MODEL
+from config import response_options
 
 load_dotenv()
 
@@ -91,7 +91,7 @@ async def recommend_systems(req: SystemRecommendRequest):
 
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(web_search=True),
             instructions=SYSTEMS_PROMPT,
             input=user_content,
             tools=[{"type": "web_search_preview"}],
@@ -162,7 +162,7 @@ async def lookup_system(req: SystemLookupRequest):
 
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(web_search=True),
             instructions=SYSTEM_LOOKUP_PROMPT,
             input=context,
             tools=[{"type": "web_search_preview"}],
@@ -292,7 +292,7 @@ async def link_systems_to_topics(req: SystemTopicLinkRequest):
 
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=LINK_PROMPT,
             input=user_content,
         )

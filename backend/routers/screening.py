@@ -25,7 +25,7 @@ from fastapi import APIRouter, HTTPException
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
-from config import MODEL
+from config import response_options
 from routers.json_utils import extract_json
 from routers.search import (
     OPENALEX_URL,
@@ -273,7 +273,7 @@ Respond with JSON in this exact format:
 
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=req.custom_system_prompt or SCREENING_SYSTEM_PROMPT,
             input=user_content,
         )

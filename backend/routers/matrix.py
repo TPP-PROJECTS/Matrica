@@ -6,7 +6,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from openai import AsyncOpenAI
-from config import MODEL
+from config import response_options
 from routers.search import reconstruct_abstract
 
 router = APIRouter()
@@ -157,7 +157,7 @@ Respond with JSON:
 
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=req.custom_system_prompt or SYSTEM_REVIEW_PROMPT,
             input=user_content,
         )
@@ -233,7 +233,7 @@ Respond with JSON:
 
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=req.custom_system_prompt or SYSTEM_SCHEMA_ASSESS_PROMPT,
             input=user_content,
         )
@@ -408,7 +408,7 @@ List any concrete sources (official docs, peer-reviewed papers, reputable review
 
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=CELL_EVIDENCE_PROMPT,
             input=context,
         )
@@ -470,7 +470,7 @@ Respond with JSON:
 
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=req.custom_system_prompt or AUTOFILL_LITERATURE_PROMPT,
             input=user_content,
         )
@@ -531,7 +531,7 @@ Respond with JSON:
 
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=req.custom_system_prompt or AUTOFILL_SYSTEM_PROMPT,
             input=user_content,
         )
@@ -594,7 +594,7 @@ Respond with JSON:
 
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=req.custom_system_prompt or SYSTEM_PROMPT,
             input=user_content,
         )
@@ -776,7 +776,7 @@ async def _get_paper_full_text(paper: PaperInfo) -> str:
 
 async def _extract_paper_metadata(text: str, hint: str = '') -> dict:
     response = await client.responses.create(
-        model=MODEL,
+        **response_options(),
         instructions=PAPER_METADATA_PROMPT,
         input=f"{hint}\n\nDOCUMENT TEXT:\n{text}" if hint else f"DOCUMENT TEXT:\n{text}",
     )

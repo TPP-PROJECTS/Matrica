@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
-from config import MODEL
+from config import response_options
 
 load_dotenv()
 
@@ -74,7 +74,7 @@ async def explain_type(req: ExplainTypeRequest):
     )
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=EXPLAIN_TYPE_PROMPT,
             input=user_content,
         )
@@ -109,7 +109,7 @@ async def reason_topic(req: ReasonRequest):
 
     try:
         response = await client.responses.create(
-            model=MODEL,
+            **response_options(),
             instructions=REASON_SYSTEM_PROMPT,
             input=user_content,
         )

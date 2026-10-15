@@ -50,7 +50,7 @@ A key design principle of Matrica is **source traceability**: at every stage, en
 | ---------- | ------------------------------------------ |
 | Frontend   | React + TypeScript + Vite, served by Nginx |
 | Backend    | Python FastAPI + Uvicorn                   |
-| AI         | OpenAI API (GPT-4o)                        |
+| AI         | OpenAI API (GPT-6 Sol)                        |
 | Deployment | Docker + Docker Compose                    |
 
 ---
